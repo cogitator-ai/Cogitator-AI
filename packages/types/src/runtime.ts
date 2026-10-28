@@ -526,6 +526,16 @@ export interface RunOptions<TDeps = unknown> {
    */
   onMemoryEntry?: (entry: MemoryEntry) => unknown;
   /**
+   * Called as a tool call of the run delegates to another agent (a subagent, in the foreground
+   * or the background, or an agent used as a tool), before the delegated run starts. The
+   * callbacks it returns join that run's options, so its tokens, tool calls and end reach the
+   * caller tagged by the call that started it. A delegated run passes this on: what the returned
+   * stream sets as `onDelegatedRun` hears of the runs it delegates in turn, else this one does,
+   * each tagged by its own parent call. A background run streams after the call returned, and
+   * possibly after this run ended
+   */
+  onDelegatedRun?: (run: DelegatedRunStart) => DelegatedRunStream | undefined;
+  /**
    * Runs on a branch of the thread: history is read along the branch ending at `fromEntryId`
    * (null for none, a new root), and the run's entries go after it, one after another. With
    * `activate: false` the thread's active leaf stays where it was, so a fork or a replay writes
@@ -619,6 +629,43 @@ export interface RunOptions<TDeps = unknown> {
   /** The conversation the run serves (`ChannelMessage.conversationId`), as its tools get it */
   conversationId?: string;
 }
+
+/** A run another run delegated to from one of its tool calls, see `RunOptions.onDelegatedRun` */
+export interface DelegatedRunStart {
+  /** The tool call that delegated */
+  parentToolCallId: string;
+  /** The run the tool call belongs to */
+  parentRunId: string;
+  /** The name of the agent the run is delegated to */
+  agent: string;
+  /** The subagent task the run belongs to, for a subagent */
+  taskId?: string;
+  /** The thread the delegated run works in, when it is known before the run starts */
+  threadId?: string;
+  /** The run goes on in the background, past the tool call that started it */
+  background: boolean;
+  /** How many runs delegated down to this one: 1 for a run of a tool call of a top run */
+  depth: number;
+}
+
+/** The callbacks a delegated run streams through, see `RunOptions.onDelegatedRun` */
+export type DelegatedRunStream = Pick<
+  RunOptions,
+  | 'onToken'
+  | 'onReasoning'
+  | 'onToolCall'
+  | 'onToolResult'
+  | 'onToolUpdate'
+  | 'onToolInputStart'
+  | 'onToolInputDelta'
+  | 'onToolInputAvailable'
+  | 'onToolInputAbandoned'
+  | 'onRunStart'
+  | 'onRunComplete'
+  | 'onRunError'
+  | 'onMemoryEntry'
+  | 'onDelegatedRun'
+>;
 
 /**
  * Deadlines of the stages of a run, in ms, each off unless set:

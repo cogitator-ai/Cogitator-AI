@@ -99,6 +99,9 @@ importers:
       '@cogitator-ai/ai-sdk':
         specifier: workspace:*
         version: link:../packages/ai-sdk
+      '@cogitator-ai/app-server':
+        specifier: workspace:*
+        version: link:../packages/app-server
       '@cogitator-ai/browser':
         specifier: workspace:*
         version: link:../packages/browser
@@ -284,6 +287,9 @@ importers:
       '@a2a-js/sdk':
         specifier: 0.3.14
         version: 0.3.14(@bufbuild/protobuf@2.16.0)(@grpc/grpc-js@1.14.5)(express@5.2.1(supports-color@10.2.2))
+      '@a2a-js/sdk-v1':
+        specifier: npm:@a2a-js/sdk@1.3.0
+        version: '@a2a-js/sdk@1.3.0(@bufbuild/protobuf@2.16.0)(@grpc/grpc-js@1.14.5)(better-sqlite3@13.0.3)(express@5.2.1(supports-color@10.2.2))(pg@8.23.1)'
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
@@ -337,6 +343,34 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
+  packages/app-server:
+    dependencies:
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
+      '@cogitator-ai/types':
+        specifier: workspace:*
+        version: link:../types
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+    devDependencies:
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
+      '@cogitator-ai/test-utils':
+        specifier: workspace:*
+        version: link:../test-utils
+      '@types/node':
+        specifier: ^22.20.4
+        version: 22.20.4
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^5.0.3
+        version: 5.0.3(@opentelemetry/api@1.10.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.4(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
   packages/browser:
     dependencies:
       '@cogitator-ai/core':
@@ -362,13 +396,13 @@ importers:
   packages/channels:
     dependencies:
       '@cogitator-ai/browser':
-        specifier: workspace:>=0.4.61
+        specifier: workspace:>=0.4.62
         version: link:../browser
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
       '@cogitator-ai/mcp':
-        specifier: workspace:^19.8.2
+        specifier: workspace:^19.8.3
         version: link:../mcp
       '@cogitator-ai/memory':
         specifier: workspace:*
@@ -377,7 +411,7 @@ importers:
         specifier: workspace:^18.5.0
         version: link:../models
       '@cogitator-ai/rag':
-        specifier: workspace:>=0.9.17
+        specifier: workspace:>=0.9.18
         version: link:../rag
       '@cogitator-ai/types':
         specifier: workspace:*
@@ -455,6 +489,9 @@ importers:
       '@clack/prompts':
         specifier: ^1.8.1
         version: 1.8.1
+      '@cogitator-ai/app-server':
+        specifier: workspace:*
+        version: link:../app-server
       '@cogitator-ai/channels':
         specifier: workspace:*
         version: link:../channels
@@ -479,6 +516,9 @@ importers:
       '@cogitator-ai/models':
         specifier: workspace:*
         version: link:../models
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
       '@cogitator-ai/studio':
         specifier: workspace:*
         version: link:../studio
@@ -745,6 +785,9 @@ importers:
       '@cogitator-ai/ai-sdk':
         specifier: workspace:*
         version: link:../ai-sdk
+      '@cogitator-ai/app-server':
+        specifier: workspace:*
+        version: link:../app-server
       '@cogitator-ai/browser':
         specifier: workspace:*
         version: link:../browser
@@ -875,6 +918,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@a2a-js/sdk-v1':
+        specifier: npm:@a2a-js/sdk@1.3.0
+        version: '@a2a-js/sdk@1.3.0(@bufbuild/protobuf@2.16.0)(@grpc/grpc-js@1.14.5)(better-sqlite3@13.0.3)(express@5.2.1(supports-color@10.2.2))(pg@8.23.1)'
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.2
         version: 1.32.2(supports-color@10.2.2)(zod@4.6.5)
@@ -1987,6 +2033,34 @@ packages:
       '@grpc/grpc-js':
         optional: true
       express:
+        optional: true
+
+  '@a2a-js/sdk@1.3.0':
+    resolution: {integrity: sha512-OpK4nygUnLKlpTFZlM2IrYu7f3c/B7c4u4Z14+vgMq24lEINTVCxH/BqZx+GL92rNf7CoBL5oTP5UhNsl75yyg==}
+    engines: {node: '>=20'}
+    hasBin: true
+    peerDependencies:
+      '@bufbuild/protobuf': ^2.10.2
+      '@grpc/grpc-js': ^1.11.0
+      better-sqlite3: ^12.0.0 || ^13.0.0
+      express: ^4.21.2 || ^5.1.0
+      kysely: ^0.28.17 || ^0.29.0
+      mysql2: ^3.0.0
+      pg: ^8.0.0
+    peerDependenciesMeta:
+      '@bufbuild/protobuf':
+        optional: true
+      '@grpc/grpc-js':
+        optional: true
+      better-sqlite3:
+        optional: true
+      express:
+        optional: true
+      kysely:
+        optional: true
+      mysql2:
+        optional: true
+      pg:
         optional: true
 
   '@ai-sdk/gateway@2.0.162':
@@ -5755,8 +5829,8 @@ packages:
     resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
     engines: {node: '>=12.0.0'}
 
-  express-rate-limit@8.7.1:
-    resolution: {integrity: sha512-2FXbqkygil3mZiXzEtM0IjE/UBmBNot0J1GEVrJT4JbrvwOSoEtqtO+wHbiMQELWe1eNvHoYRg2dkjOid+6JkA==}
+  express-rate-limit@8.7.0:
+    resolution: {integrity: sha512-hOwV7WOxXfjRpAM1DSJWZDXx3GhplwD8IfwuwvogD8i1Qnkgosw/H45s4ZnFAUHDAhPjlY9hLBvJhKmGMyY26g==}
     engines: {node: '>= 16'}
     peerDependencies:
       express: '>= 4.11'
@@ -8657,6 +8731,16 @@ snapshots:
       '@grpc/grpc-js': 1.14.5
       express: 5.2.1(supports-color@10.2.2)
 
+  '@a2a-js/sdk@1.3.0(@bufbuild/protobuf@2.16.0)(@grpc/grpc-js@1.14.5)(better-sqlite3@13.0.3)(express@5.2.1(supports-color@10.2.2))(pg@8.23.1)':
+    dependencies:
+      jose: 6.2.12
+    optionalDependencies:
+      '@bufbuild/protobuf': 2.16.0
+      '@grpc/grpc-js': 1.14.5
+      better-sqlite3: 13.0.3
+      express: 5.2.1(supports-color@10.2.2)
+      pg: 8.23.1
+
   '@ai-sdk/gateway@2.0.162(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 2.0.5
@@ -10114,7 +10198,7 @@ snapshots:
       eventsource: 3.0.7
       eventsource-parser: 3.1.1
       express: 5.2.1(supports-color@10.2.2)
-      express-rate-limit: 8.7.1(express@5.2.1(supports-color@10.2.2))(supports-color@10.2.2)
+      express-rate-limit: 8.7.0(express@5.2.1(supports-color@10.2.2))(supports-color@10.2.2)
       hono: 4.13.12
       jose: 6.2.12
       json-schema-typed: 8.0.2
@@ -12682,7 +12766,7 @@ snapshots:
 
   expect-type@1.4.0: {}
 
-  express-rate-limit@8.7.1(express@5.2.1(supports-color@10.2.2))(supports-color@10.2.2):
+  express-rate-limit@8.7.0(express@5.2.1(supports-color@10.2.2))(supports-color@10.2.2):
     dependencies:
       debug: 4.4.3(supports-color@10.2.2)
       express: 5.2.1(supports-color@10.2.2)
@@ -15856,6 +15940,29 @@ snapshots:
       jiti: 2.7.0
       tsx: 4.23.15
       yaml: 2.9.1
+
+  vitest@5.0.3(@opentelemetry/api@1.10.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.4(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)):
+    dependencies:
+      '@types/chai': 5.2.3
+      '@vitest/mocker': 5.0.3(vite@8.3.4(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      chai: 6.2.2
+      es-module-lexer: 2.3.2
+      expect-type: 1.4.0
+      magic-string: 1.4.2
+      obug: 2.2.1
+      picomatch: 4.0.7
+      std-env: 4.3.0
+      tinybench: 6.2.0
+      tinyexec: 1.3.1
+      tinyglobby: 0.2.17
+      vite: 8.3.4(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)
+      why-is-node-running: 3.2.1
+    optionalDependencies:
+      '@opentelemetry/api': 1.10.0
+      '@types/node': 22.20.4
+      '@vitest/coverage-v8': 5.0.3(vitest@5.0.3)
+    transitivePeerDependencies:
+      - msw
 
   vitest@5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@7.3.7(@types/node@22.20.4)(jiti@2.7.0)(lightningcss@1.33.0)(tsx@4.23.15)(yaml@2.9.1)):
     dependencies:

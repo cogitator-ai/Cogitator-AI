@@ -361,6 +361,15 @@ export interface ListThreadsOptions {
   order?: 'asc' | 'desc';
 }
 
+/** Which threads `Cogitator.listThreads` returns: the adapter's filters and the archive state */
+export interface CogitatorListThreadsOptions extends ListThreadsOptions {
+  /**
+   * `true` for archived threads only (`metadata.archived === true`, see
+   * `Cogitator.archiveThread`), `false` for the threads not archived, unset for all
+   */
+  archived?: boolean;
+}
+
 /** A page of `listThreads`. */
 export interface ThreadPage {
   threads: Thread[];

@@ -1,18 +1,18 @@
 ---
 title: A2A Protocol (Agent-to-Agent)
-description: Native implementation of the A2A protocol v0.3 for cross-framework agent interoperability.
+description: Native implementation of the A2A protocol, 1.0 and 0.3 on one server, for cross-framework agent interoperability.
 ---
 
 ## Overview
 
-The `@cogitator-ai/a2a` package implements the [A2A (Agent2Agent) protocol v0.3](https://a2a-protocol.org/v0.3.0/specification/), the open standard for agent-to-agent communication. Cogitator agents talk JSON-RPC 2.0 with agents from any framework that speaks A2A v0.3 (the official A2A SDKs, Google ADK, LangGraph and others).
+The `@cogitator-ai/a2a` package implements the [A2A (Agent2Agent) protocol](https://a2a-protocol.org/), the open standard for agent-to-agent communication, in both of its current versions: [1.0](https://a2a-protocol.org/v1.0.0/specification/) and [0.3](https://a2a-protocol.org/v0.3.0/specification/), on the same server. Cogitator agents talk to agents from any framework that speaks A2A (the official A2A SDKs, Google ADK, LangGraph and others) over JSON-RPC 2.0, and over the A2A 1.0 HTTP+JSON (REST) binding.
 
-- **A2AServer** - expose any Cogitator agent as an A2A v0.3 service, one Agent Card and endpoint per agent
-- **A2AClient** - talk to any A2A v0.3 agent: card discovery, messages, streaming, tasks, webhooks
+- **A2AServer** - expose any Cogitator agent as an A2A service, one Agent Card and endpoint per agent, both versions at once
+- **A2AClient** - talk to any A2A agent: it speaks 1.0 when the card offers it, else 0.3, over JSON-RPC or HTTP+JSON
 - **asTool() Bridge** - wrap remote A2A agents as local Cogitator tools
 - **Framework Adapters** - Express, Hono, Fastify, Koa, Next.js
 
-Conformance is tested: every response is validated against the official v0.3.0 JSON schema, and the official A2A JavaScript SDK client talks to `A2AServer` (and `A2AClient` to a server built with the SDK) in the test suite.
+Conformance is tested: every response is validated against the official 1.0.0 and 0.3.0 JSON schemas, and the official A2A JavaScript SDK (1.3 and 0.3) talks to `A2AServer` (and `A2AClient` to a server built with the SDK) in the test suite, over JSON-RPC and REST.
 
 ```bash
 pnpm add @cogitator-ai/a2a
@@ -49,15 +49,43 @@ app.listen(3000);
 
 This exposes:
 
-- `GET /.well-known/agent-card.json` - Agent Card discovery (the v0.3 well-known path)
-- `POST /a2a` - JSON-RPC endpoint for messaging, streaming and task management
+- `GET /.well-known/agent-card.json` - Agent Card discovery, in the version the client asks for
+- `POST /a2a` - JSON-RPC endpoint for messaging, streaming and task management, A2A 1.0 with `A2A-Version: 1.0`, else 0.3
+- `/a2a/rest/...` - the A2A 1.0 HTTP+JSON binding
 - `GET /.well-known/agent.json` - the pre-v0.3 card path, kept as an alias
 
-`basePath` (default `/a2a`, must start with `/`) is the JSON-RPC path the adapters serve, relative to where they are mounted, readable as `a2aServer.basePath`.
+`basePath` (default `/a2a`, must start with `/`) is the JSON-RPC path the adapters serve, relative to where they are mounted, readable as `a2aServer.basePath`. `restPath` (default `<basePath>/rest`, `false` turns it off) is where the REST binding is served. When an agent is named `rest`, its endpoint is the default `restPath`: the server then leaves REST off with a warning, and an explicit `restPath` that is an agent's endpoint is refused.
+
+### Protocol Versions
+
+A request names its protocol version in the `A2A-Version` header, or in an `A2A-Version` query parameter, as `Major.Minor` (a patch number is ignored). A request without a version speaks 0.3, as the specification says, so every A2A 0.3 client keeps working unchanged. One with `A2A-Version: 1.0` gets A2A 1.0: the PascalCase methods, the ProtoJSON model, `google.rpc` error details. A version the server does not speak is refused with `-32009 Version not supported` (HTTP `400` on REST), its `ErrorInfo` metadata listing the supported versions.
+
+```typescript
+const a2aServer = new A2AServer({
+  agents: { researcher },
+  cogitator,
+  protocolVersions: ['1.0', '0.3'], // the default, ['0.3'] restores the earlier server
+  restPath: '/a2a/rest', // the default, false turns the REST binding off
+});
+```
+
+What changes on the wire in 1.0:
+
+| A2A 0.3                                     | A2A 1.0                                                              |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| `kind` on parts, messages, tasks and events | No `kind`, a `StreamResponse` wraps `task`, `statusUpdate` and so on |
+| `role: 'user'`, `state: 'completed'`        | `role: 'ROLE_USER'`, `state: 'TASK_STATE_COMPLETED'`                 |
+| `TextPart`, `FilePart`, `DataPart`          | One `Part`: `text`, `raw`, `url` or `data`, plus `mediaType`         |
+| `final: true` on the last status update     | The stream closes on a terminal or interrupted state                 |
+| `blocking: false`                           | `returnImmediately: true`                                            |
+| `message/send`, `tasks/get` and so on       | `SendMessage`, `GetTask` and so on                                   |
+| `error.data` is an object                   | `error.data` is a list of `google.rpc.ErrorInfo` and `BadRequest`    |
+
+The server keeps one model of every task, so a task created over 0.3 is readable over 1.0 and back, and the task stores (`InMemoryTaskStore`, `RedisTaskStore`, your own `TaskStore`) are unchanged. A 1.0 `data` part may hold any JSON value: a value that is not an object is kept as `{ value }` with the part metadata key `cogitator:dataValue`, the only form a 0.3 data part has, and comes back bare over 1.0. ProtoJSON input is read leniently: fields in camelCase or snake_case, enums by name or number, bytes in standard or URL-safe base64.
 
 ### Agent Cards
 
-The card is generated from the agent. Its `url` is the absolute address of the agent's JSON-RPC endpoint: without `cardUrl` the adapters derive it from the request that fetches the card, behind a proxy that changes the host or the path set `cardUrl` to the public endpoint URL.
+The card is generated from the agent and comes in the version the client asks for. Without `A2A-Version` it is the A2A 0.3 card with every interface of both versions added in `supportedInterfaces`, so a client of either version finds its endpoint:
 
 ```json
 {
@@ -67,8 +95,28 @@ The card is generated from the agent. Its `url` is the absolute address of the a
   "url": "https://my-server.com/a2a",
   "preferredTransport": "JSONRPC",
   "additionalInterfaces": [{ "transport": "JSONRPC", "url": "https://my-server.com/a2a" }],
+  "supportedInterfaces": [
+    {
+      "url": "https://my-server.com/a2a",
+      "protocolBinding": "JSONRPC",
+      "tenant": "researcher",
+      "protocolVersion": "1.0"
+    },
+    {
+      "url": "https://my-server.com/a2a/rest",
+      "protocolBinding": "HTTP+JSON",
+      "tenant": "researcher",
+      "protocolVersion": "1.0"
+    },
+    { "url": "https://my-server.com/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "0.3" }
+  ],
   "version": "1.0.0",
-  "capabilities": { "streaming": true, "pushNotifications": true, "stateTransitionHistory": false },
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": true,
+    "stateTransitionHistory": false,
+    "extensions": [{ "uri": "https://cogitator.app/a2a/extensions/tool-approvals/v1" }]
+  },
   "defaultInputModes": ["text/plain", "application/json"],
   "defaultOutputModes": ["text/plain", "application/json"],
   "skills": [
@@ -84,7 +132,11 @@ The card is generated from the agent. Its `url` is the absolute address of the a
 }
 ```
 
-The description is the agent's `description` (its name when unset), never its instructions. Every tool becomes a skill. `agentVersion` sets `version` (default `1.0.0`) and `provider: { organization, url }` names who runs the agent. With `auth` the card lists `securitySchemes` and `security`, with `extendedCardGenerator` it declares `supportsAuthenticatedExtendedCard: true`, and with `cardSigning` it carries a JWS in `signatures`.
+With `A2A-Version: 1.0` it is the pure A2A 1.0 card: the same `supportedInterfaces`, `capabilities` with `extensions` and `extendedAgentCard`, `securitySchemes` and `securityRequirements` in their 1.0 form, and none of the 0.3 fields. The interfaces come in the order clients should prefer them: JSON-RPC 1.0, HTTP+JSON 1.0, JSON-RPC 0.3. A server that speaks one version only serves its card to everyone.
+
+The URLs are absolute: without `cardUrl` the adapters derive them from the request that fetches the card, behind a proxy that changes the host or the path set `cardUrl` to the public URL of the JSON-RPC endpoint (the REST interface sits next to it as `restPath` sits next to `basePath`). The description is the agent's `description` (its name when unset), never its instructions. Every tool becomes a skill, and an agent without tools gets one `chat` skill, as A2A 1.0 needs a card to list one. `agentVersion` sets `version` (default `1.0.0`) and `provider: { organization, url }` names who runs the agent. With `auth` the card lists its security schemes, with `extendedCardGenerator` it declares the extended card, and with `cardSigning` it carries a JWS in `signatures`.
+
+Card responses carry `Vary: A2A-Version`, an `ETag` (the SHA-256 of the body) and `Cache-Control: public, max-age=300`. A request with a matching `If-None-Match` gets `304 Not Modified`.
 
 ### Multiple Agents
 
@@ -117,6 +169,60 @@ const writerClient = new A2AClient('https://my-server.com', { agentName: 'writer
 
 An unknown agent path answers `404`, an unknown `agentName` param `-32602 Invalid params`.
 
+### Tenants
+
+Over A2A 1.0 every agent is a tenant. Its interfaces carry its name as `tenant`, and an A2A 1.0 client sends it back in every request: as `tenant` in the JSON-RPC params, as the `/<tenant>/` path segment on REST. On the shared endpoint the tenant picks the agent, on an agent's own endpoint a different tenant is refused with `-32602`.
+
+A task created over 1.0 belongs to the agent that created it and is visible only through that agent, whatever the version of the request: `GetTask`, `CancelTask`, `SubscribeToTask`, the push config methods, `ListTasks` (and their 0.3 forms, `tasks/list` included) and a message that continues the task answer a task of another agent with `-32001 Task not found`. The agent is kept in the task metadata (`cogitator:agent`) and never sent to clients. Tasks created over 0.3, and tasks stored before tasks recorded their agent, are bound to no agent and stay visible to every agent, as they always were. A new message whose `contextId` holds a task bound to another agent is refused with `-32602 Invalid params`, over either version, so an agent never reads another agent's transcripts or ends its paused runs.
+
+On REST, a first path segment that is the name of an agent is read as its tenant first: with an agent named `tasks`, `GET /tasks/tasks` lists that agent's tasks, and a path that names no method under the tenant (`GET /tasks/<id>`) still reads without one.
+
+### HTTP+JSON Binding
+
+The A2A 1.0 REST binding is served under `restPath`, with the routes the proto's `google.api.http` bindings define. Every route also exists under `/<tenant>/`:
+
+| Route                                                 | Method                             | Success |
+| ----------------------------------------------------- | ---------------------------------- | ------- |
+| `POST /message:send`                                  | `SendMessage`                      | 200     |
+| `POST /message:stream`                                | `SendStreamingMessage` (SSE)       | 200     |
+| `GET /tasks/{id}?historyLength=`                      | `GetTask`                          | 200     |
+| `GET /tasks?contextId=&status=&pageSize=&pageToken=`  | `ListTasks`                        | 200     |
+| `POST /tasks/{id}:cancel`                             | `CancelTask`                       | 200     |
+| `GET` or `POST /tasks/{id}:subscribe`                 | `SubscribeToTask` (SSE)            | 200     |
+| `POST /tasks/{taskId}/pushNotificationConfigs`        | `CreateTaskPushNotificationConfig` | 201     |
+| `GET /tasks/{taskId}/pushNotificationConfigs`         | `ListTaskPushNotificationConfigs`  | 200     |
+| `GET /tasks/{taskId}/pushNotificationConfigs/{id}`    | `GetTaskPushNotificationConfig`    | 200     |
+| `DELETE /tasks/{taskId}/pushNotificationConfigs/{id}` | `DeleteTaskPushNotificationConfig` | 204     |
+| `GET /extendedAgentCard`                              | `GetExtendedAgentCard`             | 200     |
+
+```bash
+curl -X POST https://my-server.com/a2a/rest/researcher/message:send \
+  -H 'Content-Type: application/a2a+json' -H 'A2A-Version: 1.0' \
+  -d '{"message":{"messageId":"m1","role":"ROLE_USER","parts":[{"text":"Hello"}]}}'
+```
+
+Bodies are `application/a2a+json` or `application/json`, query parameters camelCase (`includeArtifacts=true`). The binding speaks only A2A 1.0, so every request needs `A2A-Version: 1.0`. Errors are `google.rpc.Status` bodies with the HTTP status of the specification:
+
+```json
+{
+  "error": {
+    "code": 404,
+    "status": "NOT_FOUND",
+    "message": "Task not found: task_123",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "TASK_NOT_FOUND",
+        "domain": "a2a-protocol.org",
+        "metadata": { "taskId": "task_123" }
+      }
+    ]
+  }
+}
+```
+
+Streams are SSE whose events are `StreamResponse` objects (`data: {"statusUpdate":{...}}`), and a failure during a stream ends it with an `event: error` frame holding such a body. Custom integrations call `a2aServer.handleRest({ method, path, query, body, authToken })` with a path relative to `restPath`.
+
 ### Run time limits
 
 A client may ask for a shorter run with `configuration.timeout` (a Cogitator extension), never a longer one. It must be a positive integer, and the server caps it at the agent's own `timeout`, or at `maxRunTimeoutMs` (default `120000`, the Cogitator run default) for an agent without one:
@@ -129,7 +235,7 @@ const a2aServer = new A2AServer({
 });
 ```
 
-Without a client `timeout` the agent's own limit applies.
+Without a client `timeout` the agent's own limit applies. An A2A 1.0 client asks for it with the run-timeout extension, `metadata["https://cogitator.app/a2a/extensions/run-timeout/v1"].timeoutMs` on the `SendMessage` request.
 
 ## A2AClient
 
@@ -144,15 +250,24 @@ const card = await client.agentCard();
 console.log(card.name, card.description, card.skills);
 ```
 
-The client reads the card at `/.well-known/agent-card.json` (falling back to `/.well-known/agent.json` for servers before v0.3) and sends every request to the `url` the card names, as the specification requires.
+The client reads the card at `/.well-known/agent-card.json` (falling back to `/.well-known/agent.json` for servers before v0.3) and talks to an interface the card names, as the specification requires. It reads every form of card: an A2A 0.3 card, the hybrid card of a Cogitator server, and a pure A2A 1.0 card. By default (`protocolVersion: 'auto'`) it speaks A2A 1.0 when the card offers a 1.0 interface, taking the first one the card lists (or the one of `transport`) and sending that interface's `tenant` in every request, else JSON-RPC 0.3. Its API speaks the A2A 0.3 model either way, so code written for 0.3 keeps working against a 1.0 server, and `agentCard()` returns the card in the 0.3 form with every interface in `supportedInterfaces`.
 
-| Option          | Effect                                                                                   |
-| --------------- | ---------------------------------------------------------------------------------------- |
-| `headers`       | Sent with every request, e.g. `Authorization`                                            |
-| `timeout`       | Request timeout in ms (default `30000`), the idle timeout between events of a stream     |
-| `agentCardPath` | Card path relative to the base URL, without fallback                                     |
-| `rpcPath`       | Send requests to this path at the base URL instead of the card's `url`, without the card |
-| `agentName`     | An agent of a Cogitator server hosting several: use its own card and endpoint            |
+| Option            | Effect                                                                                       |
+| ----------------- | -------------------------------------------------------------------------------------------- |
+| `headers`         | Sent with every request, e.g. `Authorization`                                                |
+| `timeout`         | Request timeout in ms (default `30000`), the idle timeout between events of a stream         |
+| `agentCardPath`   | Card path relative to the base URL, without fallback                                         |
+| `rpcPath`         | Send JSON-RPC to this path at the base URL instead of the card's interface, without the card |
+| `agentName`       | An agent of a Cogitator server hosting several: use its own card and endpoint                |
+| `protocolVersion` | `'auto'` (default), `'1.0'` (refuse a server without 1.0, `-32009`) or `'0.3'` (always 0.3)  |
+| `transport`       | `'JSONRPC'` or `'HTTP+JSON'`: the A2A 1.0 binding to prefer when the card offers both        |
+| `extensions`      | Extension URIs to ask for in `A2A-Extensions` on every request                               |
+
+```typescript
+const client = new A2AClient('https://remote-agent.example.com', { transport: 'HTTP+JSON' });
+console.log(await client.endpoint());
+// { protocolVersion: '1.0', transport: 'HTTP+JSON', url: 'https://.../a2a/rest', tenant: 'researcher' }
+```
 
 ### Sending Messages
 
@@ -190,6 +305,8 @@ for await (const event of client.sendMessageStream({
 | `acceptedOutputModes`    | Only return artifacts with a part of these MIME types                              |
 | `pushNotificationConfig` | Register a webhook before the task starts executing                                |
 | `timeout`                | Cogitator extension: a shorter run time limit in ms, see [above](#run-time-limits) |
+
+Over A2A 1.0 the client sends the 1.0 `SendMessageConfiguration`: `returnImmediately: true` for `blocking: false`, `taskPushNotificationConfig` for the webhook, and the run timeout as `metadata["https://cogitator.app/a2a/extensions/run-timeout/v1"].timeoutMs` in the request (the [run-timeout extension](#extensions)). A `historyLength` of `0` leaves the history out of a 1.0 task altogether.
 
 ```typescript
 const task = await client.sendMessage(
@@ -299,15 +416,35 @@ if (waiting) {
 
 ## Listing Tasks
 
-`tasks/list` is a Cogitator extension method (A2A v0.3 defines no JSON-RPC method for listing):
+A2A 1.0 `ListTasks` pages through the caller's tasks of the agent, the most recently updated first (ties broken by id in the cursor's order), behind a keyset cursor: a page never repeats or skips a task that did not change while the client paged.
+
+```typescript
+const page = await client.listTasksPage({ state: 'completed', pageSize: 20 });
+console.log(page.tasks.length, page.totalSize);
+
+if (page.nextPageToken) {
+  const next = await client.listTasksPage({ state: 'completed', pageToken: page.nextPageToken });
+}
+```
+
+| Query field            | Effect                                                        |
+| ---------------------- | ------------------------------------------------------------- |
+| `pageSize`             | 1 to 100, default 50                                          |
+| `pageToken`            | The `nextPageToken` of the previous page                      |
+| `contextId`, `state`   | Filters (`status` with a `TASK_STATE_*` on the wire)          |
+| `statusTimestampAfter` | Only tasks whose status changed after this ISO time           |
+| `historyLength`        | Trim each history, `0` leaves it out                          |
+| `includeArtifacts`     | Include artifacts (default `false`, then the field is absent) |
+
+The response carries `tasks`, `nextPageToken` (`''` on the last page), `pageSize` and `totalSize` (the matches across all pages). A page token the server did not issue is refused with `-32602`, its `BadRequest` naming `pageToken`. The cursor is base64url of `{ v: 1, t, id }` over `TaskStore.list()`, so any store works: the cursor sorts the tasks itself, and `tasks/list` keeps the order of the store.
+
+Over A2A 0.3, `tasks/list` is a Cogitator extension method with offset paging. `client.listTasks(filter?)` lists every match in either version (over 1.0 it walks the pages, with artifacts):
 
 ```typescript
 const allTasks = await client.listTasks();
 const conversationTasks = await client.listTasks({ contextId: 'ctx_abc123' });
 const completedTasks = await client.listTasks({ state: 'completed', limit: 10, offset: 0 });
 ```
-
-Tasks are returned newest first. The filter takes `contextId`, `state`, `limit` and `offset`.
 
 ## Streaming
 
@@ -345,6 +482,18 @@ The reply streams token by token as chunks of one artifact: the first chunk star
 
 A request that fails before the stream starts (bad params, unknown task, missing credentials) is answered with a plain JSON-RPC error instead of a stream, a failure during the stream ends it with a JSON-RPC error response. `tasks/resubscribe` reconnects to a task: the task as it is now, then its updates while it still runs in this process. When the client disconnects, the adapters abort the agent run.
 
+Over A2A 1.0, `SendStreamingMessage` streams a `StreamResponse` in every `result`, and there is no `final`: the stream closes after the status update that ends the task or makes it wait on the client.
+
+```text
+data: {"jsonrpc":"2.0","id":1,"result":{"task":{"id":"task_1","contextId":"ctx_1","status":{"state":"TASK_STATE_SUBMITTED"}}}}
+
+data: {"jsonrpc":"2.0","id":1,"result":{"artifactUpdate":{"taskId":"task_1","contextId":"ctx_1","artifact":{"artifactId":"art_1","parts":[{"text":"Roses"}]}}}}
+
+data: {"jsonrpc":"2.0","id":1,"result":{"statusUpdate":{"taskId":"task_1","contextId":"ctx_1","status":{"state":"TASK_STATE_COMPLETED"}}}}
+```
+
+`A2AClient` marks that last update `final` for you, so the loop above works over both versions. `SubscribeToTask` refuses a task that already ended with `-32004`, as the specification says.
+
 ## RedisTaskStore
 
 ```typescript
@@ -368,7 +517,7 @@ const a2aServer = new A2AServer({
 
 ## Push Notifications
 
-The server POSTs the task (as `tasks/get` returns it) to every webhook registered for it on each status change.
+The server POSTs the task to every webhook registered for it on each status change. A config keeps the protocol version it was registered with (the server never sends it back): one registered over A2A 0.3 gets the task as `tasks/get` returns it, as `application/json`. One registered over A2A 1.0 gets a `StreamResponse`, `{ "task": { ... } }` in the 1.0 form, as `application/a2a+json`, with `Authorization: <scheme> <credentials>` for the one scheme of its `authentication`.
 
 ### Registering Webhooks
 
@@ -390,7 +539,7 @@ const all = await client.listPushNotificationConfigs(task.id);
 await client.deletePushNotificationConfig(task.id, config.pushNotificationConfig.id!);
 ```
 
-Every config method requires an existing task the caller may see (`-32001 Task not found` otherwise). To subscribe before the task starts, pass `configuration.pushNotificationConfig` with `blocking: false`.
+Every config method requires an existing task the caller may see (`-32001 Task not found` otherwise). Over 1.0, `ListTaskPushNotificationConfigs` pages by `pageSize` (1 to 100, default 50) and `pageToken`, with a `nextPageToken` while more remain, and `listPushNotificationConfigs()` walks the pages. To subscribe before the task starts, pass `configuration.pushNotificationConfig` with `blocking: false`.
 
 ### Server Configuration
 
@@ -410,7 +559,7 @@ Webhook delivery is SSRF-hardened unless `allowPrivateUrls: true`: loopback, pri
 
 ## Agent Card Signing
 
-Cards are signed with a JWS (RFC 7515, `HS256`, detached payload) over their canonical JSON (RFC 8785, without `signatures`), the form A2A v0.3 specifies.
+Cards are signed as A2A 1.0 specifies (section 8.4): a JWS (RFC 7515, detached payload) whose protected header is `{ alg, typ: 'JOSE', kid, jku? }`, over the JCS (RFC 8785) of the card's A2A 1.0 form without `signatures` and without the fields ProtoJSON leaves out (empty strings and lists, `false` defaults). That is exactly the payload the official SDK signs and verifies, so its `verifyAgentCardSignature` accepts a Cogitator card. Signing runs on `node:crypto`, with no extra dependency.
 
 ### Server-Side
 
@@ -418,30 +567,56 @@ Cards are signed with a JWS (RFC 7515, `HS256`, detached payload) over their can
 const a2aServer = new A2AServer({
   agents: { researcher },
   cogitator,
-  cardSigning: { secret: process.env.CARD_SIGNING_SECRET! },
+  cardSigning: {
+    alg: 'ES256', // 'RS256', 'PS256' or 'EdDSA'
+    privateKey: process.env.CARD_SIGNING_KEY!, // PEM, a private JWK, or a KeyObject
+    kid: 'cards-2026',
+    publishJwks: true, // serves the public key at /.well-known/jwks.json
+    jku: 'https://my-server.com/.well-known/jwks.json', // optional
+  },
 });
 ```
+
+| `alg`   | Key                                           |
+| ------- | --------------------------------------------- |
+| `ES256` | ECDSA on P-256, signatures in IEEE P1363 form |
+| `RS256` | RSA, PKCS#1 v1.5                              |
+| `PS256` | RSA (or RSA-PSS), salt as long as the digest  |
+| `EdDSA` | Ed25519 or Ed448                              |
+
+A key that does not fit the algorithm is refused when the server is created. The A2A 1.0 card and the hybrid 0.3 card carry the same signature. It covers the 1.0 form, so the 0.3 fields of a signed card must follow from it: a 0.3 or hybrid card verifies only when its `url` (with `preferredTransport` and `protocolVersion`) and every `additionalInterfaces` entry are 0.3 interfaces of its `supportedInterfaces`, its security schemes and requirements come back from their 1.0 form unchanged (an OAuth scheme with several flows, or none, does not, since a 1.0 scheme holds one flow), and it claims no `stateTransitionHistory`. The signer refuses to sign a card that fails this, with the reason `legacyCoverageProblem(card)` gives, and a server that speaks only 1.0 serves the 0.3 form of its card unsigned. A client on 0.3 takes its endpoint from the signed 0.3 interface, never from `url`. Signatures are kept per payload, so an unchanged card keeps its signature, and its `ETag`, even with randomized ECDSA and RSA-PSS signatures.
 
 ### Client-Side Verification
 
 ```typescript
-const isValid = await client.verifyAgentCard(process.env.CARD_SIGNING_SECRET!);
+// trusted keys by kid, or a JWKS
+const isValid = await client.verifyAgentCard({ keys: { 'cards-2026': publicKeyPem } });
+await client.verifyAgentCard({ keys: await (await fetch(jwksUrl)).json() });
+
+// your own key lookup
+await client.verifyAgentCard({ resolveKey: async (kid, jku) => keyStore.get(kid) });
+
+// the JWKS of the signature's jku, fetched only from the card's own origin by default
+await client.verifyAgentCard({});
+await client.verifyAgentCard({ trustJku: ['https://keys.example.com'] });
 ```
 
-### Manual Signing and Verification
+A `jku` on another origin than the card's is never fetched unless `trustJku` lists that origin. `verifyAgentCardJws(card, options)` checks a card (1.0, hybrid or 0.3) without a client, `canonicalizeAgentCard(card)` returns the signed payload.
+
+### Shared Secret (deprecated)
+
+`cardSigning: { secret }` still signs every served card with HMAC `HS256` over its own canonical JSON, and `client.verifyAgentCard(secret)` or `verifyAgentCardSignature(card, secret)` checks it. It is deprecated: anyone who can verify such a signature can also forge one.
 
 ```typescript
 import { signAgentCard, verifyAgentCardSignature } from '@cogitator-ai/a2a';
 
 const signed = signAgentCard(card, { secret: 'my-secret' });
-console.log(signed.signatures); // [{ protected: 'eyJhbGciOiJIUzI1NiIs...', signature: '...' }]
-
 const valid = verifyAgentCardSignature(signed, 'my-secret');
 ```
 
 ## Authenticated Extended Agent Card
 
-`agent/getAuthenticatedExtendedCard` returns a more detailed card to authenticated clients:
+`GetExtendedAgentCard` (A2A 0.3: `agent/getAuthenticatedExtendedCard`) returns a more detailed card to authenticated clients:
 
 ```typescript
 const a2aServer = new A2AServer({
@@ -467,11 +642,35 @@ const client = new A2AClient('https://remote-agent.example.com', {
 const extendedCard = await client.extendedAgentCard();
 ```
 
-Without `extendedCardGenerator` the method answers `-32007 Authenticated Extended Card not configured`.
+The public card declares it (`capabilities.extendedAgentCard`, 0.3: `supportsAuthenticatedExtendedCard`) only with `extendedCardGenerator`. Without it the 0.3 method answers `-32007 Authenticated Extended Card not configured`, and the 1.0 method `-32004 Unsupported operation`, as for any capability a card does not declare. Over 1.0 the generated card comes in its 1.0 form, with the agent's own interfaces unless it lists others in `supportedInterfaces`.
+
+## Extensions
+
+Cards declare the extensions an agent supports in `capabilities.extensions`. Every Cogitator agent supports three, none of them required:
+
+| URI                                                      | What it is                                                              |
+| -------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `https://cogitator.app/a2a/extensions/tool-approvals/v1` | [Tool approvals](#tool-approvals) as `tool-approval-request` data parts |
+| `https://cogitator.app/a2a/extensions/interrupts/v1`     | Questions tools ask, as `interrupt-request` data parts                  |
+| `https://cogitator.app/a2a/extensions/run-timeout/v1`    | A shorter run: `metadata[uri].timeoutMs` (0.3: `configuration.timeout`) |
+
+Declare your own next to them:
+
+```typescript
+const a2aServer = new A2AServer({
+  agents: { researcher },
+  cogitator,
+  extensions: [
+    { uri: 'https://example.com/extensions/geo/v1', description: 'Location', required: true },
+  ],
+});
+```
+
+A client asks for extensions in the `A2A-Extensions` header (`X-A2A-Extensions` in 0.3), comma-separated, and the response names the ones the agent supports in the same header. A message that does not ask for a `required` extension is refused with `-32008 Extension support required` (HTTP `400` on REST). `A2AClient` takes `extensions: [...]` to ask for some on every request, and adds the run-timeout extension itself when a send sets `timeout`.
 
 ## Framework Adapters
 
-Every adapter serves the routes listed under [Multiple Agents](#multiple-agents), streams only for `message/stream` and `tasks/resubscribe` (an `Accept: text/event-stream` header alone does not switch `message/send` to SSE), answers JSON-RPC notifications with HTTP `204`, a body that is not `application/json` with `415`, and missing or rejected credentials with `401`. While a stream is open it writes a `: keep-alive` comment every `sseHeartbeatMs` (an `A2AServer` option, 5 seconds by default, `0` turns it off), so a proxy (nginx closes after 60 s) or Bun (after 10 s) does not cut a run that waits on a slow tool. Structurally invalid JSON-RPC requests get `-32600 Invalid Request`, only unparseable JSON gets `-32700 Parse error`.
+Every adapter serves the routes listed under [Multiple Agents](#multiple-agents), the [HTTP+JSON binding](#httpjson-binding) under `restPath` and the JWKS at `/.well-known/jwks.json` when the server publishes one, takes `application/a2a+json` bodies, streams only for `message/stream` and `tasks/resubscribe` (1.0: `SendStreamingMessage` and `SubscribeToTask`, an `Accept: text/event-stream` header alone does not switch `message/send` to SSE), answers JSON-RPC notifications with HTTP `204`, a body that is not `application/json` with `415`, and missing or rejected credentials with `401`. While a stream is open it writes a `: keep-alive` comment every `sseHeartbeatMs` (an `A2AServer` option, 5 seconds by default, `0` turns it off), so a proxy (nginx closes after 60 s) or Bun (after 10 s) does not cut a run that waits on a slow tool. Structurally invalid JSON-RPC requests get `-32600 Invalid Request`, only unparseable JSON gets `-32700 Parse error`.
 
 Errors that are neither A2A errors nor `CogitatorError`s (in parsing, authentication, routing, streams or agent runs) are logged on the server and answered as `-32603 Internal error`, without their text. A `CogitatorError` is answered as `-32603 Internal error: <message>`. A task that fails that way gets the status message `Internal error`.
 
@@ -482,6 +681,8 @@ import { a2aExpress } from '@cogitator-ai/a2a/express';
 app.use(a2aExpress(a2aServer));
 ```
 
+A body a parser upstream read (`express.json()`) is taken as it is. Otherwise the router parses `application/json` and `application/a2a+json` itself, up to 1 MiB (`413` above it), also when an Express 4 parser left `{}` on a body it skipped.
+
 ### Hono
 
 ```typescript
@@ -491,6 +692,8 @@ app.route('/', a2aHono(a2aServer));
 
 ### Fastify
 
+The plugin registers a content type parser for `application/a2a+json` and wildcard routes under `restPath`:
+
 ```typescript
 import { a2aFastify } from '@cogitator-ai/a2a/fastify';
 fastify.register(a2aFastify(a2aServer));
@@ -498,7 +701,7 @@ fastify.register(a2aFastify(a2aServer));
 
 ### Koa
 
-The Koa middleware reads `ctx.request.body`, so put a JSON body parser in front of it:
+The Koa middleware takes `ctx.request.body` when a body parser set it, and reads the raw body itself otherwise, up to 1 MiB (so an `application/a2a+json` body a parser skipped, or left as `{}`, works too, and a larger body gets `413`):
 
 ```typescript
 import bodyParser from 'koa-bodyparser';
@@ -510,14 +713,21 @@ app.use(a2aKoa(a2aServer));
 
 ### Next.js
 
-`a2aNext` returns route handlers: `GET` answers with the Agent Card and `POST` with JSON-RPC. In a dynamic `[agent]` route they serve that agent's own card and endpoint:
+`a2aNext` returns route handlers. In a catch-all route they serve every A2A route by the request path, the REST binding and its `DELETE` included:
+
+```typescript
+// app/[[...a2a]]/route.ts
+import { a2aNext } from '@cogitator-ai/a2a/next';
+
+export const { GET, POST, DELETE } = a2aNext(a2aServer);
+```
+
+Exported from fixed routes they keep working as before: `GET` answers with the Agent Card and `POST` with JSON-RPC, and in a dynamic `[agent]` route they serve that agent's own card and endpoint:
 
 ```typescript
 // app/.well-known/agent-card.json/route.ts -> GET
 // app/a2a/route.ts -> POST (the route at basePath)
 // app/a2a/[agent]/route.ts -> POST, app/a2a/[agent]/.well-known/agent-card.json/route.ts -> GET
-import { a2aNext } from '@cogitator-ai/a2a/next';
-
 export const { GET, POST } = a2aNext(a2aServer);
 ```
 
@@ -550,7 +760,7 @@ const a2aServer = new A2AServer({
 });
 ```
 
-`validate` receives the credential and returns `true`, `false` or a caller. Every adapter extracts the credential (`Authorization: Bearer ...`, or the `x-api-key` header or `headerName` for `type: 'apiKey'`) with `a2aServer.getAuthToken()`. A missing or rejected credential is answered with HTTP `401` (and `WWW-Authenticate: Bearer` for bearer auth) and the JSON-RPC error `-32000 Unauthorized`. The Agent Card itself stays public and declares the scheme in `securitySchemes` and `security`.
+`validate` receives the credential and returns `true`, `false` or a caller. Every adapter extracts the credential (`Authorization: Bearer ...`, or the `x-api-key` header or `headerName` for `type: 'apiKey'`) with `a2aServer.getAuthToken()`. A missing or rejected credential is answered with HTTP `401` (and `WWW-Authenticate: Bearer` for bearer auth) and the JSON-RPC error `-32000 Unauthorized`, over 1.0 with an `ErrorInfo` of reason `UNAUTHENTICATED`, and on REST with `status: 'UNAUTHENTICATED'`. The Agent Card itself stays public and declares the scheme in `securitySchemes` and `security`.
 
 ### One caller per user
 
@@ -578,34 +788,41 @@ const client = new A2AClient('https://remote-agent.example.com', {
 
 ## A2A Protocol Methods
 
-| Method                                | Description                                                     |
-| ------------------------------------- | --------------------------------------------------------------- |
-| `message/send`                        | Send a message (blocking, or background with `blocking: false`) |
-| `message/stream`                      | Send a message with SSE streaming                               |
-| `tasks/get`                           | Retrieve a task by id                                           |
-| `tasks/cancel`                        | Cancel a running task                                           |
-| `tasks/resubscribe`                   | Reconnect to the stream of a task                               |
-| `tasks/pushNotificationConfig/set`    | Register a webhook for a task                                   |
-| `tasks/pushNotificationConfig/get`    | Get a webhook config                                            |
-| `tasks/pushNotificationConfig/list`   | List the webhook configs of a task                              |
-| `tasks/pushNotificationConfig/delete` | Remove a webhook config                                         |
-| `agent/getAuthenticatedExtendedCard`  | Fetch the authenticated extended Agent Card                     |
-| `tasks/list`                          | Cogitator extension: list tasks with filters and paging         |
+| A2A 1.0 (`A2A-Version: 1.0`)       | A2A 0.3 (no version)                  | Description                                  |
+| ---------------------------------- | ------------------------------------- | -------------------------------------------- |
+| `SendMessage`                      | `message/send`                        | Send a message (blocking or background)      |
+| `SendStreamingMessage`             | `message/stream`                      | Send a message with SSE streaming            |
+| `GetTask`                          | `tasks/get`                           | Retrieve a task by id                        |
+| `ListTasks`                        | `tasks/list` (Cogitator extension)    | List tasks: cursor pages (1.0), offset (0.3) |
+| `CancelTask`                       | `tasks/cancel`                        | Cancel a running task                        |
+| `SubscribeToTask`                  | `tasks/resubscribe`                   | Reconnect to the stream of a task            |
+| `CreateTaskPushNotificationConfig` | `tasks/pushNotificationConfig/set`    | Register a webhook for a task                |
+| `GetTaskPushNotificationConfig`    | `tasks/pushNotificationConfig/get`    | Get a webhook config                         |
+| `ListTaskPushNotificationConfigs`  | `tasks/pushNotificationConfig/list`   | List the webhook configs of a task           |
+| `DeleteTaskPushNotificationConfig` | `tasks/pushNotificationConfig/delete` | Remove a webhook config                      |
+| `GetExtendedAgentCard`             | `agent/getAuthenticatedExtendedCard`  | Fetch the authenticated extended Agent Card  |
 
 ## Error Codes
 
-| Code     | Meaning                                                        |
-| -------- | -------------------------------------------------------------- |
-| `-32700` | Parse error                                                    |
-| `-32600` | Invalid request, also a message for a task that can't take one |
-| `-32601` | Method not found                                               |
-| `-32602` | Invalid params, also an unknown agent name                     |
-| `-32603` | Internal error                                                 |
-| `-32001` | Task not found                                                 |
-| `-32002` | Task cannot be canceled                                        |
-| `-32004` | Unsupported operation                                          |
-| `-32007` | Authenticated Extended Card not configured                     |
-| `-32000` | Cogitator: missing or rejected credentials (HTTP 401)          |
+| Code     | Meaning                                    | REST status | Notes                                                  |
+| -------- | ------------------------------------------ | ----------- | ------------------------------------------------------ |
+| `-32700` | Parse error                                | 400         |                                                        |
+| `-32600` | Invalid request                            | 400         | 0.3: also a message for a task that can't take one     |
+| `-32601` | Method not found                           | 404         | REST: a route that names no method                     |
+| `-32602` | Invalid params, also an unknown agent      | 400         | 1.0: with a `google.rpc.BadRequest` naming the fields  |
+| `-32603` | Internal error                             | 500         |                                                        |
+| `-32001` | Task not found                             | 404         | 1.0: also a push config that does not exist            |
+| `-32002` | Task cannot be canceled                    | 400         |                                                        |
+| `-32003` | Push notification not supported            | 400         |                                                        |
+| `-32004` | Unsupported operation                      | 400         | 1.0: a message to, or a subscription of, an ended task |
+| `-32005` | Content type not supported                 | 400         |                                                        |
+| `-32006` | Invalid agent response                     | 500         |                                                        |
+| `-32007` | Authenticated Extended Card not configured | 400         |                                                        |
+| `-32008` | Extension support required                 | 400         | A required extension the request did not ask for       |
+| `-32009` | Version not supported                      | 400         | `ErrorInfo` metadata lists the supported versions      |
+| `-32000` | Cogitator: missing or rejected credentials | 401         |                                                        |
+
+Over A2A 1.0, `error.data` is a list of `google.rpc` details: an `ErrorInfo` (`reason` such as `TASK_NOT_FOUND`, `domain: 'a2a-protocol.org'`, the details of the error as string `metadata`) and, for invalid params, a `BadRequest` with its `fieldViolations`. REST answers the same details in `{ error: { code, status, message, details } }`. Over A2A 0.3 errors keep the form they always had.
 
 ## Task States
 
@@ -621,6 +838,8 @@ const client = new A2AClient('https://remote-agent.example.com', {
 | `rejected`       | Server rejected the task                          |
 
 ## Migrating from earlier versions
+
+With A2A 1.0 on by default, a request without `A2A-Version` and an `A2AClient` set to `protocolVersion: '0.3'` see the server as before. Three defaults changed: the card without a version is the hybrid card (0.3 fields plus `supportedInterfaces`), the REST binding is served under `<basePath>/rest`, and `A2AClient` speaks 1.0 to a server that offers it. `protocolVersions: ['0.3']` on the server and `protocolVersion: '0.3'` on the client turn all three off, `restPath: false` the REST binding alone.
 
 Earlier versions of this package spoke their own dialect, which A2A v0.3 clients and servers did not understand. The wire format now follows the specification:
 

@@ -6,3 +6,4 @@ coverage
 .turbo
 packages/gauntlet/reports
 packages/models/src/data/litellm-snapshot.json
+packages/app-server/src/client/generated.ts

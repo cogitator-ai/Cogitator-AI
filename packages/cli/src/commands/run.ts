@@ -3,7 +3,9 @@
  */
 
 import { Command } from 'commander';
-import { resolve } from 'node:path';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import chalk from 'chalk';
 import { log, printBanner } from '../utils/logger.js';
@@ -13,6 +15,14 @@ import { experimental_mcpConnector } from '@cogitator-ai/mcp';
 import type { CogitatorConfig } from '@cogitator-ai/types';
 import { listOllamaModels, resolveOllamaUrl } from '../utils/ollama.js';
 import { findConfig, loadRunConfig, type RunConfig } from '../utils/run-config.js';
+import {
+  claimStdout,
+  headlessPlan,
+  withSessionStore,
+  type HeadlessFlags,
+  type HeadlessPlan,
+} from '../utils/headless.js';
+import { runHeadless } from './headless.js';
 
 /**
  * The config with an MCP connector for the servers of plugins, when it has plugins and names no
@@ -27,11 +37,17 @@ export function withPluginServers(config: CogitatorConfig): CogitatorConfig {
 export { findConfig, loadRunConfig };
 export type { RunConfig };
 
-interface RunOptions {
+interface RunOptions extends HeadlessFlags {
   config?: string;
   model?: string;
   interactive?: boolean;
   stream: boolean;
+}
+
+/** The version of the CLI, as its package.json has it */
+export function cliVersion(): string {
+  const path = join(dirname(fileURLToPath(import.meta.url)), '../../package.json');
+  return (JSON.parse(readFileSync(path, 'utf-8')) as { version: string }).version;
 }
 
 const PREFERRED_OLLAMA_MODELS = [
@@ -46,7 +62,7 @@ const PREFERRED_OLLAMA_MODELS = [
 
 const AGENT_INSTRUCTIONS = 'You are a helpful AI assistant. Respond concisely and accurately.';
 
-function createCliAgent(model: string): Agent {
+export function createCliAgent(model: string): Agent {
   return new Agent({
     id: 'cli-agent',
     name: 'CLI Agent',
@@ -198,6 +214,100 @@ async function runInteractive(cog: Cogitator, initialModel: string, stream: bool
   }
 }
 
+/** The runtime config and the model a run uses: the flags, the config file, else Ollama's models */
+export async function resolveRunRuntime(options: {
+  config?: string;
+  model?: string;
+}): Promise<{ config: CogitatorConfig; model: string }> {
+  const configPath = findConfig(options.config);
+  if (options.config && !configPath) {
+    throw new CommandError(`Config file not found: ${resolve(options.config)}`);
+  }
+  if (!options.config && process.env.COGITATOR_CONFIG && !configPath) {
+    throw new CommandError(
+      `COGITATOR_CONFIG points to a missing file: ${process.env.COGITATOR_CONFIG}`
+    );
+  }
+
+  let loaded: RunConfig;
+  try {
+    loaded = loadRunConfig(configPath);
+  } catch (error) {
+    throw new CommandError(
+      `Failed to load config: ${error instanceof Error ? error.message : error}`
+    );
+  }
+  const { config } = loaded;
+  if (configPath && loaded.kind === 'assistant') {
+    log.dim(
+      `Using the model of assistant config ${configPath} (run the assistant itself with "cogitator up")`
+    );
+  } else if (configPath) {
+    log.dim(`Using config: ${configPath}`);
+  }
+
+  let model = resolveRunModel(options.model, process.env, config, loaded.model);
+
+  if (!model) {
+    const ollama = config.llm?.providers?.ollama;
+    const baseUrl = resolveOllamaUrl(process.env, ollama?.baseUrl);
+    model = (await detectOllamaModel(baseUrl, ollama?.apiKey, ollama?.headers)) ?? undefined;
+    if (!model) {
+      throw new CommandError('No model specified and no Ollama models found', {
+        hints: [
+          'Use -m to specify a model, e.g.: cogitator run -m ollama/qwen3:8b "Hello"',
+          'Or set COGITATOR_MODEL / llm.defaultModel in cogitator.yml',
+          'Or start Ollama and pull a model: ollama pull qwen3:8b',
+        ],
+      });
+    }
+    log.dim(`Auto-detected model: ${model}`);
+  }
+
+  return { config, model };
+}
+
+/** `cogitator run -p`: protocol output alone on stdout, sessions kept unless asked not to */
+async function runPrint(
+  message: string | undefined,
+  options: RunOptions,
+  plan: HeadlessPlan
+): Promise<void> {
+  const stdout = claimStdout();
+  try {
+    const { config, model } = await resolveRunRuntime(options);
+    const stored = withSessionStore(config, plan.persistSessions);
+    if (
+      stored.memory?.adapter === 'sqlite' &&
+      stored.memory.sqlite?.path &&
+      !config.memory?.adapter
+    ) {
+      mkdirSync(dirname(stored.memory.sqlite.path), { recursive: true });
+    }
+    const cogitator = new Cogitator(withPluginServers(stored));
+    try {
+      process.exitCode = await runHeadless({
+        cogitator,
+        agent: createCliAgent(model),
+        plan,
+        ...(message !== undefined && { message }),
+        io: {
+          stdout,
+          stderr: process.stderr,
+          stdin: process.stdin,
+          stdinIsTTY: process.stdin.isTTY === true,
+        },
+        version: cliVersion(),
+      });
+    } finally {
+      await cogitator.close().catch(() => {});
+    }
+  } finally {
+    await stdout.drained();
+    stdout.restore();
+  }
+}
+
 export const runCommand = new Command('run')
   .description('Run agent with a message')
   .argument('[message]', 'Message to send to agent')
@@ -206,60 +316,36 @@ export const runCommand = new Command('run')
   .option('-i, --interactive', 'Interactive mode')
   .option('-s, --stream', 'Stream response tokens', true)
   .option('--no-stream', 'Disable streaming')
+  .option('-p, --print', 'Run without a terminal: print the answer and exit (headless)')
+  .option('--output-format <format>', 'With -p: text (default), json or stream-json')
+  .option('--input-format <format>', 'With -p: text (default) or stream-json lines on stdin')
+  .option('--resume <session-id>', 'With -p: continue a kept session')
+  .option('--fork', 'With -p and --resume: continue in a new session forked from it')
+  .option('--session-id <id>', 'With -p: the id of the new session')
+  .option('--json-schema <schema>', 'With -p: JSON Schema (inline or a file) the answer must match')
+  .option('--no-session-persistence', 'With -p: keep the session in this process only')
   .addHelpText(
     'after',
     examplesHelp([
       ['cogitator run "What is RAG?"', 'one answer from the default model'],
       ['cogitator run -m ollama/qwen3.5:4b -i', 'chat with a local model'],
       ['cogitator run -c cogitator.yml --no-stream "Hi"', 'print the whole answer at once'],
+      ['cogitator run -p "Name 3 colors" --output-format json', 'one JSON result, for scripts'],
+      ['git diff | cogitator run -p "Review this"', 'the prompt from stdin'],
+      [
+        'cogitator run -p --input-format stream-json --output-format stream-json',
+        'many turns as NDJSON on stdin and stdout',
+      ],
+      ['cogitator run -p --resume <id> --fork "Try again"', 'branch off a kept session'],
     ])
   )
   .action(async (message: string | undefined, options: RunOptions) => {
-    const configPath = findConfig(options.config);
-    if (options.config && !configPath) {
-      throw new CommandError(`Config file not found: ${resolve(options.config)}`);
+    const plan = headlessPlan(options);
+    if (plan) {
+      await runPrint(message, options, plan);
+      return;
     }
-    if (!options.config && process.env.COGITATOR_CONFIG && !configPath) {
-      throw new CommandError(
-        `COGITATOR_CONFIG points to a missing file: ${process.env.COGITATOR_CONFIG}`
-      );
-    }
-
-    let loaded: RunConfig;
-    try {
-      loaded = loadRunConfig(configPath);
-    } catch (error) {
-      throw new CommandError(
-        `Failed to load config: ${error instanceof Error ? error.message : error}`
-      );
-    }
-    const { config } = loaded;
-    if (configPath && loaded.kind === 'assistant') {
-      log.dim(
-        `Using the model of assistant config ${configPath} (run the assistant itself with "cogitator up")`
-      );
-    } else if (configPath) {
-      log.dim(`Using config: ${configPath}`);
-    }
-
-    let model = resolveRunModel(options.model, process.env, config, loaded.model);
-
-    if (!model) {
-      const ollama = config.llm?.providers?.ollama;
-      const baseUrl = resolveOllamaUrl(process.env, ollama?.baseUrl);
-      model = (await detectOllamaModel(baseUrl, ollama?.apiKey, ollama?.headers)) ?? undefined;
-      if (!model) {
-        throw new CommandError('No model specified and no Ollama models found', {
-          hints: [
-            'Use -m to specify a model, e.g.: cogitator run -m ollama/qwen3:8b "Hello"',
-            'Or set COGITATOR_MODEL / llm.defaultModel in cogitator.yml',
-            'Or start Ollama and pull a model: ollama pull qwen3:8b',
-          ],
-        });
-      }
-      log.dim(`Auto-detected model: ${model}`);
-    }
-
+    const { config, model } = await resolveRunRuntime(options);
     const cog = new Cogitator(withPluginServers(config));
 
     if (options.interactive || !message) {

@@ -76,7 +76,9 @@ describeE2E('A2A: Task Lifecycle', () => {
     );
     expect(task.status.state).toBe('completed');
 
-    await expect(client.continueTask(task.id, 'Again')).rejects.toMatchObject({ code: -32600 });
+    await expect(client.continueTask(task.id, 'Again')).rejects.toMatchObject({ code: -32004 });
+    const legacy = new A2AClient(testServer.url, { protocolVersion: '0.3' });
+    await expect(legacy.continueTask(task.id, 'Again')).rejects.toMatchObject({ code: -32600 });
   });
 
   it('returns error for unknown task ID', async () => {

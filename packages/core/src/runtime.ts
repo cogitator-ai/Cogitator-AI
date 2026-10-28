@@ -77,6 +77,9 @@ import type {
   RunHandle,
   RunInterrupt,
   StartOptions,
+  StartResumeOptions,
+  CogitatorListThreadsOptions,
+  ThreadPage,
   PermissionClassifier,
   PermissionDecision,
   PermissionDecisionEvent,
@@ -347,7 +350,13 @@ import { CommandFinder, type CommandCatalog } from './subagents/catalog';
 import { commandInvocation, expandCommand } from './commands/expand';
 import { definitionFileOptions } from './subagents/definitions';
 import type { HookModelAsker, HooksMiddlewareDeps } from './hooks/middleware';
-import { answersUnder, isDelegatePause, nestApprovals, nestInterrupts } from './subagents/delegate';
+import {
+  answersUnder,
+  delegatedStream,
+  isDelegatePause,
+  nestApprovals,
+  nestInterrupts,
+} from './subagents/delegate';
 import { parseKeptTodos, TODOS_METADATA_KEY, type KeptTodos } from './tools/write-todos';
 import { createSpan, getTextContent } from './cogitator/span-factory';
 import {
@@ -1250,30 +1259,40 @@ export class Cogitator implements ToolInvoker {
     target: RunCheckpoint | string,
     ...[options = {}]: ResumeArgs<TDeps>
   ): Promise<RunResult> {
-    if (typeof target !== 'string' && target.status === 'running') {
-      throw new CogitatorError({
-        message: `Run ${target.runId} did not pause: it is a durable run left running, recover it with recoverRun()`,
-        code: ErrorCode.VALIDATION_ERROR,
-      });
-    }
-    if (typeof target !== 'string' && target.version !== 1) {
-      throw new CogitatorError({
-        message: `Unsupported run checkpoint version: ${String(target.version)}`,
-        code: ErrorCode.VALIDATION_ERROR,
-      });
-    }
-    const { decisions = {}, defaultDecision, responses, userId, ...rest } = options;
-    const threadId = typeof target === 'string' ? target : target.threadId;
-    return this.launch(
+    const resumed = resumeLaunch(target, options);
+    return this.launch(agent, resumed.options, resumed.from);
+  }
+
+  /**
+   * {@link resume} with a handle, as {@link start} gives one: the resumed run takes steering,
+   * follow-up and injected messages while it goes on, and stops with `abort()`. The handle's
+   * `result` is what `resume()` returns.
+   *
+   * @throws CogitatorError (`VALIDATION_ERROR`) at once for a checkpoint `resume()` refuses: a
+   * durable run left running, or an unsupported checkpoint version
+   *
+   * @example
+   * ```ts
+   * const handle = cog.startResume(agent, threadId, { defaultDecision: { approved: true } });
+   * handle.steer('Use the staging database');
+   * const result = await handle.result;
+   * ```
+   */
+  startResume<TDeps = unknown>(
+    agent: Agent<TDeps>,
+    target: RunCheckpoint | string,
+    ...[options = {}]: StartResumeArgs<TDeps>
+  ): RunHandle & Required<Pick<RunHandle, 'setPermissionMode'>> {
+    const { queue, onRefusedMessage, ...rest } = options;
+    const resumed = resumeLaunch(target, rest);
+    return this.startWith(
       agent,
-      { ...rest, input: '', threadId, ...(userId !== undefined && { userId }) },
       {
-        ...(typeof target === 'string' ? {} : { checkpoint: target }),
-        decisions,
-        ...(defaultDecision && { defaultDecision }),
-        ...(responses && { responses }),
-        checkUser: typeof target === 'string' || userId !== undefined,
-      }
+        ...resumed.options,
+        ...(queue && { queue }),
+        ...(onRefusedMessage && { onRefusedMessage }),
+      },
+      resumed.from
     );
   }
 
@@ -4301,6 +4320,13 @@ export class Cogitator implements ToolInvoker {
                         conversation: () => messages,
                         ...(options.onApproval && { onApproval: options.onApproval }),
                         depth: budgetAncestors.length,
+                        ...(options.onDelegatedRun && {
+                          stream: delegatedStream(options.onDelegatedRun, {
+                            parentToolCallId: toolCall.id,
+                            parentRunId: runId,
+                            depth: budgetAncestors.length + 1,
+                          }),
+                        }),
                         ...(resumed?.children?.has(toolCall.id) && {
                           resume: resumed.children.get(toolCall.id),
                         }),
@@ -8219,6 +8245,105 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
+   * The threads of the memory a page at a time, as `MemoryAdapter.listThreads` lists them, and by
+   * archive state with `archived` (see {@link archiveThread}): `true` for archived threads only,
+   * `false` for the others. With `archived: false` a page may hold fewer threads than `limit`, the
+   * archived ones left out, and an adapter page holding archived threads only is skipped, so a
+   * page comes back empty only at the end of the listing.
+   *
+   * @throws CogitatorError (`VALIDATION_ERROR`) when no memory is configured, `INTERNAL_ERROR`
+   * when the adapter refuses the listing (a bad cursor or limit) or fails
+   */
+  async listThreads(options: CogitatorListThreadsOptions = {}): Promise<ThreadPage> {
+    const memory = await this.threadMemory('listThreads');
+    const { archived, ...listing } = options;
+    if (archived === undefined) return unwrapMemory(await memory.listThreads(listing));
+    if (archived) {
+      return unwrapMemory(
+        await memory.listThreads({
+          ...listing,
+          metadata: { ...listing.metadata, [ARCHIVED_KEY]: true },
+        })
+      );
+    }
+    let cursor = listing.cursor;
+    for (;;) {
+      const page = unwrapMemory(
+        await memory.listThreads({ ...listing, ...(cursor !== undefined && { cursor }) })
+      );
+      const threads = page.threads.filter((thread) => !isArchived(thread));
+      if (threads.length > 0 || page.nextCursor === undefined) {
+        return { threads, ...(page.nextCursor !== undefined && { nextCursor: page.nextCursor }) };
+      }
+      cursor = page.nextCursor;
+    }
+  }
+
+  /**
+   * Archives `threadId`: its metadata gets `archived: true` and `archivedAt` (an ISO time), so
+   * `listThreads({ archived: false })` leaves it out. Nothing else changes, the thread can still
+   * be read and run on. A thread archived already stays as it is.
+   *
+   * @throws CogitatorError (`THREAD_BUSY`) while a run of this runtime goes on in the thread,
+   * (`VALIDATION_ERROR`) when no memory is configured or the thread does not exist
+   */
+  async archiveThread(threadId: string): Promise<Thread> {
+    return this.setArchived(threadId, true);
+  }
+
+  /**
+   * Takes `threadId` out of the archive: `archived: false` and `archivedAt: null` in its metadata.
+   * A thread not archived stays as it is. Refused as by {@link archiveThread}
+   */
+  async unarchiveThread(threadId: string): Promise<Thread> {
+    return this.setArchived(threadId, false);
+  }
+
+  private async setArchived(threadId: string, archived: boolean): Promise<Thread> {
+    const method = archived ? 'archiveThread' : 'unarchiveThread';
+    const memory = await this.threadMemory(method);
+    const releaseThread = await this.threadRuns.lock(threadId);
+    try {
+      const going = this.threadRuns.active(threadId);
+      if (going.count > 0) {
+        throw new CogitatorError({
+          message: `Thread ${threadId} has a run going on: ${archived ? 'archive' : 'unarchive'} it once the run ends`,
+          code: ErrorCode.THREAD_BUSY,
+          details: { threadId, runIds: going.runIds },
+        });
+      }
+      const thread = unwrapMemory(await memory.getThread(threadId));
+      if (!thread) {
+        throw new CogitatorError({
+          message: `Thread ${threadId} does not exist`,
+          code: ErrorCode.VALIDATION_ERROR,
+          details: { threadId },
+        });
+      }
+      if (isArchived(thread) === archived) return thread;
+      return unwrapMemory(
+        await memory.updateThread(threadId, {
+          [ARCHIVED_KEY]: archived,
+          [ARCHIVED_AT_KEY]: archived ? new Date().toISOString() : null,
+        })
+      );
+    } finally {
+      releaseThread();
+    }
+  }
+
+  private async threadMemory(method: string): Promise<MemoryAdapter> {
+    const memory = await this.getMemory();
+    if (!memory) {
+      throw new CogitatorError({
+        message: `${method} needs memory: set memory.adapter in the Cogitator config`,
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
+    return memory;
+  }
+
+  /**
    * Refuses a rewind or a fork a tool call asked for of a run it would have to stop: one of the
    * thread's runs, or of `inWorkspace` (the runs of the workspace it restores). Stopping that run
    * would wait for the tool call, which waits for the rewind
@@ -8965,6 +9090,56 @@ type RecoverArgs<TDeps> = unknown extends TDeps
 type ResumeArgs<TDeps> = unknown extends TDeps
   ? [options?: ResumeOptions]
   : [options: ResumeOptions<TDeps> & { deps: TDeps }];
+
+/** The thread metadata key `archiveThread()` sets, which `listThreads({ archived })` reads */
+const ARCHIVED_KEY = 'archived';
+const ARCHIVED_AT_KEY = 'archivedAt';
+
+function isArchived(thread: Thread): boolean {
+  return thread.metadata[ARCHIVED_KEY] === true;
+}
+
+/** The options of `startResume()`, see {@link ResumeArgs} */
+type StartResumeArgs<TDeps> = unknown extends TDeps
+  ? [options?: StartResumeOptions]
+  : [options: StartResumeOptions<TDeps> & { deps: TDeps }];
+
+/**
+ * The run options and the resume a resumed run launches with: from `target`, a checkpoint or the
+ * thread whose paused run goes on, and the decisions and answers of `options`
+ *
+ * @throws CogitatorError (`VALIDATION_ERROR`) for a durable run left running, which
+ * `recoverRun()` continues, or a checkpoint version this runtime cannot read
+ */
+function resumeLaunch(
+  target: RunCheckpoint | string,
+  options: ResumeOptions
+): { options: RunOptions; from: ResumeFrom } {
+  if (typeof target !== 'string' && target.status === 'running') {
+    throw new CogitatorError({
+      message: `Run ${target.runId} did not pause: it is a durable run left running, recover it with recoverRun()`,
+      code: ErrorCode.VALIDATION_ERROR,
+    });
+  }
+  if (typeof target !== 'string' && target.version !== 1) {
+    throw new CogitatorError({
+      message: `Unsupported run checkpoint version: ${String(target.version)}`,
+      code: ErrorCode.VALIDATION_ERROR,
+    });
+  }
+  const { decisions = {}, defaultDecision, responses, userId, ...rest } = options;
+  const threadId = typeof target === 'string' ? target : target.threadId;
+  return {
+    options: { ...rest, input: '', threadId, ...(userId !== undefined && { userId }) },
+    from: {
+      ...(typeof target === 'string' ? {} : { checkpoint: target }),
+      decisions,
+      ...(defaultDecision && { defaultDecision }),
+      ...(responses && { responses }),
+      checkUser: typeof target === 'string' || userId !== undefined,
+    },
+  };
+}
 
 /** The options of `invokeTool()`: optional, unless the tool reads typed `deps`. */
 type InvocationArgs<TDeps> = unknown extends TDeps
