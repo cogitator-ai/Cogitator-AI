@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/voice",
-  "version": "0.10.9",
+  "version": "0.10.10",
   "description": "Voice/Realtime agent capabilities for Cogitator",
   "keywords": [
     "cogitator",
@@ -44,7 +44,7 @@
     "zod": "^4.6.5"
   },
   "peerDependencies": {
-    "@cogitator-ai/core": "workspace:>=0.72.0",
+    "@cogitator-ai/core": "workspace:>=0.73.0",
     "openai": "^6.0.0 || ^7.0.0"
   },
   "peerDependenciesMeta": {
