@@ -11,7 +11,7 @@ import type {
   TaskPushNotificationConfig,
   TextPart,
 } from './types.js';
-import { A2AError, invalidParams } from './errors.js';
+import { A2AError, invalidParams, type FieldViolation } from './errors.js';
 
 const metadataSchema = z.record(z.string(), z.unknown());
 
@@ -133,9 +133,33 @@ function describeIssues(error: z.ZodError): string {
     .join('; ');
 }
 
+/** The path of a field as `google.rpc.BadRequest` names it: `message.parts[0].text`. */
+function fieldPath(path: readonly PropertyKey[]): string {
+  return path.reduce<string>((field, segment) => {
+    if (typeof segment === 'number') return `${field}[${segment}]`;
+    const name = String(segment);
+    return field ? `${field}.${name}` : name;
+  }, '');
+}
+
+/** The fields a Zod error rejects, one violation per issue. */
+export function fieldViolations(error: z.ZodError): FieldViolation[] {
+  return error.issues.map((issue) => ({
+    field: fieldPath(issue.path),
+    description: issue.message,
+  }));
+}
+
+/** An `InvalidParamsError` for a Zod error, with the fields it rejects. */
+export function invalidParamsError(error: z.ZodError): A2AError {
+  return new A2AError(invalidParams(describeIssues(error)), {
+    fieldViolations: fieldViolations(error),
+  });
+}
+
 function parseParams<T extends z.ZodType>(schema: T, params: unknown): z.output<T> {
   const parsed = schema.safeParse(params ?? {});
-  if (!parsed.success) throw new A2AError(invalidParams(describeIssues(parsed.error)));
+  if (!parsed.success) throw invalidParamsError(parsed.error);
   return parsed.data;
 }
 

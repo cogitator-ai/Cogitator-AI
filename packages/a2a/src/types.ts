@@ -1,3 +1,4 @@
+import type { JsonWebKey, KeyObject } from 'node:crypto';
 import type {
   Agent,
   RunCheckpoint,
@@ -5,9 +6,17 @@ import type {
   ToolApprovalDecision,
   ToolApprovalRequest,
 } from '@cogitator-ai/types';
+import type { A2AProtocolVersion } from './version.js';
+import type { V1AgentInterface } from './v1/types.js';
 
-/** The A2A protocol version this package speaks, as Agent Cards declare it. */
+/** The A2A 0.3 protocol version, as the `protocolVersion` of an A2A 0.3 Agent Card declares it. */
 export const A2A_PROTOCOL_VERSION = '0.3.0';
+
+/** The A2A 1.0 protocol version, as the interfaces of an Agent Card declare it. */
+export const A2A_V1_PROTOCOL_VERSION = '1.0';
+
+/** Where a Cogitator server publishes the public keys its Agent Cards are signed with. */
+export const JWKS_PATH = '/.well-known/jwks.json';
 
 /** Where an A2A server publishes its Agent Card (A2A v0.3, section 5.3). */
 export const AGENT_CARD_PATH = '/.well-known/agent-card.json';
@@ -154,6 +163,10 @@ export interface OAuthFlow {
   tokenUrl?: string;
   refreshUrl?: string;
   scopes: Record<string, string>;
+  /** A2A 1.0: the device authorization endpoint of the `deviceCode` flow */
+  deviceAuthorizationUrl?: string;
+  /** A2A 1.0: the `authorizationCode` flow requires PKCE */
+  pkceRequired?: boolean;
 }
 
 export type SecurityScheme =
@@ -161,8 +174,12 @@ export type SecurityScheme =
   | { type: 'http'; scheme: string; bearerFormat?: string; description?: string }
   | {
       type: 'oauth2';
+      /** `deviceCode` exists only in A2A 1.0 */
       flows: Partial<
-        Record<'authorizationCode' | 'clientCredentials' | 'implicit' | 'password', OAuthFlow>
+        Record<
+          'authorizationCode' | 'clientCredentials' | 'deviceCode' | 'implicit' | 'password',
+          OAuthFlow
+        >
       >;
       oauth2MetadataUrl?: string;
       description?: string;
@@ -206,6 +223,11 @@ export interface AgentCard {
   skills: AgentSkill[];
   supportsAuthenticatedExtendedCard?: boolean;
   signatures?: AgentCardSignature[];
+  /**
+   * Every interface of the agent with its protocol version, as A2A 1.0 lists them. A Cogitator
+   * server adds them to the A2A 0.3 card, so a client of either version finds its endpoint.
+   */
+  supportedInterfaces?: V1AgentInterface[];
 }
 
 /** The card `agent/getAuthenticatedExtendedCard` returns: an Agent Card with more detail. */
@@ -225,6 +247,12 @@ export interface PushNotificationConfig {
   /** Sent back in the `X-A2A-Notification-Token` header so the webhook can check the sender */
   token?: string;
   authentication?: PushNotificationAuthenticationInfo;
+  /**
+   * Set by the server: the protocol version the config was registered with, which decides the
+   * payload of the webhook calls (`{ task }` as `application/a2a+json` for 1.0). Never sent to
+   * clients, and absent on configs registered over A2A 0.3.
+   */
+  protocolVersion?: A2AProtocolVersion;
 }
 
 export interface TaskPushNotificationConfig {
@@ -431,10 +459,26 @@ export interface A2AServerConfig {
   auth?: A2AAuthConfig;
   pushNotificationStore?: PushNotificationStore;
   /**
-   * Signs every Agent Card with a JWS (HMAC SHA-256, `HS256`) in its `signatures`, which a client
-   * holding the shared secret checks with `verifyAgentCardSignature`
+   * Signs every Agent Card with a JWS in its `signatures`: with a private key (ES256, RS256,
+   * PS256 or EdDSA) over the JCS of the card's A2A 1.0 form, which any A2A 1.0 client verifies
+   * with the public key, or (deprecated) with a shared HMAC secret.
    */
-  cardSigning?: { algorithm?: 'HS256' | 'hmac-sha256'; secret: string };
+  cardSigning?: AgentCardSigningConfig | LegacyCardSigningConfig;
+  /**
+   * The protocol versions the server speaks (default: both, `['1.0', '0.3']`). A request names
+   * its version in the `A2A-Version` header, and one without it speaks 0.3.
+   */
+  protocolVersions?: readonly A2AProtocolVersion[];
+  /**
+   * Path of the A2A 1.0 HTTP+JSON (REST) binding the framework adapters serve, relative to
+   * where they are mounted (default: `<basePath>/rest`). `false` turns it off.
+   */
+  restPath?: string | false;
+  /**
+   * Extensions the agents support besides the built-in Cogitator ones, declared in their cards.
+   * A message without a `required` one in its `A2A-Extensions` header is refused (-32008).
+   */
+  extensions?: AgentExtension[];
   extendedCardGenerator?: (agentName: string) => AgentCard;
   allowPrivateUrls?: boolean;
   /**
@@ -450,6 +494,29 @@ export interface A2AServerConfig {
    * shorten a run: its timeout is capped by the agent's `timeout`, or by this value.
    */
   maxRunTimeoutMs?: number;
+}
+
+/** The JWS algorithms a Cogitator server signs Agent Cards with. */
+export type AgentCardSigningAlgorithm = 'ES256' | 'RS256' | 'PS256' | 'EdDSA';
+
+/** Signing of Agent Cards with a private key (A2A 1.0, section 8.4). */
+export interface AgentCardSigningConfig {
+  /** ES256 takes a P-256 key, RS256 and PS256 an RSA key, EdDSA an Ed25519 or Ed448 key */
+  alg: AgentCardSigningAlgorithm;
+  /** The private key: PEM, a private JWK, or a `KeyObject` */
+  privateKey: string | JsonWebKey | KeyObject;
+  /** The key id clients look the public key up by (`kid` of the JWS header) */
+  kid: string;
+  /** The URL of the JWKS that holds the public key (`jku` of the JWS header) */
+  jku?: string;
+  /** Serve the public key as a JWKS at `/.well-known/jwks.json` (default: false) */
+  publishJwks?: boolean;
+}
+
+/** @deprecated Signing with a shared HMAC secret: clients need the secret to verify. Use `AgentCardSigningConfig`. */
+export interface LegacyCardSigningConfig {
+  algorithm?: 'HS256' | 'hmac-sha256';
+  secret: string;
 }
 
 export interface PushNotificationStore {
@@ -477,4 +544,16 @@ export interface A2AClientConfig {
    * under in the server's `agents`. The client then uses that agent's own card and endpoint.
    */
   agentName?: string;
+  /**
+   * The protocol version to speak (default: 'auto', A2A 1.0 when the Agent Card offers it, else
+   * 0.3). '1.0' fails against a server without a 1.0 interface, '0.3' keeps to JSON-RPC 0.3.
+   */
+  protocolVersion?: 'auto' | A2AProtocolVersion;
+  /**
+   * The A2A 1.0 binding to use when the card offers both (default: the first the card lists).
+   * A2A 0.3 always goes over JSON-RPC.
+   */
+  transport?: 'JSONRPC' | 'HTTP+JSON';
+  /** Extension URIs to ask for on every request (`A2A-Extensions`, `X-A2A-Extensions` in 0.3) */
+  extensions?: string[];
 }
