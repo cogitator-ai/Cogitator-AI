@@ -201,6 +201,7 @@ describe('app-server', () => {
   it.each([
     ['allow_once', 'completed', 'deployed prod'],
     ['reject_once', 'completed', 'declined'],
+    ['reject_always', 'completed', 'declined'],
   ] as const)('asks approval/request and goes on with %s', async (optionId, status, seen) => {
     const scripted = scriptedBackend([
       callTools([{ id: 'c1', name: 'deploy', arguments: { target: 'prod' } }]),
@@ -224,7 +225,7 @@ describe('app-server', () => {
     const done = await turns.of(turn.id);
     expect(done.status).toBe(status);
     expect(done.output).toBe(seen);
-    expect(asked).toEqual(['deploy:allow_once,allow_always,reject_once']);
+    expect(asked).toEqual(['deploy:allow_once,allow_always,reject_once,reject_always']);
     client.close();
     await host.close();
   });
@@ -239,7 +240,7 @@ describe('app-server', () => {
     client.onRequest(
       'approval/request',
       () =>
-        ({ outcome: { outcome: 'selected', optionId: 'reject_always' } }) as unknown as {
+        ({ outcome: { outcome: 'selected', optionId: 'deny_forever' } }) as unknown as {
           outcome: { outcome: 'cancelled' };
         }
     );

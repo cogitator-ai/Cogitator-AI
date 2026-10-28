@@ -6,6 +6,8 @@ import { MockLLMBackend } from '@cogitator-ai/test-utils';
 import { JsonRpcCallError } from '@cogitator-ai/server-shared';
 import { APP_SERVER_ERROR_CODES } from '../protocol/errors';
 import { SessionHost } from '../host/session-host';
+import type { SessionProvider, SessionProviderTurn } from '../host/provider';
+import type { AppServerNotification } from '../protocol/types';
 import {
   answer,
   callTools,
@@ -829,5 +831,143 @@ describe('SessionHost', () => {
       rewind: false,
     });
     await host.close();
+  });
+});
+
+describe('SessionHost with providers', () => {
+  function providerHost(provider: SessionProvider) {
+    const host = new SessionHost({
+      cogitator: new Cogitator({ memory: { adapter: 'memory' } }),
+      agents: { assistant: new Agent({ name: 'assistant', model: 'mock/m', instructions: 'x' }) },
+      providers: { outside: provider },
+      exposeErrors: true,
+    });
+    const notifications: AppServerNotification[] = [];
+    host.subscribe((notification) => notifications.push(notification));
+    return { host, notifications };
+  }
+
+  it('runs a turn of a provider, keeps its messages and its metadata', async () => {
+    const seen: SessionProviderTurn[] = [];
+    const startModes: string[] = [];
+    const provider: SessionProvider = {
+      description: 'Outside',
+      model: 'x/y',
+      runTurn: async (turn) => {
+        seen.push(turn);
+        turn.emit({ type: 'text-start', id: 't' });
+        turn.emit({ type: 'text-delta', id: 't', delta: 'hi' });
+        turn.emit({ type: 'text-end', id: 't' });
+        await turn.saveMetadata({ session: 's1' });
+        startModes.push(turn.permissionMode());
+        await turn.setPermissionMode('acceptEdits');
+        return { output: 'hi', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 } };
+      },
+    };
+    const { host, notifications } = providerHost(provider);
+    expect(host.agents()).toEqual([
+      { name: 'assistant', model: 'mock/m', default: true },
+      { name: 'outside', description: 'Outside', model: 'x/y', default: false, external: true },
+    ]);
+    const thread = await host.startThread({ agent: 'outside', permissionMode: 'plan' });
+    const turn = await host.startTurn({ threadId: thread.id, input: text('hello'), model: 'x/z' });
+    const done = await completed(notifications, turn.id);
+    expect(done).toMatchObject({
+      status: 'completed',
+      output: 'hi',
+      usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+    });
+    expect(seen[0]).toMatchObject({ threadId: thread.id, model: 'x/z', input: text('hello') });
+    expect(startModes).toEqual(['plan']);
+    const types = notifications.flatMap((n) =>
+      n.method === 'turn/event' && n.params.turnId === turn.id ? [n.params.event.type] : []
+    );
+    expect(types).toEqual(['start', 'text-start', 'text-delta', 'text-end', 'finish']);
+    const resumed = await host.resumeThread(thread.id);
+    expect(resumed.messages.map((m) => [m.role, m.text])).toEqual([
+      ['user', 'hello'],
+      ['assistant', 'hi'],
+    ]);
+    expect(resumed.thread.metadata.session).toBe('s1');
+    expect(resumed.thread.permissionMode).toBe('acceptEdits');
+    expect(seen[0]!.permissionMode()).toBe('acceptEdits');
+    await host.close();
+  });
+
+  it('fails the turn of a provider that throws and refuses what needs the runtime', async () => {
+    const provider: SessionProvider = {
+      runTurn: async () => {
+        throw new Error('agent crashed');
+      },
+    };
+    const { host, notifications } = providerHost(provider);
+    const thread = await host.startThread({ agent: 'outside' });
+    const turn = await host.startTurn({ threadId: thread.id, input: text('x') });
+    expect(await completed(notifications, turn.id)).toMatchObject({
+      status: 'failed',
+      error: { message: 'agent crashed' },
+    });
+    expect(
+      (await rejection(host.startTurn({ threadId: thread.id, input: text('x'), outputSchema: {} })))
+        .code
+    ).toBe(APP_SERVER_ERROR_CODES.invalidParams);
+    expect((await rejection(host.forkThread({ threadId: thread.id }))).message).toMatch(
+      /outside the runtime/
+    );
+    expect((await rejection(host.searchMemory({ query: 'x', agent: 'outside' }))).message).toMatch(
+      /outside the runtime/
+    );
+    await host.close();
+  });
+
+  it('changes the mode of a provider turn going on and interrupts it', async () => {
+    let release: (() => void) | undefined;
+    const modes: string[] = [];
+    const provider: SessionProvider = {
+      runTurn: (turn) =>
+        new Promise((resolve, reject) => {
+          release = () => {
+            modes.push(turn.permissionMode());
+            resolve({ output: 'late' });
+          };
+          turn.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        }),
+    };
+    const { host, notifications } = providerHost(provider);
+    const thread = await host.startThread({ agent: 'outside' });
+    const first = await host.startTurn({ threadId: thread.id, input: text('x') });
+    await waitUntil(() => release !== undefined);
+    await host.setPermissionMode(thread.id, 'acceptEdits');
+    release!();
+    await completed(notifications, first.id);
+    expect(modes).toEqual(['acceptEdits']);
+    release = undefined;
+    const second = await host.startTurn({ threadId: thread.id, input: text('y') });
+    await waitUntil(() => release !== undefined);
+    host.interruptTurn(thread.id, second.id);
+    expect((await completed(notifications, second.id)).status).toBe('interrupted');
+    await host.close();
+  });
+
+  it('deletes a thread and merges metadata without the host keys', async () => {
+    const backend = new MockLLMBackend();
+    const { host } = createTestHost({ backend });
+    const thread = await host.startThread({});
+    const updated = await host.updateThread(thread.id, { title: 'T', agent: 'nope' });
+    expect(updated.metadata).toMatchObject({ title: 'T', agent: 'assistant' });
+    await host.deleteThread(thread.id);
+    expect((await rejection(host.getThread(thread.id))).code).toBe(APP_SERVER_ERROR_CODES.notFound);
+    await host.close();
+  });
+
+  it('refuses a provider named like an agent', () => {
+    expect(
+      () =>
+        new SessionHost({
+          cogitator: new Cogitator({ memory: { adapter: 'memory' } }),
+          agents: { a: new Agent({ name: 'a', model: 'mock/m', instructions: 'x' }) },
+          providers: { a: { runTurn: async () => ({ output: '' }) } },
+        })
+    ).toThrow(/both an agent and a provider/);
   });
 });

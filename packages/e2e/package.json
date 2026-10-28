@@ -12,9 +12,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^2.0.2",
     "@ai-sdk/google": "^4.0.87",
     "@atproto/api": "0.24.0",
     "@cogitator-ai/a2a": "workspace:*",
+    "@cogitator-ai/acp": "workspace:*",
     "@cogitator-ai/ai-sdk": "workspace:*",
     "@cogitator-ai/app-server": "workspace:*",
     "@cogitator-ai/browser": "workspace:*",

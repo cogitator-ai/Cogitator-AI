@@ -207,7 +207,7 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/core',
       title: 'Harness agent',
       summary:
-        'One call assembles a coding or assistant agent: file tools and a shell in a workspace, todos, skills, subagents, AGENTS.md, permissions that ask before edits and commands, and compaction for long sessions. Claude Code plugins add their skills, commands, hooks and MCP servers unchanged.',
+        'One call assembles a coding or assistant agent: file tools and a shell in a workspace, todos, skills, subagents, AGENTS.md, permissions that ask before edits and commands, and compaction for long sessions. Claude Code plugins add their skills, commands, hooks and MCP servers unchanged, and cogitator acp puts the agent in Zed, JetBrains, Neovim or VS Code over the Agent Client Protocol.',
       href: '/docs/core/harness-agent',
       code: harness,
     },

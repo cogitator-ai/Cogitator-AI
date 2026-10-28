@@ -1,0 +1,17 @@
+{
+  "id": "cogitator",
+  "name": "Cogitator",
+  "version": "0.18.0",
+  "description": "Self-hosted coding agent on any model: Ollama, OpenAI, Anthropic, Gemini and more, with permission rules, skills, subagents and MCP",
+  "repository": "https://github.com/cogitator-ai/Cogitator-AI",
+  "website": "https://cogitator.app/docs/integrations/acp",
+  "authors": ["Cogitator AI"],
+  "license": "MIT",
+  "license_url": "https://github.com/cogitator-ai/Cogitator-AI/blob/main/LICENSE",
+  "distribution": {
+    "npx": {
+      "package": "@cogitator-ai/cli@0.18.0",
+      "args": ["acp"]
+    }
+  }
+}

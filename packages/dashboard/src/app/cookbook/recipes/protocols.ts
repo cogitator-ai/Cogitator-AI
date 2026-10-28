@@ -2,10 +2,10 @@ import type { Section } from './types';
 
 export const protocols: Section = {
   id: 'protocols',
-  title: 'MCP & A2A',
+  title: 'MCP, A2A & ACP',
   icon: '🔌',
   description:
-    'Use MCP servers, expose your tools and agents over MCP, and talk to other agents over A2A.',
+    'Use MCP servers, expose your tools and agents over MCP, talk to other agents over A2A, and put your agents in editors over ACP.',
   recipes: [
     {
       id: 'mcp-client',
@@ -546,6 +546,87 @@ await cog.close();`,
         {
           href: '/docs/integrations/a2a',
           label: 'A2A',
+        },
+      ],
+    },
+    {
+      id: 'acp-editor',
+      title: 'Your Agent in Zed over ACP',
+      difficulty: 'medium',
+      time: '10 min',
+      problem:
+        'Your team uses Zed, JetBrains or Neovim. Your Cogitator agent should show up there as a coding agent, with its diffs, terminals and permission questions in the editor.',
+      points: [
+        'A `SessionHost` keeps the sessions as threads, `createAcpAgent()` speaks the Agent Client Protocol over it',
+        'Edits and commands ask in the editor, an "always" answer saves a permission rule',
+        'Files and terminals go through the editor when it offers them',
+      ],
+      file: 'acp-agent.ts',
+      code: `import { Agent, Cogitator, workspaceTools } from '@cogitator-ai/core';
+import { SessionHost } from '@cogitator-ai/app-server';
+import { createAcpAgent, serveAcpStdio } from '@cogitator-ai/acp';
+
+const apiKey = process.env.GOOGLE_API_KEY;
+if (!apiKey) throw new Error('Set GOOGLE_API_KEY');
+
+const cogitator = new Cogitator({
+  llm: { providers: { google: { apiKey } } },
+  memory: { adapter: 'sqlite', sqlite: { path: './sessions.db' } },
+  permissions: {},
+});
+const coder = new Agent({
+  name: 'coder',
+  model: 'google/gemini-3.5-flash-lite',
+  instructions: 'You are a careful coding agent. Read before you edit, keep changes small.',
+  tools: workspaceTools(),
+  todos: true,
+});
+
+const host = new SessionHost({ cogitator, agents: { coder } });
+const acp = createAcpAgent({
+  host,
+  cogitator,
+  agentInfo: { name: 'my-coder', title: 'My coder', version: '1.0.0' },
+});
+
+await serveAcpStdio(acp);
+await host.close();
+await cogitator.close();`,
+      install:
+        'pnpm add @cogitator-ai/acp @cogitator-ai/app-server @cogitator-ai/core better-sqlite3',
+      env: ['GOOGLE_API_KEY'],
+      run: 'GOOGLE_API_KEY=your-key npx tsx acp-agent.ts',
+      runNote:
+        'An editor launches it: in Zed, add it to agent_servers in settings.json with "command": "npx" and "args": ["tsx", "/path/to/acp-agent.ts"]. Run by hand it waits for an editor on stdin.',
+      extra: [
+        {
+          title: 'Zed settings.json, with the CLI instead of your own file',
+          language: 'jsonc',
+          code: `{
+  "agent_servers": {
+    "Cogitator": {
+      "command": "npx",
+      "args": ["-y", "@cogitator-ai/cli", "acp", "-m", "ollama/qwen3:8b"]
+    }
+  }
+}`,
+        },
+      ],
+      notes: [
+        {
+          type: 'tip',
+          text: 'Nothing but the protocol may write to stdout: log to stderr, as `console.error` does.',
+        },
+        {
+          type: 'info',
+          text: 'The other way works too: `AcpAgentProvider` runs Claude Code, Codex or Gemini CLI as agents of your own app-server, their permission requests decided by your rules.',
+        },
+      ],
+      example: 'acp/01-editor-client.ts',
+      docs: [
+        {
+          href: '/docs/integrations/acp',
+          label: 'ACP',
         },
       ],
     },

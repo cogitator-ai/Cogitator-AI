@@ -555,7 +555,7 @@ function forEveryCall(decision: ToolApprovalDecision): ToolApprovalDecision {
 
 /** A decision as a checkpoint keeps it: its rule saved already, so a resume does not save it again */
 function withoutRemember(decision: ToolApprovalDecision): ToolApprovalDecision {
-  if (!decision.approved || decision.remember === undefined) return decision;
+  if (decision.remember === undefined) return decision;
   const { remember: _saved, ...rest } = decision;
   return rest;
 }
@@ -1539,7 +1539,21 @@ export class Cogitator implements ToolInvoker {
       }
       const answer = answeredBy(this.hookDecisions.has(decision), decision);
       if (!decision.approved) {
-        await permissions.record({ ...event(verdict), decision: 'deny', ...answer });
+        const remembered = decision.remember
+          ? await permissions.remember(
+              baseTool,
+              toolCall.arguments,
+              decision.remember,
+              workspace,
+              'deny'
+            )
+          : undefined;
+        await permissions.record({
+          ...event(verdict),
+          decision: 'deny',
+          ...answer,
+          ...(remembered && { remembered }),
+        });
         return withPermission({
           callId: toolCall.id,
           name: tool.name,
@@ -3710,6 +3724,15 @@ export class Cogitator implements ToolInvoker {
               (runArguments.get(toolCall.id) ?? toolCall).arguments,
               decision.remember,
               workspaceOf(active)
+            );
+            if (remembered && event) event = { ...event, remembered };
+          } else if (answered && !decision.approved && decision.remember) {
+            const remembered = await permissions.remember(
+              tool,
+              toolCall.arguments,
+              decision.remember,
+              workspaceOf(active),
+              'deny'
             );
             if (remembered && event) event = { ...event, remembered };
           }
@@ -7013,7 +7036,16 @@ export class Cogitator implements ToolInvoker {
       ...answeredBy(this.hookDecisions.has(decision), decision),
     };
     if (!decision.approved) {
-      await permissions.record(answered);
+      const remembered = decision.remember
+        ? await permissions.remember(
+            tool,
+            toolCall.arguments,
+            decision.remember,
+            call.workspace,
+            'deny'
+          )
+        : undefined;
+      await permissions.record({ ...answered, ...(remembered && { remembered }) });
       return {
         allowed: false,
         reason: `the user declined the arguments a middleware changed the call to${decision.reason ? `: ${decision.reason}` : ''}`,

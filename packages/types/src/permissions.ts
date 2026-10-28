@@ -57,7 +57,7 @@ export const PERMISSION_LAYERS: readonly PermissionLayer[] = [
   'user',
 ];
 
-/** The layers an "always allow" answer can save its rule to */
+/** The layers an "always allow" or "always reject" answer can save its rule to */
 export type PermissionRememberLayer = 'session' | 'local' | 'project' | 'user';
 
 /**
@@ -185,8 +185,11 @@ export interface PermissionDecisionEvent extends PermissionDecision {
   toolName: string;
   /** The arguments the call runs with, when an approval changed them */
   updatedArguments?: Record<string, unknown>;
-  /** The rule an "always allow" answer saved, and where */
-  remembered?: { rule: string; layer: PermissionRememberLayer };
+  /**
+   * The rule an "always allow" answer saved, and where: an allow rule, or a deny rule for an
+   * "always reject" answer (`behavior: 'deny'`)
+   */
+  remembered?: { rule: string; layer: PermissionRememberLayer; behavior?: 'allow' | 'deny' };
 }
 
 /** What a classifier of `auto` mode reads about a call */

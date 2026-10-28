@@ -6,7 +6,9 @@
   "dependencies": {
     "@ag-ui/client": "1.0.3",
     "@ai-sdk/provider": "^4.0.21",
+    "@agentclientprotocol/sdk": "^2.0.2",
     "@cogitator-ai/a2a": "workspace:*",
+    "@cogitator-ai/acp": "workspace:*",
     "@cogitator-ai/ai-sdk": "workspace:*",
     "@cogitator-ai/app-server": "workspace:*",
     "@cogitator-ai/browser": "workspace:*",
