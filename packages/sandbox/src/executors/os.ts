@@ -87,20 +87,19 @@ export class OsSandboxExecutor extends BaseSandboxExecutor {
     if (policy.enabled === false) {
       return this.failure('The os sandbox policy is disabled (enabled: false): refusing to run');
     }
-    let sandbox: OsSandbox;
-    try {
-      sandbox = this.sandboxFor(policy);
-      await sandbox.start();
-    } catch (error) {
-      return this.failure(error instanceof Error ? error.message : String(error));
-    }
-
     const given = resolve(config.workdir ?? process.cwd());
     const root = await realpath(given).catch(() => given);
     if (root === parse(root).root) {
       return this.failure(
         `The writable root of the os sandbox would be ${root}: set the sandbox workdir to a project directory`
       );
+    }
+    let sandbox: OsSandbox;
+    try {
+      sandbox = this.sandboxFor(policy);
+      await sandbox.start();
+    } catch (error) {
+      return this.failure(error instanceof Error ? error.message : String(error));
     }
     const cwd = request.cwd ? resolve(root, request.cwd) : root;
     const single = request.command.length === 1;
