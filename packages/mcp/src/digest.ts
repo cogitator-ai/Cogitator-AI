@@ -13,7 +13,8 @@ export function callDigest(tool: string, args: unknown): string {
     .digest('base64url');
 }
 
-function stableJson(value: unknown): string {
+/** JSON of `value` with object keys in order, the same for equal values */
+export function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   if (typeof value === 'object' && value !== null) {
     const entries = Object.entries(value)

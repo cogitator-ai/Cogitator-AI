@@ -34,6 +34,8 @@ export type ExecutionStep =
 export interface ExecutionCarry {
   /** The approvals the person gave the call so far, by the digest of the request */
   approvals: GrantedApproval[];
+  /** The arguments the call parsed in its first round, kept for its later rounds */
+  args?: unknown;
   /** The answers and kept state the run started with (`context.input`) */
   input?: { responses: Record<string, MCPElicitResult>; state: unknown };
 }

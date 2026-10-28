@@ -70,6 +70,7 @@ import {
   type GrantedApproval,
   type VerifiedState,
 } from './request-state';
+import { keepableArgs, wireArgsSchema, type ToolArgs } from './tool-args';
 import { DEFAULT_PROMOTE_AFTER_MS, ServerTasks, TASKS_EXTENSION, parseElicitResult } from './tasks';
 import { z } from 'zod';
 
@@ -376,11 +377,11 @@ export class MCPServer {
       {
         ...(tool.title !== undefined && { title: tool.title }),
         description: tool.description,
-        inputSchema: this.buildInputSchema(tool),
+        inputSchema: wireArgsSchema(this.buildInputSchema(tool)),
         ...(outputSchema && { outputSchema }),
         ...(tool.annotations && { annotations: { ...tool.annotations } }),
       },
-      async (args: unknown, ctx: ServerContext): Promise<CallToolResult | InputRequiredResult> =>
+      async (args: ToolArgs, ctx: ServerContext): Promise<CallToolResult | InputRequiredResult> =>
         this.handleToolCall(tool, args, ctx, scope, mint, outputSchema)
     );
   }
@@ -414,12 +415,13 @@ export class MCPServer {
    */
   private async handleToolCall(
     tool: Tool,
-    args: unknown,
+    callArgs: ToolArgs,
     ctx: ServerContext,
     scope: ServeScope,
     mint: (state: CallState, ctx: ServerContext) => Promise<string>,
     outputSchema: z.ZodType | undefined
   ): Promise<CallToolResult | InputRequiredResult> {
+    let args = callArgs.parsed;
     const capabilities = this.clientCapabilities(ctx, scope);
     const owner = scope.owner;
     const takesTasks =
@@ -433,12 +435,13 @@ export class MCPServer {
       return this.drive(execution, ctx, scope, tool, args, mint, outputSchema, takesTasks, mode);
     }
 
-    const digest = callDigest(tool.name, args);
+    const digest = callDigest(tool.name, callArgs.wire);
     const verified: VerifiedState = ctx.mcpReq.requestState<VerifiedState>();
     const state =
       verified !== REJECTED_STATE && verified?.tool === tool.name && verified.digest === digest
         ? verified
         : undefined;
+    if (state && 'args' in state && state.args !== undefined) args = state.args;
     const responses = elicitResults(ctx.mcpReq.inputResponses);
 
     if (state?.kind === 'parked') {
@@ -559,6 +562,7 @@ export class MCPServer {
     const base = {
       tool: execution.tool,
       digest: execution.digest,
+      ...(execution.carry.args !== undefined && { args: execution.carry.args }),
       ...(execution.carry.approvals.length > 0 && { approvals: execution.carry.approvals }),
     };
     switch (step.kind) {
@@ -633,8 +637,10 @@ export class MCPServer {
     outputSchema: z.ZodType | undefined,
     run: RunMode
   ): CallExecution {
+    const kept = keepableArgs(args);
     const carry = {
       approvals: [...(run.approvals ?? [])],
+      ...(kept !== undefined && { args: kept }),
       ...(run.input && { input: { responses: run.input.responses, state: run.input.state } }),
     };
     return new CallExecution(owner, tool.name, digest, carry, async (askers) => {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { tool } from '@cogitator-ai/core';
@@ -584,5 +585,119 @@ describe('questions a tool asks at once', () => {
     await vi.waitFor(() =>
       expect(results).toEqual([{ first: { action: 'cancel' }, second: { action: 'cancel' } }])
     );
+  });
+});
+
+describe('arguments with generated defaults', () => {
+  const ADVERTISED = {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    properties: {
+      id: { default: 'x', type: 'string' },
+      region: { type: 'string', 'x-mcp-header': 'Region' },
+      when: { type: 'string' },
+      tags: { type: 'array', items: { type: 'string', enum: ['a', 'b'] } },
+    },
+    required: ['region', 'when'],
+  };
+
+  it('advertises the tool schema as before', async () => {
+    const mix = tool({
+      name: 'mix',
+      description: 'd',
+      parameters: z.object({
+        id: z.string().default(() => 'x'),
+        region: z.string().meta({ 'x-mcp-header': 'Region' }),
+        when: z.string().transform((value) => value.length),
+        tags: z.array(z.enum(['a', 'b'])).optional(),
+      }),
+      execute: async () => 1,
+    }) as Tool;
+    const url = await serve([mix]);
+    const list = await rawRequest(url, 'tools/list');
+    expect((list.result?.tools as { inputSchema: unknown }[])[0]?.inputSchema).toEqual(ADVERTISED);
+  });
+
+  it('keeps the values of the first round across rounds: one execution, approval asked once', async () => {
+    const executions = vi.fn();
+    const ids: string[] = [];
+    const book = tool({
+      name: 'book',
+      description: 'Book under a generated id, asking a name',
+      parameters: z.object({
+        room: z.string(),
+        id: z.string().default(() => randomUUID()),
+      }),
+      requiresApproval: true,
+      execute: async ({ id }, context) => {
+        executions();
+        ids.push(id);
+        const reply = await (context as MCPToolContext).elicit!({
+          message: 'Name?',
+          schema: { type: 'object', properties: { name: { type: 'string' } } },
+        });
+        ids.push(id);
+        return `booked ${id} for ${JSON.stringify(reply)}`;
+      },
+    }) as Tool;
+    const url = await serve([book]);
+    const send = (extra: Record<string, unknown> = {}) =>
+      rawRequest(url, 'tools/call', {
+        capabilities: ELICITATION,
+        params: { name: 'book', arguments: { room: '7' }, ...extra },
+      });
+
+    const first = await send();
+    expect(Object.keys(first.result?.inputRequests as object)).toEqual(['approval']);
+    const second = await send({
+      requestState: first.result?.requestState,
+      inputResponses: { approval: { action: 'accept', content: { approve: true } } },
+    });
+    expect(Object.keys(second.result?.inputRequests as object)).toEqual(['elicit:1']);
+    const third = await send({
+      requestState: second.result?.requestState,
+      inputResponses: { 'elicit:1': { action: 'accept', content: { name: 'Ann' } } },
+    });
+
+    expect(third.result?.isError).toBeFalsy();
+    expect(executions).toHaveBeenCalledTimes(1);
+    expect(new Set(ids).size).toBe(1);
+    expect(JSON.stringify(third.result?.content)).toContain(`booked ${ids[0]}`);
+  });
+
+  it('keeps the values of a call that ends its round with context.input', async () => {
+    const ids: string[] = [];
+    const pick = tool({
+      name: 'pick',
+      description: 'Pick under a generated id',
+      parameters: z.object({ id: z.string().default(() => randomUUID()) }),
+      execute: async ({ id }, context) => {
+        ids.push(id);
+        const input = (context as MCPToolContext).input!;
+        if (input.responses.color === undefined) {
+          return input.ask(
+            { color: { message: 'Color?', schema: { type: 'object', properties: {} } } },
+            null
+          );
+        }
+        return `picked for ${id}`;
+      },
+    }) as Tool;
+    const url = await serve([pick]);
+    const first = await rawRequest(url, 'tools/call', {
+      capabilities: ELICITATION,
+      params: { name: 'pick', arguments: {} },
+    });
+    await rawRequest(url, 'tools/call', {
+      capabilities: ELICITATION,
+      params: {
+        name: 'pick',
+        arguments: {},
+        requestState: first.result?.requestState,
+        inputResponses: { color: { action: 'accept', content: {} } },
+      },
+    });
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(ids[1]);
   });
 });

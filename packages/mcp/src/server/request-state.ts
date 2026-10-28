@@ -24,7 +24,13 @@ export interface GrantedApproval {
  * approval (`pending` the digest of the request asked), a run waiting in this process
  * (`parked`), or the questions of `context.input.ask()` and what the tool kept (`tool`)
  */
-export type CallState = { tool: string; digest: string; approvals?: GrantedApproval[] } & (
+export type CallState = {
+  tool: string;
+  digest: string;
+  /** The arguments the call parsed in its first round, for its later rounds */
+  args?: unknown;
+  approvals?: GrantedApproval[];
+} & (
   | {
       kind: 'approval';
       key: string;
@@ -45,6 +51,7 @@ const GrantedApprovalSchema = z.object({
 const base = {
   tool: z.string(),
   digest: z.string(),
+  args: z.unknown().optional(),
   approvals: z.array(GrantedApprovalSchema).optional(),
 };
 
