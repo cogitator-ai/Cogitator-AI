@@ -19,7 +19,8 @@ export interface GauntletArtifacts {}
 /** Something a stage needs from the machine; a missing one turns the stage into a skip. */
 export type Requirement =
   | { kind: 'env'; name: string; why?: string }
-  | { kind: 'docker' }
+  /** A reachable Docker daemon, with `buildkit` also the buildx plugin `docker build` needs for BuildKit features. */
+  | { kind: 'docker'; buildkit?: boolean }
   | { kind: 'bun' }
   | { kind: 'deno' }
   | { kind: 'service'; name: ServiceName }

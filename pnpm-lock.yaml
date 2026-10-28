@@ -1168,9 +1168,15 @@ importers:
       '@cogitator-ai/a2a':
         specifier: workspace:*
         version: link:../a2a
+      '@cogitator-ai/acp':
+        specifier: workspace:*
+        version: link:../acp
       '@cogitator-ai/ai-sdk':
         specifier: workspace:*
         version: link:../ai-sdk
+      '@cogitator-ai/app-server':
+        specifier: workspace:*
+        version: link:../app-server
       '@cogitator-ai/browser':
         specifier: workspace:*
         version: link:../browser

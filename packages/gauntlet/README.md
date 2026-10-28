@@ -50,11 +50,18 @@ ollama pull qwen2.5:0.5b                  # or set GAUNTLET_OLLAMA_MODEL to anot
 pnpm gauntlet --only scaffold-ollama
 ```
 
-Without Ollama or the model the stage is skipped with the reason. `OLLAMA_BASE_URL` points it at another server.
+Without Ollama or the model the stage is skipped with the reason. `OLLAMA_BASE_URL` points it at another server. A small model may call a tool that needs approval out of the blue: the stage refuses such calls through the Studio API, so the run goes on, and lists them in the evidence of its check.
+
+## Session protocols
+
+Two stages drive the session protocols the way an editor or a desktop app does, each agent in a child process on stdio:
+
+- **app-server** spawns `fixtures/protocols/app-server.ts`, a `SessionHost` served by `serveStdio`, and drives it with the generated client: a request before `initialize` is refused, a turn answers before its `turn/started`, a tool that needs approval pauses the turn and `resume.decisions` finishes it, `_cogitator/trace/get` returns its model spans, `turn/interrupt` stops a long tool call, and a second process on the same SQLite file resumes the thread.
+- **acp** launches `fixtures/protocols/acp-agent.ts`, an agent of `createAcpAgent` served by `serveAcpStdio`, through `AcpAgentProvider` as an external agent of another host, and drives that host through the app-server: the agent's stream arrives as turn events, the permission rules allow one command and refuse another, its reads and commands go through the provider's workspace and never leave its root, and after both sides restart its session loads with what it read before.
 
 ## What a stage is
 
-A stage proves one thing a user would do, through public package APIs only. It lists the packages it exercises, the stages it needs, and what the machine must have (a service, Docker, Bun, Deno, Playwright, an API key). A missing requirement makes the stage an honest skip with the reason, never a failure.
+A stage proves one thing a user would do, through public package APIs only. It lists the packages it exercises, the stages it needs, and what the machine must have (a service, Docker, BuildKit for an image build, Bun, Deno, Playwright, an API key). A missing requirement makes the stage an honest skip with the reason, never a failure.
 
 Each stage records named checks with evidence: the ids, counts, statuses and excerpts it observed. Checks assert mechanics (a tool was called, rows were written and read back, a server answered with the right protocol), and only loosely the wording of model output.
 

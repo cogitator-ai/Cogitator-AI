@@ -333,7 +333,12 @@ const next: StageDefinition = {
       if (chat.status !== 400)
         throw new Error(`Chat without a user message answered ${chat.status}`);
       if (run.status !== 400) throw new Error(`Blank input answered ${run.status}`);
-      if (resume.status !== 409 || Reflect.get(Object(resumeBody), 'code') !== 'RUN_NOT_PAUSED') {
+      const resumeError: unknown = Reflect.get(Object(resumeBody), 'error');
+      if (
+        resume.status !== 409 ||
+        Reflect.get(Object(resumeError), 'code') !== 'RUN_NOT_PAUSED' ||
+        typeof Reflect.get(Object(resumeError), 'message') !== 'string'
+      ) {
         throw new Error(
           `Resume of an unknown thread answered ${resume.status} ${JSON.stringify(resumeBody)}`
         );
