@@ -174,6 +174,8 @@ interface TurnRecord {
   info: TurnInfo;
   handle?: RunHandle;
   interrupted: boolean;
+  /** A permission mode set while the turn had no run yet: its run starts in it */
+  mode?: PermissionMode;
   /** Aborts as the turn is interrupted or finishes */
   ended: AbortController;
   queued: QueuedInput[];
@@ -422,7 +424,9 @@ export class SessionHost {
   async setPermissionMode(threadId: string, mode: PermissionMode): Promise<ThreadInfo> {
     await this.requireThread(threadId);
     const memory = await this.requireMemory();
-    this.active.get(threadId)?.handle?.setPermissionMode?.(mode);
+    const going = this.active.get(threadId);
+    if (going?.handle) going.handle.setPermissionMode?.(mode);
+    else if (going) going.mode = mode;
     const thread = this.unwrap(
       await memory.updateThread(threadId, { [THREAD_KEYS.permissionMode]: mode })
     );
@@ -819,11 +823,12 @@ export class SessionHost {
     });
     session.start();
     const asker = options.onApproval;
+    const mode = turn.mode ?? plan.mode;
     const runOptions = {
       stream: true,
       ...session.callbacks,
       onSpan: (span: Span) => this.recordSpan(trace, turnId, span),
-      ...(plan.mode !== undefined && { permissions: { mode: plan.mode } }),
+      ...(mode !== undefined && { permissions: { mode } }),
       ...(asker && {
         onApproval: (request: ToolApprovalRequest) =>
           asker({ threadId, turnId, request, signal: turn.ended.signal }),
@@ -922,6 +927,7 @@ export class SessionHost {
     }
     if (model === undefined && responseFormat === undefined) return agent;
     return agent.clone({
+      ...keptId(agent),
       ...(model !== undefined && { model }),
       ...(responseFormat !== undefined && { responseFormat }),
     });
@@ -934,6 +940,7 @@ export class SessionHost {
   private reviewAgent(thread: Thread, model: string | undefined): Agent {
     const base = this.options.review?.agent ?? this.agentOf(thread);
     return base.clone({
+      ...keptId(base),
       instructions: REVIEW_INSTRUCTIONS,
       responseFormat: { type: 'json_schema', schema: ReviewOutputSchema },
       ...(model !== undefined && { model }),
@@ -1027,6 +1034,14 @@ function fromResult(
       result.undelivered.length > 0 && { undelivered: toQueuedMessages(result.undelivered) }),
     ...(parsedReview?.success && { review: parsedReview.data }),
   };
+}
+
+/**
+ * The configured id of `agent`, for a clone of it: `Agent.clone()` leaves the id out, and the
+ * memory of a clone without it lives under its name (`memoryAgentId`), apart from the agent's
+ */
+function keptId(agent: Agent): { id?: string } {
+  return agent.config.id !== undefined ? { id: agent.config.id } : {};
 }
 
 function copyTurn(turn: TurnInfo): TurnInfo {

@@ -667,6 +667,78 @@ describe('SessionHost', () => {
     expect(scripted.requests).toHaveLength(0);
   });
 
+  it('keeps the configured id of the agent for turn overrides and reviews', async () => {
+    const scripted = scriptedBackend([
+      answer('{"a":1}'),
+      answer('x'),
+      answer('{"findings":[],"overallCorrectness":"correct","overallExplanation":"ok"}'),
+    ]);
+    const cogitator = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { mock: scripted.backend } },
+    });
+    const agent = new Agent({ id: 'keeper', name: 'Keeper', model: 'mock/m', instructions: 'x' });
+    const host = new SessionHost({
+      cogitator,
+      agents: { keeper: agent },
+      review: { context: async () => 'diff' },
+    });
+    const ids: Array<string | undefined> = [];
+    const start = cogitator.start.bind(cogitator);
+    vi.spyOn(cogitator, 'start').mockImplementation((used, options) => {
+      ids.push(used.config.id);
+      return start(used, options);
+    });
+    const turnIds: string[] = [];
+    host.subscribe((n) => {
+      if (n.method === 'turn/completed') turnIds.push(n.params.turn.id);
+    });
+    const thread = await host.startThread({});
+    const withSchema = await host.startTurn({
+      threadId: thread.id,
+      input: text('a'),
+      outputSchema: { type: 'object', properties: { a: { type: 'number' } } },
+    });
+    await waitUntil(() => turnIds.includes(withSchema.id));
+    const withModel = await host.startTurn({
+      threadId: thread.id,
+      input: text('b'),
+      model: 'mock/other',
+    });
+    await waitUntil(() => turnIds.includes(withModel.id));
+    const review = await host.startReview({
+      threadId: thread.id,
+      target: { type: 'custom', instructions: 'x' },
+    });
+    await waitUntil(() => turnIds.includes(review.turn.id));
+    expect(ids).toEqual(['keeper', 'keeper', 'keeper']);
+    await host.close();
+    await cogitator.close();
+  });
+
+  it('starts a turn in the permission mode set before its run began', async () => {
+    const { host, cogitator, notifications } = createTestHost({
+      backend: scriptedBackend([answer('x')]).backend,
+    });
+    const thread = await host.startThread({ permissionMode: 'default' });
+    const modes: Array<string | undefined> = [];
+    const start = cogitator.start.bind(cogitator);
+    vi.spyOn(cogitator, 'start').mockImplementation((agent, options) => {
+      modes.push(options.permissions?.mode);
+      return start(agent, options);
+    });
+    let release = () => undefined as void;
+    const after = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const turn = await host.startTurn({ threadId: thread.id, input: text('go') }, { after });
+    await host.setPermissionMode(thread.id, 'plan');
+    release();
+    await completed(notifications, turn.id);
+    expect(modes).toEqual(['plan']);
+    await host.close();
+  });
+
   it('names what does not exist', async () => {
     const { host } = createTestHost({ backend: scriptedBackend([answer('x')]).backend });
     expect((await rejection(host.resumeThread('ghost'))).data).toEqual({
