@@ -261,7 +261,9 @@ const pushConfigRequestSchema = message({
 const listPushConfigsRequestSchema = message({
   tenant: z.string().optional(),
   taskId: z.string().min(1, 'is required'),
-  pageSize: int32.optional(),
+  pageSize: int32
+    .pipe(z.number().min(0, 'must be between 1 and 100').max(100, 'must be between 1 and 100'))
+    .optional(),
   pageToken: z.string().optional(),
 });
 

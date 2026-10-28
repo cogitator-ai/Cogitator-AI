@@ -173,7 +173,7 @@ An unknown agent path answers `404`, an unknown `agentName` param `-32602 Invali
 
 Over A2A 1.0 every agent is a tenant. Its interfaces carry its name as `tenant`, and an A2A 1.0 client sends it back in every request: as `tenant` in the JSON-RPC params, as the `/<tenant>/` path segment on REST. On the shared endpoint the tenant picks the agent, on an agent's own endpoint a different tenant is refused with `-32602`.
 
-A task created over 1.0 belongs to the agent that created it and is visible only through that agent, whatever the version of the request: `GetTask`, `CancelTask`, `SubscribeToTask`, the push config methods, `ListTasks` (and their 0.3 forms, `tasks/list` included) and a message that continues the task answer a task of another agent with `-32001 Task not found`. The agent is kept in the task metadata (`cogitator:agent`) and never sent to clients. Tasks created over 0.3, and tasks stored before tasks recorded their agent, are bound to no agent and stay visible to every agent, as they always were.
+A task created over 1.0 belongs to the agent that created it and is visible only through that agent, whatever the version of the request: `GetTask`, `CancelTask`, `SubscribeToTask`, the push config methods, `ListTasks` (and their 0.3 forms, `tasks/list` included) and a message that continues the task answer a task of another agent with `-32001 Task not found`. The agent is kept in the task metadata (`cogitator:agent`) and never sent to clients. Tasks created over 0.3, and tasks stored before tasks recorded their agent, are bound to no agent and stay visible to every agent, as they always were. A new message whose `contextId` holds a task bound to another agent is refused with `-32602 Invalid params`, over either version, so an agent never reads another agent's transcripts or ends its paused runs.
 
 On REST, a first path segment that is the name of an agent is read as its tenant first: with an agent named `tasks`, `GET /tasks/tasks` lists that agent's tasks, and a path that names no method under the tenant (`GET /tasks/<id>`) still reads without one.
 
@@ -539,7 +539,7 @@ const all = await client.listPushNotificationConfigs(task.id);
 await client.deletePushNotificationConfig(task.id, config.pushNotificationConfig.id!);
 ```
 
-Every config method requires an existing task the caller may see (`-32001 Task not found` otherwise). To subscribe before the task starts, pass `configuration.pushNotificationConfig` with `blocking: false`.
+Every config method requires an existing task the caller may see (`-32001 Task not found` otherwise). Over 1.0, `ListTaskPushNotificationConfigs` pages by `pageSize` (1 to 100, default 50) and `pageToken`, with a `nextPageToken` while more remain, and `listPushNotificationConfigs()` walks the pages. To subscribe before the task starts, pass `configuration.pushNotificationConfig` with `blocking: false`.
 
 ### Server Configuration
 

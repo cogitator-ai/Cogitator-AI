@@ -766,14 +766,24 @@ export class A2AServer {
     return task;
   }
 
-  /** Rejects joining a context that holds another user's tasks. */
+  /**
+   * Rejects joining a context that holds tasks the caller may not see: another user's, or tasks
+   * bound to another agent (created over A2A 1.0). A new task reads the transcripts of its
+   * context and ends the paused runs of its tasks, so neither may reach across users or agents.
+   * Contexts of unbound A2A 0.3 tasks stay open to every agent, as before.
+   */
   private async assertContextAvailable(
     contextId: string | undefined,
-    caller: A2ACaller | undefined
+    context: CallContext
   ): Promise<void> {
     if (!contextId) return;
     const tasks = await this.taskManager.listTasks({ contextId });
-    if (tasks.some((task) => !isTaskVisibleTo(task, caller?.userId))) {
+    if (
+      tasks.some(
+        (task) =>
+          !isTaskVisibleTo(task, context.caller?.userId) || !isTaskOfAgent(task, context.agentName)
+      )
+    ) {
       throw new A2AError(errors.invalidParams(`Unknown contextId: ${contextId}`));
     }
   }
@@ -835,7 +845,7 @@ export class A2AServer {
       }
       return this.taskManager.continueTask(message.taskId, message);
     }
-    await this.assertContextAvailable(message.contextId, context.caller);
+    await this.assertContextAvailable(message.contextId, context);
     const task = await this.taskManager.createTask(message, message.contextId, {
       ownerId: context.caller?.userId,
       ...(context.version === '1.0' && { agentName: context.agentName }),

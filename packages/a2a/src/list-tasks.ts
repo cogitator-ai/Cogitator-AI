@@ -106,3 +106,48 @@ export function paginateTasks(
     totalSize: matching.length,
   };
 }
+
+const configCursorSchema = z.object({ v: z.literal(1), c: z.string().min(1) });
+
+/**
+ * One page of push notification configs by keyset pagination over their ids: the configs after
+ * the cursor in id order, `pageSize` 1 to 100 (0 or none: 50), `nextPageToken` empty on the last
+ * page. The cursor is base64url of `{ v: 1, c }`, the last id of the page.
+ */
+export function paginatePushConfigs<T extends { id?: string }>(
+  configs: readonly T[],
+  query: { pageSize?: number; pageToken?: string }
+): { configs: T[]; nextPageToken: string } {
+  const pageSize = query.pageSize || DEFAULT_PAGE_SIZE;
+  const sorted = [...configs].sort((a, b) => {
+    const left = a.id ?? '';
+    const right = b.id ?? '';
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+  const after = query.pageToken ? decodeConfigToken(query.pageToken) : undefined;
+  const remaining =
+    after === undefined ? sorted : sorted.filter((config) => (config.id ?? '') > after);
+  const page = remaining.slice(0, pageSize);
+  const last = page.at(-1);
+  return {
+    configs: page,
+    nextPageToken:
+      last && remaining.length > page.length
+        ? Buffer.from(JSON.stringify({ v: 1, c: last.id ?? '' })).toString('base64url')
+        : '',
+  };
+}
+
+function decodeConfigToken(token: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(token)) throw invalidPageToken();
+  try {
+    const parsed = configCursorSchema.safeParse(
+      JSON.parse(Buffer.from(token, 'base64url').toString('utf8'))
+    );
+    if (!parsed.success) throw invalidPageToken();
+    return parsed.data.c;
+  } catch (error) {
+    if (error instanceof A2AError) throw error;
+    throw invalidPageToken();
+  }
+}

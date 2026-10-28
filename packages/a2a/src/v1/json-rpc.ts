@@ -1,6 +1,7 @@
 import type { A2ACaller, A2ATask } from '../types.js';
 import type { A2AOperations, CallContext } from '../operations.js';
 import type { ListTasksPage, ListTasksPageQuery } from '../list-tasks.js';
+import { paginatePushConfigs } from '../list-tasks.js';
 import { A2AError, methodNotFound, unsupportedOperation } from '../errors.js';
 import {
   parseCancelTaskRequest,
@@ -150,8 +151,14 @@ export async function dispatchV1(
     case 'ListTaskPushNotificationConfigs': {
       const request = parseListPushConfigsRequest(params);
       const context = v1Context(operations, scope, request.tenant);
-      const configs = await operations.listPushConfigs(request.taskId, context);
-      return { configs: configs.map((config) => pushConfigToV1(config, request.taskId)) };
+      const page = paginatePushConfigs(await operations.listPushConfigs(request.taskId, context), {
+        ...(request.pageSize !== undefined && { pageSize: request.pageSize }),
+        ...(request.pageToken && { pageToken: request.pageToken }),
+      });
+      return {
+        configs: page.configs.map((config) => pushConfigToV1(config, request.taskId)),
+        ...(page.nextPageToken && { nextPageToken: page.nextPageToken }),
+      };
     }
     case 'DeleteTaskPushNotificationConfig': {
       const request = parsePushConfigRequest(params);

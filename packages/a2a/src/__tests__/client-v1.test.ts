@@ -275,3 +275,38 @@ describe('A2AClient protocol versions', () => {
     await expect(client.cancelTask(asked.id)).rejects.toMatchObject({ code: -32002 });
   });
 });
+
+describe('A2AClient push config pages', () => {
+  it('lists every config across pages, over JSON-RPC and REST', async () => {
+    const served = await serveExpress({
+      agents: { helper: mockAgent('helper') },
+      cogitator: echoCogitator(),
+    });
+    try {
+      for (const transport of ['JSONRPC', 'HTTP+JSON'] as const) {
+        const client = new A2AClient(served.url, { transport });
+        const task = await client.sendMessage({
+          role: 'user',
+          parts: [{ kind: 'text', text: 'p' }],
+        });
+        if (task.kind !== 'task') throw new Error('expected a task');
+        for (let i = 0; i < 105; i++) {
+          await client.setPushNotificationConfig(task.id, {
+            id: `c${String(i).padStart(3, '0')}`,
+            url: 'https://hooks.example.com/x',
+          });
+        }
+        expect(await client.listPushNotificationConfigs(task.id)).toHaveLength(105);
+        const rest = await fetch(
+          `${served.url}/a2a/rest/helper/tasks/${task.id}/pushNotificationConfigs?pageSize=100`,
+          { headers: { 'A2A-Version': '1.0' } }
+        );
+        const page = (await rest.json()) as { configs: unknown[]; nextPageToken?: string };
+        expect(page.configs).toHaveLength(100);
+        expect(page.nextPageToken).toBeTruthy();
+      }
+    } finally {
+      await served.close();
+    }
+  });
+});

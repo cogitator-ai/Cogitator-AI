@@ -669,21 +669,31 @@ export class A2AClient {
       const result = await this.rpc(endpoint, 'tasks/pushNotificationConfig/list', { id: taskId });
       return result as TaskPushNotificationConfig[];
     }
-    const result =
-      endpoint.transport === 'JSONRPC'
-        ? await this.rpc(
-            endpoint,
-            'ListTaskPushNotificationConfigs',
-            this.withTenant(endpoint, { taskId })
-          )
-        : await this.rest(endpoint, {
-            method: 'GET',
-            path: `/tasks/${encodeURIComponent(taskId)}/pushNotificationConfigs`,
-          });
-    return readListPushConfigsResponse(result).configs.map((config) => ({
-      taskId,
-      pushNotificationConfig: pushConfigFromV1(config),
-    }));
+    const configs: TaskPushNotificationConfig[] = [];
+    let pageToken: string | undefined;
+    do {
+      const query = { pageSize: 100, ...(pageToken && { pageToken }) };
+      const result =
+        endpoint.transport === 'JSONRPC'
+          ? await this.rpc(
+              endpoint,
+              'ListTaskPushNotificationConfigs',
+              this.withTenant(endpoint, { taskId, ...query })
+            )
+          : await this.rest(endpoint, {
+              method: 'GET',
+              path: `/tasks/${encodeURIComponent(taskId)}/pushNotificationConfigs${queryString(query)}`,
+            });
+      const page = readListPushConfigsResponse(result);
+      configs.push(
+        ...page.configs.map((config) => ({
+          taskId,
+          pushNotificationConfig: pushConfigFromV1(config),
+        }))
+      );
+      pageToken = page.nextPageToken || undefined;
+    } while (pageToken);
+    return configs;
   }
 
   async deletePushNotificationConfig(taskId: string, configId: string): Promise<void> {

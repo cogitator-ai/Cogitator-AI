@@ -626,3 +626,120 @@ describe('A2A 1.0 JSON-RPC over HTTP', () => {
     expect(admitted.body.error?.code).toBe(-32001);
   });
 });
+
+describe('contexts across agents', () => {
+  it("refuses a 1.0 message to one agent in a context of another agent's tasks", async () => {
+    const { server, cogitator } = newServer();
+    const writerTask = await send(server, 'please ask', { agentName: 'writer' });
+    expect(writerTask.status.state).toBe('TASK_STATE_INPUT_REQUIRED');
+    const runs = cogitator.timeouts.length;
+
+    const joined = expectResponse(
+      await server.handleJsonRpc(
+        request('SendMessage', {
+          message: v1UserMessage('read their history', { contextId: writerTask.contextId }),
+        }),
+        undefined,
+        V1
+      )
+    );
+    expect(joined.error?.code).toBe(A2A_ERROR_CODES.invalidParams);
+    expect(cogitator.timeouts).toHaveLength(runs);
+
+    const legacy = expectResponse(
+      await server.handleJsonRpc(
+        request('message/send', {
+          message: userMessage('read their history', { contextId: writerTask.contextId }),
+        })
+      )
+    );
+    expect(legacy.error?.code).toBe(A2A_ERROR_CODES.invalidParams);
+
+    const still = expectResponse(
+      await server.handleJsonRpc(
+        request('GetTask', { id: writerTask.id, tenant: 'writer' }),
+        undefined,
+        V1
+      )
+    ).result as V1Task;
+    expect(still.status.state).toBe('TASK_STATE_INPUT_REQUIRED');
+
+    const own = expectResponse(
+      await server.handleJsonRpc(
+        request('SendMessage', {
+          tenant: 'writer',
+          message: v1UserMessage('more', { contextId: writerTask.contextId }),
+        }),
+        undefined,
+        V1
+      )
+    );
+    expect(own.error).toBeUndefined();
+  });
+
+  it('keeps a context of unbound 0.3 tasks open to every agent', async () => {
+    const { server } = newServer();
+    const legacy = expectResponse(
+      await server.handleJsonRpc(
+        request('message/send', { message: userMessage('old') }),
+        undefined,
+        {
+          agentName: 'writer',
+        }
+      )
+    ).result as A2ATask;
+    const joined = expectResponse(
+      await server.handleJsonRpc(
+        request('SendMessage', { message: v1UserMessage('new', { contextId: legacy.contextId }) }),
+        undefined,
+        V1
+      )
+    );
+    expect(joined.error).toBeUndefined();
+  });
+});
+
+describe('ListTaskPushNotificationConfigs pages', () => {
+  it('pages configs with a cursor and validates the page size', async () => {
+    const { server } = newServer();
+    const task = await send(server, 'push');
+    for (const id of ['c1', 'c2', 'c3']) {
+      expectResponse(
+        await server.handleJsonRpc(
+          request('CreateTaskPushNotificationConfig', {
+            taskId: task.id,
+            id,
+            url: `https://hooks.example.com/${id}`,
+          }),
+          undefined,
+          V1
+        )
+      );
+    }
+    const list = async (params: Record<string, unknown>) =>
+      expectResponse(
+        await server.handleJsonRpc(
+          request('ListTaskPushNotificationConfigs', { taskId: task.id, ...params }),
+          undefined,
+          V1
+        )
+      );
+    const first = (await list({ pageSize: 2 })).result as {
+      configs: { id: string }[];
+      nextPageToken?: string;
+    };
+    expect(first.configs.map((config) => config.id)).toEqual(['c1', 'c2']);
+    expect(first.nextPageToken).toBeTruthy();
+    const second = (await list({ pageSize: 2, pageToken: first.nextPageToken })).result as {
+      configs: { id: string }[];
+      nextPageToken?: string;
+    };
+    expect(second.configs.map((config) => config.id)).toEqual(['c3']);
+    expect(second).not.toHaveProperty('nextPageToken');
+    expect(((await list({})).result as { configs: unknown[] }).configs).toHaveLength(3);
+
+    for (const params of [{ pageSize: 101 }, { pageSize: -1 }, { pageToken: 'forged' }]) {
+      expect((await list(params)).error?.code).toBe(A2A_ERROR_CODES.invalidParams);
+    }
+  });
+});
