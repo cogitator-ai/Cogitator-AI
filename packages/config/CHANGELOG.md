@@ -1,5 +1,11 @@
 # @cogitator-ai/config
 
+## 0.36.3
+
+### Patch Changes
+
+- [#304](https://github.com/cogitator-ai/Cogitator-AI/pull/304) [`f3b6c69`](https://github.com/cogitator-ai/Cogitator-AI/commit/f3b6c69c499a72010b99fa2e4467044a1b62d19d) Thanks [@aryansinha1908](https://github.com/aryansinha1908)! - Read the Azure model from `COGITATOR_AZURE_MODEL` and the Bedrock Runtime endpoint from `COGITATOR_BEDROCK_ENDPOINT`, so both can be set without `cogitator.yml`.
+
 ## 0.36.2
 
 ### Patch Changes

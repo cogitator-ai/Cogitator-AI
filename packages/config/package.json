@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/config",
-  "version": "0.36.2",
+  "version": "0.36.3",
   "description": "Configuration loading for Cogitator (YAML, env)",
   "keywords": [
     "cogitator",
