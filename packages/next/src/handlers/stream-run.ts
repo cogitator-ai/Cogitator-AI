@@ -35,7 +35,8 @@ export type StreamCallbacks = Required<
     | 'onToolInputAvailable'
     | 'onToolInputAbandoned'
   >
->;
+> &
+  Pick<RunOptions, 'onData' | 'onState' | 'onStepReset'>;
 
 export interface StreamRunOptions {
   req: Request;
@@ -116,6 +117,7 @@ async function resumableAgentRun(
       auth: req,
       threadId,
       ...(runContext.signal instanceof AbortSignal && { signal: runContext.signal }),
+      resetSteps: true,
       execute: async (session, signal) => {
         const result = await start(
           { stream: true, signal, ...session.callbacks },
@@ -236,7 +238,7 @@ function streamBoundRun({
     (event) => {
       queue = queue.then(() => sw.send(event)).catch(abortRun);
     },
-    { threadId }
+    { threadId, resetSteps: true }
   );
 
   const runStream = async () => {

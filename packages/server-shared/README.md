@@ -86,6 +86,9 @@ Standardized Server-Sent Events protocol for agent runs, workflow runs, swarm ru
 - `createToolDroppedEvent(id, toolCallId, reason)`: The `tool-result` of a call that will never run, `{ dropped: true, reason }` with `reason` `'incomplete'` (the model never finished it) or `'discarded'` (the run did not keep it). A client removes the call, one that does not know `dropped` sees a call with an empty result.
 - `createToolUpdateEvent(toolCallId, { content?, details?, presentation? })`: Emits what a running tool reported with `context.update()`, between its `tool-call-end` and its `tool-result`.
 - `createToolResultEvent(id, toolCallId, result, { details?, presentation? })`: Emits the result of an executed tool call linked by `toolCallId`: `result` is what the model read, `details` and `presentation` come from a `toolOutput()` result or the tool's `presentation`.
+- `createDataEvent({ id, name, data, transient?, toolCallId? })`: A data part a tool sent with `context.data()`, structured data a client renders as a widget of its own. A later `data` with the same `id` replaces the part in place, a `transient` one is never kept with the message.
+- `createStateSnapshotEvent(snapshot)`, `createStateDeltaEvent(delta)`: The run's state (`RunOptions.state`, changed by tools with `context.state.set()`), whole or as a JSON Patch (RFC 6902) on the state the client holds.
+- `createResetStepEvent(partIds, toolCallIds)`: A step the model streamed starts over (a fallback model took over mid-answer, an empty answer is asked again): the client takes back these text and reasoning parts and tool calls.
 - `createApprovalRequiredEvent(threadId, approvals)`: Emits an `approval-required` event when tool calls require human-in-the-loop review, pausing the run.
 - `createInterruptRequiredEvent(threadId, interrupts)`: Emits an `interrupt-required` event when the run paused on questions its tools asked (`context.interrupt()`), answered by id in the `responses` of the resume.
 - `createErrorEvent(message, code?)`: Builds an `error` stream event (`{ type: 'error', message, code }`).
@@ -108,6 +111,7 @@ Standardized Server-Sent Events protocol for agent runs, workflow runs, swarm ru
 - `ToolCallEndEvent`: Structure of the `tool-call-end` event, with optional `dropped`.
 - `ToolUpdateEvent`: Structure of the `tool-update` event: what a running tool reported, or with `arguments` the arguments a streamed call runs with when they differ from the streamed ones.
 - `ToolResultEvent`: Structure of the `tool-result` event, with optional `details` and `presentation` (`ToolPresentation`: `label`, `icon?`, `detail?`), or `dropped` and `reason` for a call that never ran.
+- `DataEvent`, `StateSnapshotEvent`, `StateDeltaEvent` (`StateEvent` for either), `ResetStepEvent`: Structures of the `data`, `state-snapshot`, `state-delta` and `reset-step` events.
 - `ApprovalRequiredEvent`: Structure of the `approval-required` event.
 - `PendingApproval`: Client-facing tool approval request (`toolCallId`, `toolName`, `arguments`, `description`, optional `sideEffects`, and once the run has permissions set up `reason` (why the call asks), `rule` (the text of the `ask` rule that made it ask, never the file it came from), `suggestedRule` (the rule an "always allow" answer saves) and the run's permission `mode`).
 - `InterruptRequiredEvent`: Structure of the `interrupt-required` event.
@@ -134,7 +138,8 @@ for (const data of sseDataLines) {
 ```
 
 - `StreamEventSchema`: Discriminated union of every event schema on `type`. An unknown `type` or a field of the wrong type fails to parse, a field a newer server adds is dropped.
-- `StartEventSchema`, `TextStartEventSchema`, `TextDeltaEventSchema`, `TextEndEventSchema`, `ReasoningStartEventSchema`, `ReasoningDeltaEventSchema`, `ReasoningEndEventSchema`, `ToolCallStartEventSchema`, `ToolCallDeltaEventSchema`, `ToolCallEndEventSchema`, `ToolUpdateEventSchema`, `ToolResultEventSchema`, `ApprovalRequiredEventSchema`, `ErrorEventSchema`, `FinishEventSchema`, `WorkflowEventSchema`, `SwarmEventSchema`: The schema of each event.
+- `StartEventSchema`, `TextStartEventSchema`, `TextDeltaEventSchema`, `TextEndEventSchema`, `ReasoningStartEventSchema`, `ReasoningDeltaEventSchema`, `ReasoningEndEventSchema`, `ToolCallStartEventSchema`, `ToolCallDeltaEventSchema`, `ToolCallEndEventSchema`, `ToolUpdateEventSchema`, `ToolResultEventSchema`, `DataEventSchema`, `StateSnapshotEventSchema`, `StateDeltaEventSchema`, `ResetStepEventSchema`, `ApprovalRequiredEventSchema`, `ErrorEventSchema`, `FinishEventSchema`, `WorkflowEventSchema`, `SwarmEventSchema`: The schema of each event.
+- `JsonPatchOperationSchema`: One operation of a JSON Patch, as `state-delta` carries them.
 - `RunUsageSchema`, `PendingApprovalSchema`, `ToolPresentationSchema`: The schemas of the `usage` of `finish`, of a pending approval and of the `presentation` of a tool call.
 - `streamEventComponents()`: The same schemas as OpenAPI 3.0 components: `StreamEvent` (a `oneOf` with a discriminator on `type`), a `Stream<Name>Event` per event, `RunUsage`, `PendingApproval` and `ToolPresentation`.
 - `OpenAPISchemaObject`: A component schema as plain JSON.
@@ -154,7 +159,7 @@ Wire formatting and keep-alive ping mechanisms to maintain streaming connections
 
 Stateful session manager coordinating stream event ordering, part transitions, and runtime event hooks.
 
-- `AgentStreamSession`: High-level session coordinator for streaming agent runs. Guarantees that parts never interleave (closes an open text or reasoning part before emitting tool calls or ending, and ends each streamed tool call as soon as it is complete, so tool calls interleave only when the provider mixes their pieces, and then no piece is lost), drops the calls it announced that never came to run (a `tool-call-end` with `dropped` when the call was never finished, then a dropped `tool-result`, also at `complete` and `fail`, while calls that run or wait for approval are kept, and a dropped call that runs after all under another tool name is announced again), generates IDs, emits `start`, buffers non-streamed results, handles tool approvals, and emits `finish` or `error`. Exposes `callbacks` (`onToken`, `onReasoning`, `onToolCall`, `onToolResult`, `onToolUpdate`, `onToolInputStart`, `onToolInputDelta`, `onToolInputAvailable`, `onToolInputAbandoned`) ready to spread into `cogitator.run({ stream: true, ...session.callbacks })`.
+- `AgentStreamSession`: High-level session coordinator for streaming agent runs. Guarantees that parts never interleave (closes an open text or reasoning part before emitting tool calls or ending, and ends each streamed tool call as soon as it is complete, so tool calls interleave only when the provider mixes their pieces, and then no piece is lost), drops the calls it announced that never came to run (a `tool-call-end` with `dropped` when the call was never finished, then a dropped `tool-result`, also at `complete` and `fail`, while calls that run or wait for approval are kept, and a dropped call that runs after all under another tool name is announced again), generates IDs, emits `start`, buffers non-streamed results, handles tool approvals, and emits `finish` or `error`. Exposes `callbacks` (`onToken`, `onReasoning`, `onToolCall`, `onToolResult`, `onToolUpdate`, `onToolInputStart`, `onToolInputDelta`, `onToolInputAvailable`, `onToolInputAbandoned`) ready to spread into `cogitator.run({ stream: true, ...session.callbacks })`, plus `onData` and `onState`, which stream the data parts and state changes of tools (`data`, `state-snapshot` then `state-delta`), and `onStepReset`, which sends `reset-step` with the parts and tool calls of a step that starts over and lets a model failing mid-answer move to the next of the agent's `fallbackModels`. `onStepReset` comes only with `resetSteps: true`, for a client that takes back what a `reset-step` names (off by default), `state` names the state the client already holds so the first change goes out as a delta.
 - `createThreadId()`: Generates a cryptographically random thread identifier (`thread_${crypto.randomUUID()}`).
 - `AgentStreamCallbacks`: Required callback interface matching Cogitator's streaming callbacks.
 - `AgentStreamSessionOptions`: Options interface accepting an optional client-supplied `threadId`.
@@ -200,6 +205,23 @@ new CogitatorServer({
 - `STREAM_NOT_FOUND`, `STREAM_RESUME_GAP`, `STREAM_ABORTED`, `STREAM_CANCELLED`, `STREAM_LIMIT_REACHED`: The error codes of resumable streams.
 - `formatStreamEventId(streamId, seq)`, `parseStreamEventId(id)`, `isStreamId(id)`, `lastEventIdOf(header, query)`: The event id format, and the id a request reconnects with (the header first, an empty value names none).
 - `invalidLastEventId()`, `invalidStreamId()`, `streamNotFound()`, `streamLimitReached()`: The refusals of a reconnect, a cancel and a new stream.
+
+### 3b. JSON Patch
+
+Exported from the main entry and from `@cogitator-ai/server-shared/json-patch`, a subpath that imports nothing else, so a browser bundle can apply `state-delta` events:
+
+- `createJsonPatch(from, to)`: The RFC 6902 patch that turns `from` into `to`, key by key and item by item.
+- `applyJsonPatch(document, patch)`: `document` with the patch applied, every operation of RFC 6902, the input left as it is. Throws `JsonPatchError` when an operation does not apply.
+- `jsonEqual(a, b)`, `parseJsonPointer(pointer)`, `JsonPatchOperation`.
+
+### 3c. AG-UI
+
+`@cogitator-ai/server-shared/agui` serves agents to [AG-UI](https://docs.ag-ui.com/) 1.0 clients (CopilotKit, `@ag-ui/client`), built on `@ag-ui/core`. Every adapter's `POST /agents/:name/agui` route uses it.
+
+- `toAGUI(events, { threadId, runId })`: The AG-UI events of a list of stream events, a pure function. `AGUITranslator` does the same one event at a time (`push(event)`), for a stream that is pushed. Text, reasoning, tool calls and results map one to one, `tool-update` and `data` become activities (`ACTIVITY_SNAPSHOT`, then `ACTIVITY_DELTA` patches by id), state events `STATE_SNAPSHOT` and `STATE_DELTA`, delegated runs subagents (`SUBAGENT_*`), workflow nodes steps, and `finish` `RUN_FINISHED` with outcome `success`, `interrupt` (the approvals and questions of a paused run as `Interrupt`s) or `cancelled`. Everything is closed before `RUN_FINISHED`, nothing goes out after it.
+- `streamAGUIRun({ request, host, send, signal, describeError })`: Runs or resumes an agent for an AG-UI request and streams it: `host` binds `run`, `resume`, `pausedRun` and `cancelPause` of a Cogitator to the agent, thread and caller. `parseAGUIRunInput(body)` validates a `RunAgentInput` and reads what it asks, `resumeResponses(entries, interrupts)` turns AG-UI resume entries into the `responses` of a resume.
+- `approvalInterrupt()`, `questionInterrupt()`: A pending approval or question as an AG-UI `Interrupt`.
+- `AGUIConformanceRuntime`, `runAGUIConformance(runtime, send)`: The conformance check every adapter's AG-UI route passes in its tests.
 
 ### 4. ID Generation
 

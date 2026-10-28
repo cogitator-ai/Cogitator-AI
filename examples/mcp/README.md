@@ -27,6 +27,7 @@ No need to run it manually — the example spawns it automatically via stdio tra
 | 04  | `04-agent-as-mcp-server.ts`  | Serve a Cogitator agent as an MCP tool in one line (Claude Desktop, Cursor, any client)                                     |
 | 05  | `05-mcp-rounds-and-tasks.ts` | MCP 2026-07-28: approvals as multi round-trip requests, a long call as a task, structured results of any shape (no API key) |
 | 06  | `06-mcp-oauth.ts`            | OAuth 2.1 against a local authorization server, the client registered by its Client ID Metadata Document (no API key)       |
+| 07  | `07-mcp-apps.ts`             | MCP Apps: a tool with an interactive `ui://` page, an app-only tool the page calls, what a host reads (no API key)          |
 
 ## Running
 
@@ -37,4 +38,5 @@ npx tsx examples/mcp/03-per-user-mcp.ts
 npx tsx examples/mcp/04-agent-as-mcp-server.ts
 npx tsx examples/mcp/05-mcp-rounds-and-tasks.ts
 npx tsx examples/mcp/06-mcp-oauth.ts
+npx tsx examples/mcp/07-mcp-apps.ts
 ```

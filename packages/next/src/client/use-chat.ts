@@ -14,6 +14,7 @@ import type {
   ToolResultEvent,
 } from '../types.js';
 import type { StreamEvent } from '../streaming/protocol.js';
+import { applyJsonPatch } from '@cogitator-ai/server-shared/json-patch';
 import { parseSSEFrames } from './sse-parser.js';
 import {
   chatReducer,
@@ -55,6 +56,8 @@ function isEventStream(response: Response): boolean {
 interface ChatRequest {
   readonly controller: AbortController;
   readonly toolCalls: Map<string, { name: string; args: string }>;
+  /** How much text each text and reasoning part streamed, for a `reset-step` to take back */
+  readonly parts: Map<string, { kind: 'text' | 'reasoning'; length: number }>;
   readonly backlog: StreamEvent[];
   readonly onFailure?: (error: Error) => void;
   /**
@@ -148,6 +151,7 @@ function createChatRequest(
   return {
     controller: new AbortController(),
     toolCalls: new Map(),
+    parts: new Map(),
     backlog: [],
     onFailure,
     thread,
@@ -183,6 +187,7 @@ function pendingAssistantMessage(state: ChatState): ChatMessage | null {
     content: state.currentContent,
     ...(state.currentReasoning && { reasoning: state.currentReasoning }),
     toolCalls: state.currentToolCalls.length > 0 ? state.currentToolCalls : undefined,
+    ...(state.currentData.length > 0 && { data: state.currentData }),
   };
 }
 
@@ -197,6 +202,8 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     onToolResult,
     onToolCallDropped,
     onReasoning,
+    onData,
+    onStateChange,
     onApprovalRequired,
     onInterruptRequired,
     resumeApi,
@@ -339,7 +346,11 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
 
   const handleStreamEvent = useCallback(
     (event: StreamEvent, request: ChatRequest): boolean => {
-      const { toolCalls } = request;
+      const { toolCalls, parts } = request;
+      const grow = (id: string, kind: 'text' | 'reasoning', length: number) => {
+        const part = parts.get(id) ?? { kind, length: 0 };
+        parts.set(id, { kind, length: part.length + length });
+      };
       switch (event.type) {
         case 'start':
           apply({ type: 'START_ASSISTANT_MESSAGE', payload: event.messageId });
@@ -347,10 +358,12 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           return false;
 
         case 'text-delta':
+          grow(event.id, 'text', event.delta.length);
           apply({ type: 'APPEND_CONTENT', payload: event.delta });
           return false;
 
         case 'reasoning-delta':
+          grow(event.id, 'reasoning', event.delta.length);
           apply({ type: 'APPEND_REASONING', payload: event.delta });
           onReasoning?.(event.delta);
           return false;
@@ -409,6 +422,57 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           return false;
         }
 
+        case 'data':
+          if (!event.transient) {
+            apply({
+              type: 'UPSERT_DATA',
+              payload: {
+                id: event.id,
+                name: event.name,
+                data: event.data,
+                ...(event.toolCallId !== undefined && { toolCallId: event.toolCallId }),
+              },
+            });
+          }
+          onData?.(event);
+          return false;
+
+        case 'state-snapshot':
+          apply({ type: 'SET_AGENT_STATE', payload: event.snapshot });
+          onStateChange?.(event.snapshot);
+          return false;
+
+        case 'state-delta': {
+          let next: unknown;
+          try {
+            next = applyJsonPatch(stateRef.current.agentState, event.delta);
+          } catch {
+            return false;
+          }
+          apply({ type: 'SET_AGENT_STATE', payload: next });
+          onStateChange?.(next);
+          return false;
+        }
+
+        case 'reset-step': {
+          let content = 0;
+          let reasoning = 0;
+          for (const id of event.partIds) {
+            const part = parts.get(id);
+            if (!part) continue;
+            parts.delete(id);
+            if (part.kind === 'text') content += part.length;
+            else reasoning += part.length;
+          }
+          for (const id of event.toolCallIds) toolCalls.delete(id);
+          apply({
+            type: 'RESET_STEP',
+            payload: { content, reasoning, toolCallIds: event.toolCallIds },
+          });
+          for (const id of event.toolCallIds) onToolCallDropped?.(id);
+          return false;
+        }
+
         case 'approval-required':
           requireApproval(request, event.approvals, event.threadId);
           return false;
@@ -442,6 +506,8 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       followThread,
       onError,
       onReasoning,
+      onData,
+      onStateChange,
       onToolCall,
       onToolCallDropped,
       onToolResult,
@@ -849,6 +915,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
   const setThreadId = useCallback(
     (id: string | undefined) => {
       pendingThreadRef.current = null;
+      if (id !== stateRef.current.threadId) apply({ type: 'SET_AGENT_STATE', payload: undefined });
       apply({ type: 'SET_THREAD_ID', payload: id });
       if (id === undefined) clearPause();
     },
@@ -892,6 +959,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     setMessages,
     pendingApprovals: state.pendingApprovals,
     pendingInterrupts: state.pendingInterrupts,
+    state: state.agentState,
     resume,
     approve,
     approveAlways,

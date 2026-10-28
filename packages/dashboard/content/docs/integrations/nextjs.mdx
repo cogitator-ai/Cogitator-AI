@@ -295,6 +295,8 @@ export function Chat() {
 | `onToolCallDropped`  | `(toolCallId: string) => void`           | A call the stream announced never runs ([Streaming Tool Input](/docs/tools/streaming-input#over-the-wire)), it is gone from the message's `toolCalls`, `onToolCall` may have reported it before |
 | `onReasoning`        | `(delta: string) => void`                | Called with each piece of the reasoning summary, the pieces collect in `message.reasoning`                                                                                                      |
 | `onApprovalRequired` | `(approvals: PendingApproval[]) => void` | Called when the run pauses for [approvals](#approvals)                                                                                                                                          |
+| `onData`             | `(part: DataEvent) => void`              | Every [data part](/docs/server-adapters#data-parts-state-and-step-resets) the stream sends, transient ones included, which never reach the message's `data`                                     |
+| `onStateChange`      | `(state: unknown) => void`               | The run's state each time a `state-snapshot` or `state-delta` changes it                                                                                                                        |
 | `resumeApi`          | `string`                                 | Endpoint of a `createResumeHandler`, for `resume`, `approve` and `deny`                                                                                                                         |
 | `retry`              | `RetryConfig`                            | Retry on network failures and 408/429/502/503/504                                                                                                                                               |
 | `reconnect`          | `false \| { attempts?, delayMs? }`       | Resume a stream that drops mid-run with `Last-Event-ID`, see [Reconnecting](#reconnecting). Default `{ attempts: 3, delayMs: 1000 }`, effective only when the server sends event ids            |
@@ -321,9 +323,12 @@ Against a handler with `resumableStreams`, whose events carry ids, the hook keep
 | `clearMessages`    | `() => void`                                    | Reset conversation                                   |
 | `setMessages`      | `(msgs: ChatMessage[]) => void`                 | Replace message list                                 |
 | `pendingApprovals` | `PendingApproval[]`                             | Tool calls the paused run waits on                   |
+| `state`            | `unknown`                                       | The run's state, as its tools changed it             |
 | `resume`           | `(decisions: ResumeDecisions) => Promise<void>` | Continue the paused run with these decisions         |
 | `approve`          | `() => Promise<void>`                           | Approve every pending call                           |
 | `deny`             | `(reason?: string) => Promise<void>`            | Decline every pending call                           |
+
+An assistant message keeps the data parts its tools sent in `data`, the latest of each id, and a step the server takes back (`reset-step`) leaves the message: its text, reasoning and tool calls are removed before the step streams anew.
 
 HTTP failures surface as `HttpError` (exported from `@cogitator-ai/next/client`) with a `status` field and a message such as `Request failed: 400 - No user message provided`.
 
@@ -365,6 +370,19 @@ export function AgentRunner() {
 It returns `run(input)`, `result`, `reasoning`, `pendingApprovals`, `resume(decisions)`, `isLoading`, `error` and `reset()`.
 
 `createAgentHandler` returns the run's reasoning summary as `reasoning` (also exposed by the hook as `reasoning`), and `usage` carries `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the provider reports them. Starting a new `run()` aborts the previous request, and `reset()` cancels the in-flight one.
+
+## AG-UI
+
+`createAGUIHandler` serves an agent to [AG-UI](/docs/integrations/ag-ui) clients such as CopilotKit: it takes a `RunAgentInput` and streams AG-UI events, runs the last user message in the request's thread, or resumes the paused run with its `resume` entries. `beforeRun` returns run options such as `{ userId }`, and `authorizeThread`, `anonymous` and `deps` work as on the other handlers.
+
+```typescript
+// app/api/agui/route.ts
+import { createAGUIHandler } from '@cogitator-ai/next';
+
+export const POST = createAGUIHandler(cog, agent, {
+  beforeRun: async (req) => ({ userId: await userIdFrom(req) }),
+});
+```
 
 ## Server Actions
 

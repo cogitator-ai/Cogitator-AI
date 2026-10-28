@@ -25,7 +25,14 @@ import {
   type VersionNegotiationMode,
 } from '@modelcontextprotocol/client';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
-import type { Tool } from '@cogitator-ai/types';
+import { toolOutput } from '@cogitator-ai/core';
+import type {
+  Tool,
+  ToolApp,
+  ToolAppCallResult,
+  ToolAppResource,
+  ToolStructuredDetails,
+} from '@cogitator-ai/types';
 import { createStdioTransport, createHttpTransport, createSseTransport } from './transports';
 import type {
   MCPClientConfig,
@@ -48,7 +55,7 @@ import type {
   MCPCallToolOptions,
   ToolAdapterOptions,
 } from '../types';
-import { wrapMCPTools, mcpContentToResult } from '../adapter/tool-adapter';
+import { wrapMCPTools, mcpContentToResult, mcpToolRequiresApproval } from '../adapter/tool-adapter';
 import { RawDispatcher } from './raw-dispatch';
 import { mcpParamHeaders } from './param-headers';
 import {
@@ -71,6 +78,15 @@ import {
   type TaskHost,
 } from './tasks';
 import { createMCPOAuthProvider, type MCPOAuthProvider } from './oauth';
+import {
+  MCP_APPS_EXTENSION,
+  MCP_APP_MIME_TYPE,
+  appMetaOf,
+  assertAppUri,
+  isToolVisibleTo,
+  toolAppRefOf,
+  toolVisibilityOf,
+} from '../apps';
 
 const DEFAULT_RETRY_CONFIG: Required<MCPRetryConfig> = {
   maxRetries: 3,
@@ -83,6 +99,7 @@ const DEFAULT_RETRY_CONFIG: Required<MCPRetryConfig> = {
 const DEFAULT_MAX_INPUT_ROUNDS = 10;
 const CLIENT_CAPABILITIES_KEY = 'io.modelcontextprotocol/clientCapabilities';
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
+const APP_META_FIELDS = ['csp', 'permissions', 'domain', 'prefersBorder'] as const;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -288,8 +305,10 @@ export class MCPClient {
 
   private createSdkClient(): Client {
     const elicitation = this.config.elicitation;
-    const capabilities: ClientCapabilities =
-      typeof elicitation === 'function' ? { elicitation: { form: {}, url: {} } } : {};
+    const capabilities: ClientCapabilities = {
+      ...(typeof elicitation === 'function' && { elicitation: { form: {}, url: {} } }),
+      ...(this.takesApps() && { extensions: this.appsExtension() }),
+    };
     const client = new Client(
       {
         name: this.config.clientName ?? 'cogitator-mcp-client',
@@ -656,6 +675,8 @@ export class MCPClient {
           outputSchema: tool.outputSchema as MCPToolDefinition['outputSchema'],
         }),
         ...(tool.annotations && { annotations: tool.annotations }),
+        ...(toolAppRefOf(tool._meta) && { app: toolAppRefOf(tool._meta) }),
+        ...(toolVisibilityOf(tool._meta) && { visibility: toolVisibilityOf(tool._meta) }),
       }));
       this.toolDefinitions.clear();
       for (const tool of tools) this.toolDefinitions.set(tool.name, tool);
@@ -683,7 +704,9 @@ export class MCPClient {
    *
    * Returns `structuredContent` when the server provides it (and no media), the text/JSON
    * value(s) of text content, or a `toolContent()` result when the content holds images, audio
-   * or binary resources. Throws {@link MCPToolError} when the server reports `isError: true`.
+   * or binary resources. With `structuredDetails: true` a `structuredContent` that such a value
+   * leaves out comes back too, in the `details` of a `toolOutput()` result around the value.
+   * Throws {@link MCPToolError} when the server reports `isError: true`.
    *
    * A server may ask for input during the call (elicitation): it is asked through the run of
    * the call (`options.interrupt`), else from the `elicitation` handler, else declined. A server
@@ -700,8 +723,11 @@ export class MCPClient {
     args: Record<string, unknown>,
     options?: MCPCallToolOptions
   ): Promise<unknown> {
-    const call = async (): Promise<unknown> =>
-      toolResultValue(name, await this.callToolResult(name, args, options));
+    const call = async (): Promise<unknown> => {
+      const result = await this.callToolResult(name, args, options);
+      const value = toolResultValue(name, result);
+      return options?.structuredDetails === true ? withStructuredDetails(value, result) : value;
+    };
 
     if (options?.idempotent === true) {
       return this.withRetry(call, `callTool:${name}`, options.signal);
@@ -956,10 +982,23 @@ export class MCPClient {
    * elicitation when someone can answer, and the tasks extension when the client takes tasks
    */
   private capabilities(canAnswer: boolean): ClientCapabilities {
+    const extensions = {
+      ...(this.takesTasks() && { [TASKS_EXTENSION]: {} }),
+      ...(this.takesApps() && this.appsExtension()),
+    };
     return {
       ...(canAnswer && { elicitation: { form: {}, url: {} } }),
-      ...(this.takesTasks() && { extensions: { [TASKS_EXTENSION]: {} } }),
+      ...(Object.keys(extensions).length > 0 && { extensions }),
     };
+  }
+
+  /** Whether the client tells servers it takes MCP Apps (`apps`, on by default) */
+  private takesApps(): boolean {
+    return this.config.apps !== false;
+  }
+
+  private appsExtension(): Record<string, { mimeTypes: string[] }> {
+    return { [MCP_APPS_EXTENSION]: { mimeTypes: [MCP_APP_MIME_TYPE] } };
   }
 
   /** The `_meta` of a request sent past the SDK client */
@@ -1109,6 +1148,7 @@ export class MCPClient {
         name: resource.name,
         description: resource.description,
         mimeType: resource.mimeType,
+        ...(resource._meta && { _meta: { ...resource._meta } }),
       }));
     }, 'listResources');
   }
@@ -1137,8 +1177,107 @@ export class MCPClient {
         mimeType: content.mimeType,
         text: 'text' in content ? content.text : undefined,
         blob: 'blob' in content ? content.blob : undefined,
+        ...(content._meta && { _meta: { ...content._meta } }),
       }));
     }, `readResource:${uri}`);
+  }
+
+  /**
+   * Reads an MCP App: the HTML of the `ui://` resource, from `text` or base64 `blob`, and the CSP,
+   * permissions, domain and border preference of its `_meta.ui`, field by field the content's
+   * over the listing's
+   *
+   * @throws Error when `uri` is not a `ui://` URI, or the resource is not `text/html;profile=mcp-app`
+   */
+  async readApp(uri: string): Promise<ToolAppResource> {
+    assertAppUri(uri);
+    const contents = await this.readResourceContents(uri);
+    const content = contents.find((entry) => entry.mimeType === MCP_APP_MIME_TYPE);
+    if (!content) {
+      throw new Error(`The MCP resource ${uri} is no MCP App (${MCP_APP_MIME_TYPE})`);
+    }
+    const html =
+      content.text ??
+      (content.blob !== undefined ? Buffer.from(content.blob, 'base64').toString('utf8') : '');
+    const own = appMetaOf(content._meta);
+    const complete = APP_META_FIELDS.every((field) => own[field] !== undefined);
+    const listed = complete ? {} : await this.listedAppMeta(uri);
+    return { uri, mimeType: MCP_APP_MIME_TYPE, html, ...listed, ...own };
+  }
+
+  /** `_meta.ui` of the app's entry in `resources/list`, when the server lists it */
+  private async listedAppMeta(uri: string): Promise<ReturnType<typeof appMetaOf>> {
+    const resources = await this.listResources().catch(() => []);
+    return appMetaOf(resources.find((resource) => resource.uri === uri)?._meta);
+  }
+
+  /**
+   * The MCP App of the server's tool `name`, or undefined for a tool without one: what it
+   * points at, how to read it, and the calls of the server's tools it may make
+   */
+  async getToolApp(
+    name: string,
+    options: Pick<ToolAdapterOptions, 'requiresApproval'> = {}
+  ): Promise<ToolApp | undefined> {
+    const definition = await this.toolDefinition(name);
+    return definition && this.appOf(definition, options);
+  }
+
+  /**
+   * The MCP App of a tool definition this client listed, see {@link getToolApp}. A tool the app
+   * calls needs approval as `requiresApproval` says, the adapter's setting: the destructive tools
+   * by default
+   */
+  appOf(
+    definition: MCPToolDefinition,
+    options: Pick<ToolAdapterOptions, 'requiresApproval'> = {}
+  ): ToolApp | undefined {
+    const ref = definition.app;
+    if (!ref || !this.takesApps()) return undefined;
+    return {
+      resourceUri: ref.resourceUri,
+      ...(ref.visibility && { visibility: [...ref.visibility] }),
+      read: () => this.readApp(ref.resourceUri),
+      callTool: (tool, args, options) => this.callToolForApp(tool, args, options),
+      requiresApproval: async (tool) => {
+        const called = await this.toolDefinition(tool);
+        return called !== undefined && mcpToolRequiresApproval(called, options.requiresApproval);
+      },
+    };
+  }
+
+  /**
+   * Calls the server's tool `name` for one of its apps, as MCP Apps allows: only a tool visible to
+   * apps (`_meta.ui.visibility` with `app`, or none). The result comes back as the server sent it,
+   * its content blocks too (a `resource_link` stays one, with its `_meta` and annotations), an
+   * error of the tool as `isError`. A `structuredContent` that is no object (an array, a string,
+   * a number, `null`) comes as `{ result: value }`, the container the MCP SDK puts such a value in
+   * for clients that read objects only, as apps built on older SDKs do
+   *
+   * @throws Error when the server has no such tool, or keeps it from apps
+   */
+  async callToolForApp(
+    name: string,
+    args: Record<string, unknown>,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<ToolAppCallResult> {
+    const definition = await this.toolDefinition(name);
+    if (!definition) throw new Error(`The MCP server has no tool "${name}"`);
+    if (!isToolVisibleTo(definition, 'app')) {
+      throw new Error(`The MCP tool "${name}" is not open to apps`);
+    }
+    const result = await this.callOnce(
+      () => this.callToolResult(name, args, options.signal ? { signal: options.signal } : {}),
+      name
+    );
+    const content = serverContent.get(result) ?? result.content;
+    return {
+      content: content.map((block) => structuredClone(block)),
+      ...(result.structuredContent !== undefined && {
+        structuredContent: appStructuredContent(result.structuredContent),
+      }),
+      ...(result.isError === true && { isError: true }),
+    };
   }
 
   /**
@@ -1250,14 +1389,22 @@ function isMCPOAuthProvider(value: OAuthClientProvider | undefined): value is MC
 
 type SDKToolContent = CallToolResult['content'][number];
 
+/**
+ * The content blocks a tool result came with, as the server sent them, for its apps: the
+ * `content` of an `MCPToolCallResult` is what the model reads, a `resource_link` as a line of text
+ */
+const serverContent = new WeakMap<MCPToolCallResult, readonly SDKToolContent[]>();
+
 function toCallResult(result: CallToolResult): MCPToolCallResult & { toolResult?: unknown } {
-  const content = toToolContent(Array.isArray(result.content) ? result.content : []);
-  return {
-    content,
+  const blocks = Array.isArray(result.content) ? result.content : [];
+  const call = {
+    content: toToolContent(blocks),
     ...(result.structuredContent !== undefined && { structuredContent: result.structuredContent }),
     ...(result.isError === true && { isError: true }),
     ...('toolResult' in result && { toolResult: result.toolResult }),
   };
+  serverContent.set(call, blocks);
+  return call;
 }
 
 /** What `callTool` returns for a tool result */
@@ -1282,6 +1429,19 @@ function toolResultValue(
     return result.toolResult;
   }
   return null;
+}
+
+/**
+ * `value` in a `toolOutput()` result whose `details` keep the result's `structuredContent`, when
+ * `value` leaves it out (a result with media), `value` itself otherwise
+ */
+function withStructuredDetails(value: unknown, result: MCPToolCallResult): unknown {
+  const { structuredContent } = result;
+  if (structuredContent === undefined || value === structuredContent) return value;
+  return toolOutput<unknown, ToolStructuredDetails>({
+    content: value,
+    details: { structuredContent },
+  });
 }
 
 /** The content blocks of a tool result; a link to a resource becomes a line of text. */
@@ -1379,4 +1539,16 @@ export async function connectMCPServer(config: MCPClientConfig): Promise<{
     tools,
     cleanup: () => client.close(),
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * `structuredContent` as an app reads it: an object as it is, any other value in the `{ result }`
+ * container the MCP SDK uses for it
+ */
+export function appStructuredContent(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : { result: value };
 }

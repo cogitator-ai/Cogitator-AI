@@ -69,6 +69,7 @@ describe('OpenAPI document', () => {
     expect(warnings).toEqual([]);
     expect(Object.keys(document.paths ?? {}).sort()).toEqual([
       '/api/agents',
+      '/api/agents/{name}/agui',
       '/api/agents/{name}/resume',
       '/api/agents/{name}/resume/stream',
       '/api/agents/{name}/run',

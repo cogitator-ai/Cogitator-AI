@@ -116,9 +116,9 @@ describe('MCP tool annotations', () => {
     for (const tool of await wrapMCPTools(client)) await tool.execute({}, context);
 
     expect(callTool.mock.calls.map((call) => [call[0], call[2]])).toEqual([
-      ['read_file', { signal: context.signal, idempotent: true }],
-      ['set_flag', { signal: context.signal, idempotent: true }],
-      ['deploy_service', { signal: context.signal, idempotent: false }],
+      ['read_file', { signal: context.signal, idempotent: true, structuredDetails: true }],
+      ['set_flag', { signal: context.signal, idempotent: true, structuredDetails: true }],
+      ['deploy_service', { signal: context.signal, idempotent: false, structuredDetails: true }],
     ]);
   });
 });

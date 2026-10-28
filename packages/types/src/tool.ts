@@ -55,6 +55,11 @@ export interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknow
   access?: ToolAccess<TParams>;
   /** The MCP server tool this tool calls, so `mcp__<server>__<tool>` rules match it */
   mcp?: ToolMcpOrigin;
+  /**
+   * The interactive app (an MCP App) a host shows for this tool's calls: an MCP server serves it
+   * with the tool, and a tool from an MCP server that has one carries it here
+   */
+  app?: ToolApp;
   timeout?: number;
   sandbox?: SandboxConfig;
   /**
@@ -134,6 +139,8 @@ export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
   access?: ToolAccess<TParams>;
   /** The MCP server tool this tool calls, see `ToolConfig.mcp` */
   mcp?: ToolMcpOrigin;
+  /** The interactive app a host shows for this tool's calls, see `ToolConfig.app` */
+  app?: ToolApp;
   timeout?: number;
   sandbox?: SandboxConfig;
   /**
@@ -233,6 +240,79 @@ export type ToolAgentOf<TParams = unknown> = {
   agentOf(params: TParams): string | undefined;
 }['agentOf'];
 
+/** Who may call a tool that has an app: the agent (`model`), its app (`app`) */
+export type ToolAppVisibility = 'model' | 'app';
+
+/**
+ * The origins an app may reach, as the MCP Apps extension declares them (`_meta.ui.csp`). A host
+ * builds the Content Security Policy of the app from them, and reaches nothing else
+ */
+export interface ToolAppCsp {
+  /** Origins of `fetch`, XHR and WebSocket (`connect-src`) */
+  connectDomains?: string[];
+  /** Origins of scripts, styles, images, fonts and media */
+  resourceDomains?: string[];
+  /** Origins of frames the app nests (`frame-src`), none when left out */
+  frameDomains?: string[];
+  /** Origins the app's `<base>` may name (`base-uri`) */
+  baseUriDomains?: string[];
+}
+
+/** The browser features an app asks for, a host may grant (`_meta.ui.permissions`) */
+export interface ToolAppPermissions {
+  camera?: Record<string, never>;
+  microphone?: Record<string, never>;
+  geolocation?: Record<string, never>;
+  clipboardWrite?: Record<string, never>;
+}
+
+/** An app as a host renders it: its HTML and what it asks of the host */
+export interface ToolAppResource {
+  /** The `ui://` URI of the app */
+  uri: string;
+  /** `text/html;profile=mcp-app` */
+  mimeType: string;
+  html: string;
+  csp?: ToolAppCsp;
+  permissions?: ToolAppPermissions;
+  /** A dedicated origin the app asks for, as its host understands it */
+  domain?: string;
+  /** Whether the app wants the host to draw a border and background around it */
+  prefersBorder?: boolean;
+}
+
+/** What a tool call an app made returned, as an MCP `CallToolResult` */
+export interface ToolAppCallResult {
+  content: Array<{ type: string } & Record<string, unknown>>;
+  /** The tool's structured result: an object, or `{ result: value }` for any other JSON value */
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+}
+
+/**
+ * The interactive app of a tool (an MCP App, extension `io.modelcontextprotocol/ui`): an HTML page
+ * a host shows in a sandboxed frame for the tool's calls, given the call's arguments and result
+ */
+export interface ToolApp {
+  /** The `ui://` resource of the app */
+  resourceUri: string;
+  /** Who may call the tool, both by default. A tool visible to `app` only is not offered to the model */
+  visibility?: readonly ToolAppVisibility[];
+  /** Reads the app: its HTML, and the origins and features it asks for */
+  read(): Promise<ToolAppResource>;
+  /**
+   * Calls a tool for the app, on the server the app came from: only a tool visible to apps.
+   * Absent when the app may call no tools
+   */
+  callTool?(
+    name: string,
+    args: Record<string, unknown>,
+    options?: { signal?: AbortSignal }
+  ): Promise<ToolAppCallResult>;
+  /** Whether a tool the app calls needs a person's approval before it runs, such as a destructive one */
+  requiresApproval?(name: string): Promise<boolean>;
+}
+
 /** An MCP server's tool, by the server's name and the tool's name there */
 export interface ToolMcpOrigin {
   /** The server's name, `''` for a server that reports none */
@@ -287,12 +367,56 @@ export interface ToolOutputResult<TContent = unknown, TDetails = unknown> {
   presentation?: ToolPresentation;
 }
 
+/**
+ * The `details` of a call whose result for the model leaves out the tool's structured result, as
+ * an MCP tool's does when the server answered with images, audio or binary resources next to its
+ * `structuredContent`. A host of the tool's app gives it to the app as the result's
+ * `structuredContent`: an object as it is, any other value as `{ result: value }`
+ */
+export interface ToolStructuredDetails {
+  /** The tool's structured result, any JSON value */
+  structuredContent: unknown;
+}
+
 /** What a running tool has so far, reported with `context.update()` */
 export interface ToolProgress {
   /** The result so far, in the shape of `content` */
   content?: unknown;
   details?: unknown;
   presentation?: ToolPresentation;
+}
+
+/**
+ * Structured data a tool sends its run's client with `context.data()`, for the client to render as
+ * a widget of its own, such as a chart or a status card
+ */
+export interface DataPart {
+  /**
+   * Names the part: a part sent again with the same id replaces the one sent before, so a tool
+   * updates a widget in place. A new id when left out
+   */
+  id?: string;
+  /** What kind of data it is, such as `weather`, for the client to pick how it renders it */
+  name: string;
+  /** The data, any JSON value */
+  data: unknown;
+  /** Shown while the run streams only: never kept with the messages of the conversation */
+  transient?: boolean;
+}
+
+/** A data part as the run reports it to `RunOptions.onData`: with its id and the call that sent it */
+export interface RunDataPart extends DataPart {
+  id: string;
+  toolCallId?: string;
+  toolName?: string;
+}
+
+/** The run's state, as a tool reads and replaces it, see `RunOptions.state` */
+export interface RunStateAccess {
+  /** A copy of the state: change it and `set()` it to change the run's */
+  get(): unknown;
+  /** Replaces the state with a copy of `state`: the run reports it to `RunOptions.onState` */
+  set(state: unknown): void;
 }
 
 /** The model began to write a tool call */
@@ -368,6 +492,18 @@ export interface BaseToolContext<TDeps = unknown> {
    * `invokeTool()`
    */
   update?: (progress: ToolProgress) => void;
+  /**
+   * Sends the run's client a data part: structured data it renders as a widget of its own. Send
+   * it again with the id this returns to replace it in place. The run hands it to `onData` and a
+   * server streams it as `data`. Nothing of it reaches the model or memory. Present in a run
+   */
+  data?: (part: DataPart) => string;
+  /**
+   * The run's state, shared with its client (`RunOptions.state`): a tool reads it with `get()`
+   * and replaces it with `set()`, the run hands each change to `onState` and a server streams it
+   * as a JSON Patch. Present in a run
+   */
+  state?: RunStateAccess;
   /**
    * The run's permission mode and `session` rules, when the run has permissions set up, so a tool
    * that starts a run of its own (an agent as a tool) holds it to the same rules

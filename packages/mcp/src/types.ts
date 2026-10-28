@@ -2,6 +2,8 @@
  * MCP Integration Types
  */
 
+import type { MCPToolAppRef } from './apps';
+import type { ToolAppVisibility } from '@cogitator-ai/types';
 import type { IncomingMessage } from 'node:http';
 import type { OAuthClientProvider } from '@modelcontextprotocol/client';
 import type { ToolContext, ToolInvoker } from '@cogitator-ai/types';
@@ -207,6 +209,13 @@ export interface MCPClientConfig {
    */
   rounds?: MCPClientRoundOptions;
 
+  /**
+   * MCP Apps (extension `io.modelcontextprotocol/ui`): tells servers the client takes apps, so
+   * they list their tools' `ui://` apps. `getToolApp()` and the `app` of a wrapped tool read them,
+   * a host renders them. Default: true
+   */
+  apps?: boolean;
+
   /** For stdio transport: command to spawn */
   command?: string;
 
@@ -296,6 +305,8 @@ export interface MCPResource {
   name: string;
   description?: string;
   mimeType?: string;
+  /** What the server attaches to the resource, such as `ui` for an MCP App */
+  _meta?: Record<string, unknown>;
 }
 
 export interface MCPResourceContent {
@@ -303,6 +314,8 @@ export interface MCPResourceContent {
   mimeType?: string;
   text?: string;
   blob?: string;
+  /** What the server attaches to the content, such as `ui` for an MCP App */
+  _meta?: Record<string, unknown>;
 }
 
 export interface MCPPrompt {
@@ -598,6 +611,13 @@ export interface MCPToolDefinition {
   outputSchema?: MCPJsonSchema;
   /** Hints the server gives about the tool's behavior */
   annotations?: MCPToolAnnotations;
+  /** The MCP App the tool points at (`_meta.ui.resourceUri`), and who may call the tool */
+  app?: MCPToolAppRef;
+  /**
+   * Who may call the tool (`_meta.ui.visibility`): `model`, the agent, and `app`, the pages of its
+   * server. Both when left out. A tool for apps only is not given to agents
+   */
+  visibility?: ToolAppVisibility[];
 }
 
 /** A JSON Schema of any shape, as MCP takes for tool output since 2026-07-28 */
@@ -670,6 +690,15 @@ export interface MCPCallToolOptions {
 
   /** Reports progress, such as the status message of a server's task (`ToolContext.update`) */
   update?: ToolContext['update'];
+
+  /**
+   * Keep the server's `structuredContent` when the value leaves it out, as a result with images,
+   * audio or binary resources does: the call then returns a `toolOutput()` result of
+   * `@cogitator-ai/core`, the value as its `content` (what the model reads) and
+   * `{ structuredContent }` (`ToolStructuredDetails`) as its `details`, for the application and
+   * the tool's app. Default: false. Tools from `getTools()` / `wrapMCPTools()` set it
+   */
+  structuredDetails?: boolean;
 }
 
 /** How long a task lives and how often clients poll it */

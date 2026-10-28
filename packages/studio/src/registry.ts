@@ -1,4 +1,11 @@
-import type { AgentInfo, RegistryInfo, SwarmInfo, ToolInfo, WorkflowInfo } from './protocol.js';
+import type {
+  AgentInfo,
+  RegistryInfo,
+  SwarmInfo,
+  ToolAppInfo,
+  ToolInfo,
+  WorkflowInfo,
+} from './protocol.js';
 
 /** Where a scaffolded project registers its agents, workflows and swarms. */
 export const REGISTRY_PATH = 'src/cogitator.ts';
@@ -34,14 +41,29 @@ function agentShape(value: unknown): { config: UnknownRecord; tools: unknown[] }
   return { config: value.config, tools: Array.isArray(value.tools) ? value.tools : [] };
 }
 
+/** The MCP App of a tool, judged by shape like the agents: a `ui://` URI and a way to read it */
+function describeApp(value: unknown): ToolAppInfo | undefined {
+  if (!isRecord(value) || typeof value.read !== 'function') return undefined;
+  const uri = stringOf(value.resourceUri);
+  if (!uri?.startsWith('ui://')) return undefined;
+  const visibility = Array.isArray(value.visibility)
+    ? value.visibility.filter(
+        (entry): entry is 'model' | 'app' => entry === 'model' || entry === 'app'
+      )
+    : undefined;
+  return { resourceUri: uri, ...(visibility && visibility.length > 0 && { visibility }) };
+}
+
 function describeTool(value: unknown): ToolInfo | undefined {
   if (!isRecord(value) || typeof value.name !== 'string') return undefined;
   const schema = typeof value.toJSON === 'function' ? (value.toJSON as () => unknown)() : undefined;
+  const app = describeApp(value.app);
   return {
     name: value.name,
     description: stringOf(value.description) ?? '',
     parameters: isRecord(schema) ? schema.parameters : undefined,
     requiresApproval: value.requiresApproval !== undefined && value.requiresApproval !== false,
+    ...(app && { app }),
   };
 }
 

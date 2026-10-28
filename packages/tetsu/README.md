@@ -81,6 +81,7 @@ A Tetsu controller named `Cogitator`: `operationId`s in the OpenAPI document are
 | `POST`   | `/agents/:name/stream`           | Run an agent over SSE                             |
 | `POST`   | `/agents/:name/resume`           | Resume a run paused for approvals                 |
 | `POST`   | `/agents/:name/resume/stream`    | Resume a paused run over SSE                      |
+| `POST`   | `/agents/:name/agui`             | Run or resume for an AG-UI client (AG-UI SSE)     |
 | `GET`    | `/tools`                         | Tools of every agent, as JSON Schema              |
 | `GET`    | `/threads/:id`                   | Messages of a thread, a page with `?limit&cursor` |
 | `POST`   | `/threads/:id/messages`          | Append a message                                  |

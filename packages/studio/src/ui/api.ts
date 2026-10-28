@@ -23,6 +23,8 @@ import type {
   ThreadForkRequest,
   ThreadRecord,
   ThreadTree,
+  ToolAppCallOutcome,
+  ToolAppFrameInfo,
   TriggersState,
 } from '../protocol';
 
@@ -136,6 +138,19 @@ export const api = {
       `/api/plugins/${encodeURIComponent(plugin)}/panels/${encodeURIComponent(panel)}/call`,
       { method: 'POST', body: { method, ...(params !== undefined && { params }) } }
     ),
+  toolApp: (agent: string, tool: string) =>
+    request<ToolAppFrameInfo>(`${toolAppBase(agent, tool)}`),
+  callToolApp: (
+    agent: string,
+    tool: string,
+    name: string,
+    args: Record<string, unknown>,
+    approved: boolean
+  ) =>
+    request<ToolAppCallOutcome>(`${toolAppBase(agent, tool)}/call`, {
+      method: 'POST',
+      body: { name, arguments: args, ...(approved && { approved: true }) },
+    }),
   inbox: (query: { status?: InboxItemStatus[] | 'all'; kind?: InboxItemKind; limit?: number }) => {
     const params = new URLSearchParams();
     if (query.status) params.set('status', query.status === 'all' ? 'all' : query.status.join(','));
@@ -175,6 +190,15 @@ export const api = {
       body: { fromNode },
     }),
 };
+
+function toolAppBase(agent: string, tool: string): string {
+  return `/api/agents/${encodeURIComponent(agent)}/tools/${encodeURIComponent(tool)}/app`;
+}
+
+/** Where the page of a tool's MCP App is served, for its sandboxed frame. */
+export function toolAppUrl(agent: string, tool: string): string {
+  return `${toolAppBase(agent, tool)}/view`;
+}
 
 /** Where the page of a plugin's panel is served, for its sandboxed frame. */
 export function panelUrl(plugin: string, panel: string): string {

@@ -22,6 +22,7 @@ import type {
   ToolAdapterOptions,
 } from '../types';
 import type { MCPClient } from '../client/mcp-client';
+import { isToolVisibleTo } from '../apps';
 
 /**
  * Convert a Zod schema to JSON Schema
@@ -392,7 +393,9 @@ function toolNames(definitions: readonly MCPToolDefinition[], prefix: string): M
  * read-only or idempotent. The tool keeps the server's `title`, `outputSchema` and annotations,
  * and needs approval when the server marks it destructive (see `requiresApproval`). It names the
  * server tool it calls in `mcp` (`ToolAdapterOptions.server`, else the name the server reports),
- * which `mcp__<server>__<tool>` permission rules match.
+ * which `mcp__<server>__<tool>` permission rules match. A result with media keeps the server's
+ * `structuredContent` in the call's `details` (`structuredDetails` of `MCPClient.callTool`), out
+ * of what the model reads.
  */
 export function mcpToCogitator(
   mcpTool: MCPToolDefinition,
@@ -415,7 +418,7 @@ export function mcpToCogitator(
   const title = mcpTool.title ?? annotationTitle;
   const annotations = Object.keys(hints).length > 0 ? hints : undefined;
   const idempotent = hints.readOnlyHint === true || hints.idempotentHint === true;
-  const requiresApproval = approvalOf(mcpTool, options?.requiresApproval);
+  const requiresApproval = mcpToolRequiresApproval(mcpTool, options?.requiresApproval);
   const server = options?.server ?? client.serverName ?? '';
 
   const tool: Tool = {
@@ -427,11 +430,19 @@ export function mcpToCogitator(
     ...(annotations && { annotations }),
     ...(requiresApproval && { requiresApproval }),
     mcp: { server, tool: mcpTool.name },
+    ...(mcpTool.app && {
+      app: client.appOf(mcpTool, {
+        ...(options?.requiresApproval !== undefined && {
+          requiresApproval: options.requiresApproval,
+        }),
+      }),
+    }),
 
     execute: async (params: unknown, context: ToolContext): Promise<unknown> => {
       return client.callTool(mcpTool.name, (params ?? {}) as Record<string, unknown>, {
         signal: context?.signal,
         idempotent,
+        structuredDetails: true,
         ...(context?.toolCallId !== undefined && { toolCallId: context.toolCallId }),
         ...(context?.interrupt && { interrupt: context.interrupt }),
         ...(context?.update && { update: context.update }),
@@ -460,7 +471,11 @@ export function isDestructiveMCPTool(tool: MCPToolDefinition): boolean {
   return tool.annotations?.readOnlyHint !== true && tool.annotations?.destructiveHint === true;
 }
 
-function approvalOf(
+/**
+ * Whether a call of `tool` needs approval under the adapter's `requiresApproval` setting: the
+ * destructive tools by default, see `ToolAdapterOptions.requiresApproval`
+ */
+export function mcpToolRequiresApproval(
   tool: MCPToolDefinition,
   requiresApproval: ToolAdapterOptions['requiresApproval'] = isDestructiveMCPTool
 ): boolean {
@@ -471,7 +486,9 @@ function approvalOf(
  * Wrap all tools from an MCP client as Cogitator tools
  *
  * Names are normalized for LLM providers and kept distinct. Give each server its own
- * `namePrefix` when an agent uses several servers whose tools could share names.
+ * `namePrefix` when an agent uses several servers whose tools could share names. A tool with an
+ * MCP App carries it as its `app`, and a tool the server opens to apps only
+ * (`_meta.ui.visibility: ['app']`) is left out: its app calls it through `app.callTool()`.
  *
  * @example
  * ```typescript
@@ -487,7 +504,9 @@ export async function wrapMCPTools(
   client: MCPClient,
   options?: ToolAdapterOptions
 ): Promise<Tool[]> {
-  const definitions = await client.listToolDefinitions();
+  const definitions = (await client.listToolDefinitions()).filter((definition) =>
+    isToolVisibleTo(definition, 'model')
+  );
   const names = toolNames(definitions, options?.namePrefix ?? '');
   const server = options?.server ?? client.serverName ?? '';
   return definitions.map((def) =>

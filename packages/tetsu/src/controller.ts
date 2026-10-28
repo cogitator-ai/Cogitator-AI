@@ -21,6 +21,12 @@ import {
   toWorkflowFailedData,
 } from '@cogitator-ai/server-shared';
 import type { StreamEvent } from '@cogitator-ai/server-shared';
+import {
+  parseAGUIRunInput,
+  streamAGUIRun,
+  type AGUIRunHost,
+  type AGUIRunRequest,
+} from '@cogitator-ai/server-shared/agui';
 import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
 import type {
   Message,
@@ -75,6 +81,7 @@ import {
   NameParams,
   ReadyResponse,
   StreamParams,
+  AGUIRunBody,
   ResumeBody,
   RUN_FAILURES,
   requestSchemas,
@@ -458,6 +465,53 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
             resumeAgent(deps, agent, threadId, { ...resumeOptions, ...callbacks }, auth, runDeps),
           threadId,
           auth
+        );
+      },
+    }),
+
+    aguiAgent: route({
+      method: 'POST',
+      path: '/agents/:name/agui',
+      schema: {
+        params: NameParams,
+        body: AGUIRunBody,
+        response: { 200: StreamOpened, 403: ThreadForbidden, 415: NotJson },
+      },
+      hooks: { beforeParse: [caller, admitted, jsonBody], onError: [errors] },
+      docs: {
+        summary: 'Run or resume an agent for an AG-UI client and stream AG-UI events',
+        description:
+          "Takes an AG-UI 1.0 `RunAgentInput` and streams the run as AG-UI events over SSE, for CopilotKit or an `@ag-ui/client` `HttpAgent`. The AG-UI thread is the run's memory thread: the last message, which must be the user's, starts a new turn, `resume` entries answer every interrupt of the paused run at once. `state` is the run's state, `context` its brief.",
+        tags: ['agents'],
+      },
+      handler: async (ctx) => {
+        const agent = findAgent(deps, ctx.params.name);
+        const parsed = parseAGUIRunInput(ctx.body);
+        if (!parsed.ok) throw httpError(400, 'INVALID_INPUT', parsed.message);
+        const auth = ctx.cogitatorAuth;
+        const threadId = parsed.value.input.threadId;
+        await checkThreadAccess(deps, auth, threadId);
+        const runDeps = await runDepsOf(deps, ctx);
+        const userId = auth?.userId;
+        const host: AGUIRunHost = {
+          run: (options) => runAgent(deps, agent, options, auth, runDeps),
+          resume: (options) => resumeAgent(deps, agent, threadId, options, auth, runDeps),
+          pausedRun: () => deps.cogitator.pausedRun(threadId),
+          cancelPause: (reason) =>
+            deps.cogitator.cancelPause(threadId, {
+              ...(userId !== undefined && { userId }),
+              reason,
+            }),
+        };
+        const describe = (error: unknown) => {
+          const described = describeError(error);
+          if (described.unexpected) reportFailure(ctx, 'stream', error);
+          return described;
+        };
+        return sse(
+          ctx,
+          (signal) => aguiEvents(parsed.value, host, signal, describe),
+          streamOptions()
         );
       },
     }),
@@ -909,6 +963,24 @@ async function* agentEvents(
     yield* closing.map(sseEvent);
     if (described.unexpected) throw error;
   }
+}
+
+/** The AG-UI events of a run or resume an AG-UI client asked for, see `streamAGUIRun()` */
+async function* aguiEvents(
+  request: AGUIRunRequest,
+  host: AGUIRunHost,
+  signal: AbortSignal,
+  describe: (error: unknown) => { message: string; code: string }
+): AsyncGenerator<ServerSentEvent, void, undefined> {
+  yield* eventsOf<ServerSentEvent>(signal, (emit) =>
+    streamAGUIRun({
+      request,
+      host,
+      signal,
+      send: (event) => emit({ data: event }),
+      describeError: describe,
+    })
+  );
 }
 
 async function* workflowEvents(

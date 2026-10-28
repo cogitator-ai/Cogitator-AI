@@ -23,6 +23,7 @@ pnpm add @cogitator-ai/core zod
 - **MCP Server** - Expose Cogitator tools, resources and prompts over stdio or Streamable HTTP
 - **Serve Agents** - Turn Cogitator agents into MCP tools in one call, with tool approvals through MCP elicitation
 - **Multi round-trip requests** - Approvals and questions end a round with the questions and a signed state, the client calls again with the answers. An agent run that asks pauses, and resumes with them
+- **MCP Apps** - Tools come with interactive `ui://` pages (extension `io.modelcontextprotocol/ui`): the server serves them with their CSP and permissions, the client reads them and lets them call tools open to apps
 - **Tasks** - Long calls become MCP tasks the client polls, answers and cancels (extension `io.modelcontextprotocol/tasks`)
 - **OAuth 2.1** - Client ID Metadata Documents, Dynamic Client Registration as a fallback, `iss` checked, Protected Resource Metadata on the server
 - **Subscriptions** - Hear of tool, prompt and resource changes through `subscriptions/listen`
@@ -343,7 +344,7 @@ await client.close();
 
 ### Tool Results and Errors
 
-`callTool` returns the server's `structuredContent` when present (any JSON value, such as an array, since 2026-07-28), otherwise text blocks are unwrapped: JSON-parsed when possible, a single block's value on its own, several as an array, and an empty result is `null`. Content with images, audio or binary resources comes back as a `toolContent()` result of `@cogitator-ai/core` (images as `image` parts, audio and blobs as `file` parts, text resources as `resource` parts that keep their URI), so an agent's model sees a screenshot as an image instead of base64 text, and audio stays out of the context. A link to a resource becomes a line of text.
+`callTool` returns the server's `structuredContent` when present (any JSON value, such as an array, since 2026-07-28), otherwise text blocks are unwrapped: JSON-parsed when possible, a single block's value on its own, several as an array, and an empty result is `null`. Content with images, audio or binary resources comes back as a `toolContent()` result of `@cogitator-ai/core` (images as `image` parts, audio and blobs as `file` parts, text resources as `resource` parts that keep their URI), so an agent's model sees a screenshot as an image instead of base64 text, and audio stays out of the context. A link to a resource becomes a line of text. With `structuredDetails: true` the `structuredContent` that such a result leaves out comes back too: the call returns a `toolOutput()` result, the value as its `content` for the model and `{ structuredContent }` (`ToolStructuredDetails`) as its `details`. Tools from `getTools()` / `wrapMCPTools()` set it, so a run keeps the structured result in the call's `details` (`onToolResult`, the metadata of the `tool_result` entry) and a host such as Studio gives it to the tool's app, while the model reads the same media as before.
 
 When the server reports a tool failure (`isError: true`), `callTool` throws an `MCPToolError` carrying the tool name and the original content blocks. Tools produced by `getTools()` / `wrapMCPTools()` therefore surface MCP tool failures as regular Cogitator tool errors, and they forward the run's abort signal to the server.
 
@@ -828,6 +829,80 @@ Add to Claude Desktop config:
   }
 }
 ```
+
+## MCP Apps
+
+[MCP Apps](https://github.com/modelcontextprotocol/ext-apps) (extension `io.modelcontextprotocol/ui`) let a tool come with an interactive page: a `ui://` resource of type `text/html;profile=mcp-app` that a host such as Claude, ChatGPT, VS Code or [Cogitator Studio](https://cogitator.app/docs/getting-started/studio#mcp-apps) shows in a sandboxed frame for the tool's calls, given the call's arguments and result. The page can call tools of its server through the host.
+
+### Serving an app
+
+Give a tool an `app` with `mcpApp()`. An `MCPServer` that serves the tool lists it with `_meta.ui.resourceUri` (and the older flat `_meta['ui/resourceUri']`), serves the page at its URI and declares the extension in its capabilities:
+
+```typescript
+import { tool } from '@cogitator-ai/core';
+import { MCPServer, mcpApp } from '@cogitator-ai/mcp';
+import { z } from 'zod';
+
+const chart = mcpApp({
+  uri: 'ui://sales/chart',
+  name: 'Sales chart',
+  html: chartHtml,
+  csp: { resourceDomains: ['https://cdn.jsdelivr.net'] },
+  prefersBorder: true,
+});
+
+const showSales = tool({
+  name: 'show_sales',
+  description: 'Shows the sales of a year as a chart',
+  parameters: z.object({ year: z.number() }),
+  app: chart,
+  execute: async ({ year }) => salesOf(year),
+});
+
+const refreshSales = tool({
+  name: 'refresh_sales',
+  description: 'Reloads the sales, for the chart',
+  parameters: z.object({ year: z.number() }),
+  app: mcpApp({ uri: 'ui://sales/chart', html: chartHtml, visibility: ['app'] }),
+  execute: async ({ year }) => salesOf(year),
+});
+
+const server = new MCPServer({ name: 'sales', version: '1.0.0', transport: 'http', port: 3000 });
+server.registerTools([showSales, refreshSales]);
+await server.start();
+```
+
+`mcpApp({ uri, html, name?, description?, csp?, permissions?, domain?, prefersBorder?, visibility? })` takes the page as a string or a function that builds it on each read. `csp` declares the origins the page reaches (`connectDomains`, `resourceDomains`, `frameDomains`, `baseUriDomains`), `permissions` the browser features it asks for (`camera`, `microphone`, `geolocation`, `clipboardWrite`), `domain` a dedicated origin in the format its host documents and `prefersBorder` whether it wants a border. They go to `_meta.ui` of the resource and of its content. `visibility` says who may call the tool: `model`, the agent, and `app`, its page, both by default. A tool with `visibility: ['app']` is offered to no agent and serves its page only. `server.registerApp({ uri, html, ... })` serves an app on its own, for tools that only point at it, and `server.getRegisteredApps()` lists the URIs served.
+
+`serveAgents` takes `apps`, an app per agent name, for the agent's tool.
+
+### Using a server's apps
+
+`MCPClient` tells servers it takes apps (turn it off with `apps: false`). A tool of a server that points at an app carries it as its `app`, and a tool visible to apps only (`_meta.ui.visibility: ['app']`, with an app of its own or none) is left out of `getTools()`. `callTool` of an app reaches only the tools whose visibility has `app`, or names none:
+
+```typescript
+const client = await MCPClient.connect({ transport: 'http', url: 'http://localhost:3000/mcp' });
+
+const tools = await client.getTools();
+const show = tools.find((entry) => entry.name === 'show_sales');
+
+const app = await show?.app?.read();
+// { uri: 'ui://sales/chart', mimeType: 'text/html;profile=mcp-app', html, csp, prefersBorder }
+
+await show?.app?.callTool?.('refresh_sales', { year: 2025 });
+```
+
+| Member                                        | What it does                                                                                                                                                                                                         |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tool.app.resourceUri`, `tool.app.visibility` | The app's `ui://` URI and who may call the tool                                                                                                                                                                      |
+| `tool.app.read()`                             | The page and its `csp`, `permissions`, `domain` and `prefersBorder`, the content's `_meta.ui` over the listing's                                                                                                     |
+| `tool.app.callTool(name, args)`               | Calls a tool of the same server for the page, only a tool open to apps, the result as the server sent it (`content`, `structuredContent`, `isError`), a `structuredContent` that is no object as `{ result: value }` |
+| `tool.app.requiresApproval(name)`             | Whether that tool is destructive (`destructiveHint`), so a host asks the person first                                                                                                                                |
+| `client.getToolApp(name)`                     | The app of the server's tool `name`, `undefined` for one without                                                                                                                                                     |
+| `client.readApp(uri)`                         | Reads an app by URI, refusing a resource that is not `ui://` and `text/html;profile=mcp-app`                                                                                                                         |
+| `client.callToolForApp(name, args)`           | What `callTool` of an app does                                                                                                                                                                                       |
+
+A host renders the page: Cogitator Studio does it for every tool call with an app, see [Studio](https://cogitator.app/docs/getting-started/studio#mcp-apps). `toolAppRefOf(meta)` reads the app a tool's `_meta` points at, and `MCP_APPS_EXTENSION` and `MCP_APP_MIME_TYPE` are the extension's identifier and MIME type.
 
 ---
 

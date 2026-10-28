@@ -299,6 +299,19 @@ A run that names a thread may also name a `multitaskStrategy` for when the threa
 
 On a new conversation the server picks the thread and names it in `start`. A message sent under a strategy before the request ahead of it has named its thread waits for that `start`, so the messages share one thread instead of starting one each (a request that ends without naming one lets the next message start a thread of its own). Approvals and questions belong to the request that paused: when a later message runs on the thread, the server gives up the paused run, so `pendingApprovals` and `pendingInterrupts` clear once that message finishes, or show its own pause instead. A rejected message never ran, so the pause before it stays.
 
+### `createAGUIHandler`
+
+Serves the agent to AG-UI 1.0 clients such as CopilotKit or an `@ag-ui/client` `HttpAgent`: it takes a `RunAgentInput` and streams AG-UI events. The AG-UI thread is the run's memory thread, the last message (the user's) is the new turn, `resume` entries answer every interrupt of the paused run at once, `state` is the run's state and `context` its brief. Subagents stream as AG-UI subagents, data parts as activities, state changes as `STATE_DELTA`, and a paused run ends with `RUN_FINISHED` and outcome `interrupt`.
+
+```typescript
+// app/api/agui/route.ts
+import { createAGUIHandler } from '@cogitator-ai/next';
+
+export const POST = createAGUIHandler(cogitator, agent, {
+  beforeRun: async (req) => ({ userId: await userIdFrom(req) }),
+});
+```
+
 ### Triggers and inbox (experimental)
 
 `createTriggerHandler` and `createInboxHandler` serve the routes of API triggers, webhooks and the inbox of their results from the runtime's trigger manager. Start the manager yourself.
@@ -507,6 +520,8 @@ data: [DONE]
 An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning block opens with its first delta and is closed before a block of the other kind, a tool call or `finish`, so blocks never overlap. `useCogitatorChat` collects the deltas into `message.reasoning` (and calls `onReasoning` with each one), and `createAgentHandler` returns the summary as `reasoning` next to `usage.reasoningTokens`, `usage.cachedInputTokens` and `usage.cacheWriteTokens` when the provider reports them. The `finish` event of `createChatHandler` carries the same `usage`, these counts included.
 
 A run that pauses for [approvals](#approvals) sends `{"type":"approval-required","threadId":"…","approvals":[…]}` after the open block is closed and before `finish`, and one that pauses for questions its tools asked sends `{"type":"interrupt-required","threadId":"…","interrupts":[…]}` in its place.
+
+A tool's data parts (`context.data()`) arrive as `{"type":"data","id":"…","name":"…","data":…}`: `useCogitatorChat` keeps the latest of each id in `message.data` and reports every one to `onData`, transient ones (`"transient":true`) only there. The run's state arrives as `state-snapshot`, then `state-delta` JSON Patches, and the hook keeps it in `state` (and calls `onStateChange`). A `reset-step` event names the text and reasoning parts and tool calls of a step that starts over on another model, and the hook takes them out of the message.
 
 If the run fails, the open text or reasoning block is closed and an `{"type":"error","message":"...","code":"..."}` event is sent instead of `finish`. A `CogitatorError` keeps its message and code; any other error is logged on the server and sent as `"message":"Internal server error","code":"INTERNAL_ERROR"`.
 

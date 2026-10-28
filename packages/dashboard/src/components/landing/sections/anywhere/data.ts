@@ -104,6 +104,11 @@ function adapterRoutes(base: string, options: AdapterRouteOptions): RouteItem[] 
       label: 'Resume a run paused for approval',
     },
     {
+      method: 'POST',
+      path: `${base}/agents/:name/agui`,
+      label: 'AG-UI for CopilotKit and agent frontends',
+    },
+    {
       method: 'GET',
       path: `${base}/threads/:id`,
       label: 'Memory threads · POST messages, DELETE',

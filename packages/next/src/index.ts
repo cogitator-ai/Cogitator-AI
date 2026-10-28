@@ -1,10 +1,12 @@
 export { createChatHandler } from './handlers/chat.js';
 export { createAgentHandler } from './handlers/agent.js';
 export { createResumeHandler } from './handlers/resume.js';
+export { createAGUIHandler } from './handlers/agui.js';
 export { createTriggerHandler, createInboxHandler } from './handlers/triggers.js';
 
 export type {
   ChatMessage,
+  ChatDataPart,
   ChatInput,
   AgentInput,
   ChatHandlerOptions,
@@ -13,6 +15,7 @@ export type {
   ResumeDecisions,
   ResumeInput,
   ResumeHandlerOptions,
+  AGUIHandlerOptions,
   InboxCaller,
   InboxHandlerOptions,
   RouteParams,

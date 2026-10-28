@@ -106,6 +106,16 @@ export class FastifyStreamWriter {
     if (event.type === 'finish') this.reply.raw.write(encodeDone());
   }
 
+  /**
+   * Sends one SSE frame of `data` as JSON outside the stream protocol, such as an AG-UI event,
+   * opening the stream first when nothing was sent yet
+   */
+  sendData(data: unknown): void {
+    if (!this.writable) return;
+    if (!this.started) this.setupHeaders();
+    this.write(data);
+  }
+
   start(messageId: string, threadId?: string): void {
     this.send(createStartEvent(messageId, threadId));
   }

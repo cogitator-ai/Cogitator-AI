@@ -6,6 +6,7 @@ export { HttpError } from './http-error.js';
 
 export type {
   ChatMessage,
+  ChatDataPart,
   ToolCall,
   UseChatOptions,
   UseChatReturn,

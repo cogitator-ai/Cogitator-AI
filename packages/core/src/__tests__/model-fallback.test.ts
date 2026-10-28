@@ -523,6 +523,53 @@ describe('model fallback in a run', () => {
     expect(backup.chatStream).not.toHaveBeenCalled();
   });
 
+  it('takes a streamed step back and moves to the next model with onStepReset', async () => {
+    const primary = scriptedBackend('primary', ['stream-then-fail']);
+    const backup = scriptedBackend('backup', []);
+    const cog = new Cogitator({
+      llm: { backends: { primary: primary.backend, backup: backup.backend }, retry: false },
+    });
+    const seen: string[] = [];
+
+    const result = await cog.run(writer(), {
+      input: 'Draft the lede',
+      stream: true,
+      onToken: (t) => seen.push(t),
+      onStepReset: (reset) => seen.push(`reset:${reset.reason}:${reset.model}`),
+    });
+
+    expect(result.output).toBe('backup answer');
+    expect(seen).toEqual(['partial ', 'reset:fallback:backup/steady', 'backup answer']);
+    expect(result.modelUsed).toBe('backup/steady');
+  });
+
+  it('asks again after an empty streamed answer and resets the step', async () => {
+    const empty: ChatResponse = { ...answer(''), content: '' };
+    const primary = scriptedBackend('primary', [empty]);
+    const cog = new Cogitator({ llm: { backends: { primary: primary.backend }, retry: false } });
+    const agent = new Agent({ name: 'w', model: 'primary/fast', instructions: 'Write.' });
+    const resets: string[] = [];
+    let reasoned = false;
+    primary.chatStream.mockImplementationOnce(async function* () {
+      yield { id: 's', delta: { reasoning: 'thinking' } };
+      yield { id: 's', delta: {}, finishReason: 'stop', usage: empty.usage };
+    });
+
+    const result = await cog.run(agent, {
+      input: 'Draft',
+      stream: true,
+      onReasoning: () => {
+        reasoned = true;
+      },
+      onToken: () => undefined,
+      onStepReset: (reset) => resets.push(`${reset.reason}:${reset.model}`),
+    });
+
+    expect(reasoned).toBe(true);
+    expect(resets).toEqual(['empty_answer:primary/fast']);
+    expect(result.output).toBe('primary answer');
+  });
+
   it('does not fall back when the run is aborted', async () => {
     const controller = new AbortController();
     const primary: LLMBackend = {

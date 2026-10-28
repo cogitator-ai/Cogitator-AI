@@ -12,6 +12,10 @@ import type {
   RunInterrupt,
   RunResult,
   Span,
+  Tool,
+  ToolApp,
+  ToolAppCallResult,
+  ToolAppResource,
   ToolApprovalDecision,
   ToolApprovalRequest,
   Workflow,
@@ -43,10 +47,50 @@ import type {
   ThreadForkRequest,
   StepRecord,
   ThreadTree,
+  ToolAppCallOutcome,
   TreeEntry,
   UsageInfo,
 } from '../protocol.js';
 import { describeRegistry } from '../registry.js';
+import { z } from 'zod';
+
+/** What an app's tool call returned, as the tool of its server sent it */
+function appResult(value: unknown): ToolAppCallResult {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'content' in value &&
+    Array.isArray(value.content)
+  ) {
+    const result: ToolAppCallResult = {
+      content: value.content.filter(
+        (block): block is ToolAppCallResult['content'][number] =>
+          typeof block === 'object' && block !== null && typeof block.type === 'string'
+      ),
+    };
+    if ('structuredContent' in value && isPlainRecord(value.structuredContent)) {
+      result.structuredContent = value.structuredContent;
+    }
+    if ('isError' in value && value.isError === true) result.isError = true;
+    return result;
+  }
+  return { content: [{ type: 'text', text: JSON.stringify(value ?? null) }] };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A tool app request the host refuses, by its code: an unknown app, or a call it may not make */
+class ToolAppRefusal extends Error {
+  constructor(
+    message: string,
+    readonly code: 'TOOL_APP_NOT_FOUND' | 'TOOL_APP_FORBIDDEN'
+  ) {
+    super(message);
+    this.name = 'ToolAppRefusal';
+  }
+}
 import { openCheckpointStore } from './checkpoints.js';
 import { ProjectPlugins } from './plugins.js';
 import { importFromProject, loadProject, type LoadedProject } from './project.js';
@@ -358,6 +402,10 @@ export class StudioHost {
         return this.plugins.panelHtml(request.plugin, request.panel);
       case 'plugins.call':
         return this.plugins.call(request.plugin, request.panel, request.method, request.params);
+      case 'tools.app':
+        return this.readToolApp(request.agent, request.tool);
+      case 'tools.app.call':
+        return this.callForApp(request);
       case 'triggers.state':
         return this.triggers.state();
       case 'triggers.start':
@@ -642,6 +690,70 @@ export class StudioHost {
         });
       },
     };
+  }
+
+  /** The MCP App of the tool `tool` of agent `key` */
+  /** The agent `key`, its tool `tool` and the tool's MCP App */
+  private toolApp(key: string, tool: string): { agent: Agent; tool: Tool; app: ToolApp } {
+    const agent = this.project.agents.get(key);
+    const found = agent?.tools.find((candidate) => candidate.name === tool);
+    if (!agent || !found?.app) {
+      throw new ToolAppRefusal(
+        agent
+          ? `The tool "${tool}" of agent "${key}" has no MCP App`
+          : `There is no agent "${key}" in the registry`,
+        'TOOL_APP_NOT_FOUND'
+      );
+    }
+    return { agent, tool: found, app: found.app };
+  }
+
+  private async readToolApp(key: string, tool: string): Promise<ToolAppResource> {
+    return this.toolApp(key, tool).app.read();
+  }
+
+  /**
+   * A tool call an MCP App asked for, on the server it came from, held to what a call of the agent
+   * is: the runtime's and the agent's permission rules (a tool of an MCP server by its
+   * `mcp__<server>__<tool>` name too), hooks and guardrails decide, and a call that needs approval,
+   * because a rule asks or the server's tool needs it, waits for the person to allow it in the
+   * studio. A denied call answers the app with an error
+   */
+  private async callForApp(request: {
+    agent: string;
+    tool: string;
+    name: string;
+    arguments: Record<string, unknown>;
+    approved?: boolean;
+  }): Promise<ToolAppCallOutcome> {
+    const { agent, tool, app } = this.toolApp(request.agent, request.tool);
+    const callTool = app.callTool?.bind(app);
+    if (!callTool) {
+      throw new ToolAppRefusal(
+        `The MCP App of "${request.tool}" may call no tools`,
+        'TOOL_APP_FORBIDDEN'
+      );
+    }
+    const called: Tool<Record<string, unknown>, ToolAppCallResult> = this.core.tool({
+      name: request.name,
+      description: `A call the MCP App of ${request.tool} makes`,
+      parameters: z.record(z.string(), z.unknown()),
+      requiresApproval: (await app.requiresApproval?.(request.name)) === true,
+      ...(tool.mcp && { mcp: { server: tool.mcp.server, tool: request.name } }),
+      execute: (args) => callTool(request.name, args),
+    });
+    const invoked = await this.project.cogitator.invokeTool(called, request.arguments, {
+      agent,
+      ...(request.approved === true && { onApproval: async () => ({ approved: true }) }),
+    });
+    if (invoked.pendingApproval) return { status: 'approval', tool: request.name };
+    if (invoked.error !== undefined) {
+      return {
+        status: 'done',
+        result: { content: [{ type: 'text', text: invoked.error }], isError: true },
+      };
+    }
+    return { status: 'done', result: appResult(invoked.result) };
   }
 
   private agent(key: string): Agent {

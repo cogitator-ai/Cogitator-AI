@@ -1,6 +1,7 @@
 import type { PermissionMode, ToolPresentation } from '@cogitator-ai/types';
 import { toRunUsage } from './usage.js';
 import type { AgentRunOutcome } from './response.js';
+import type { JsonPatchOperation } from './json-patch.js';
 
 /**
  * Token usage of a finished agent run, the same in the JSON run response and in the
@@ -33,6 +34,10 @@ export type StreamEvent =
   | ToolCallEndEvent
   | ToolResultEvent
   | ToolUpdateEvent
+  | DataEvent
+  | StateSnapshotEvent
+  | StateDeltaEvent
+  | ResetStepEvent
   | ApprovalRequiredEvent
   | InterruptRequiredEvent
   | ErrorEvent
@@ -138,6 +143,48 @@ export interface ToolUpdateEvent {
    * as after an `afterModel` middleware changed them: they replace the streamed ones
    */
   arguments?: Record<string, unknown>;
+}
+
+/**
+ * A data part: structured data a tool sent with `context.data()`, for the client to render as a
+ * widget of its own. A `data` event with an id seen before replaces that part in place. A
+ * `transient` part is shown while the stream lasts and never kept with the message
+ */
+export interface DataEvent {
+  type: 'data';
+  id: string;
+  /** What kind of data it is, such as `weather`, for the client to pick how it renders it */
+  name: string;
+  data: unknown;
+  transient?: true;
+  /** The tool call that sent it */
+  toolCallId?: string;
+}
+
+/** The run's whole state (`RunOptions.state`), sent when it is first set */
+export interface StateSnapshotEvent {
+  type: 'state-snapshot';
+  snapshot: unknown;
+}
+
+/** How the run's state changed, as a JSON Patch (RFC 6902) on the state the client holds */
+export interface StateDeltaEvent {
+  type: 'state-delta';
+  delta: JsonPatchOperation[];
+}
+
+/** A change of the run's state: the whole of it, or a JSON Patch on it */
+export type StateEvent = StateSnapshotEvent | StateDeltaEvent;
+
+/**
+ * A step the model streamed is taken back and starts over (on a fallback model, or because its
+ * answer came out empty): the client removes the text and reasoning parts `partIds` and the tool
+ * calls `toolCallIds` it streamed, which never reach the conversation, and the step streams anew
+ */
+export interface ResetStepEvent {
+  type: 'reset-step';
+  partIds: string[];
+  toolCallIds: string[];
 }
 
 /** A tool call waiting for approval; the shape of core's `ToolApprovalRequest` */
@@ -308,6 +355,38 @@ export function createToolUpdateEvent(
     ...(update.presentation && { presentation: update.presentation }),
     ...(update.arguments && { arguments: update.arguments }),
   };
+}
+
+export function createDataEvent(part: {
+  id: string;
+  name: string;
+  data: unknown;
+  transient?: boolean;
+  toolCallId?: string;
+}): DataEvent {
+  return {
+    type: 'data',
+    id: part.id,
+    name: part.name,
+    data: part.data,
+    ...(part.transient === true && { transient: true as const }),
+    ...(part.toolCallId !== undefined && { toolCallId: part.toolCallId }),
+  };
+}
+
+export function createStateSnapshotEvent(snapshot: unknown): StateSnapshotEvent {
+  return { type: 'state-snapshot', snapshot };
+}
+
+export function createStateDeltaEvent(delta: readonly JsonPatchOperation[]): StateDeltaEvent {
+  return { type: 'state-delta', delta: [...delta] };
+}
+
+export function createResetStepEvent(
+  partIds: readonly string[],
+  toolCallIds: readonly string[]
+): ResetStepEvent {
+  return { type: 'reset-step', partIds: [...partIds], toolCallIds: [...toolCallIds] };
 }
 
 export function createApprovalRequiredEvent(

@@ -965,6 +965,7 @@ export class SessionHost {
       });
     const session = new AgentStreamSession((event) => emit(event), {
       threadId,
+      resetSteps: true,
       delegated: (start) => (event) => emit(event, start),
     });
     session.start();

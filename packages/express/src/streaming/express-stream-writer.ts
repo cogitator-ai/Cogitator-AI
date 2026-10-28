@@ -81,6 +81,11 @@ export class ExpressStreamWriter {
     if (event.type === 'finish') this.res.write(encodeDone());
   }
 
+  /** Sends one SSE frame of `data` as JSON outside the stream protocol, such as an AG-UI event */
+  sendData(data: unknown): void {
+    this.write(data);
+  }
+
   start(messageId: string, threadId?: string): void {
     this.write(createStartEvent(messageId, threadId));
   }

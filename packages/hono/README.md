@@ -89,13 +89,14 @@ Creates a Hono sub-application with all Cogitator endpoints.
 
 ### Agents
 
-| Method | Path                          | Description                      |
-| ------ | ----------------------------- | -------------------------------- |
-| `GET`  | `/agents`                     | List all agents                  |
-| `POST` | `/agents/:name/run`           | Run agent (JSON response)        |
-| `POST` | `/agents/:name/stream`        | Run agent (SSE stream)           |
-| `POST` | `/agents/:name/resume`        | Resume a paused run              |
-| `POST` | `/agents/:name/resume/stream` | Resume a paused run (SSE stream) |
+| Method | Path                          | Description                                                                                               |
+| ------ | ----------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/agents`                     | List all agents                                                                                           |
+| `POST` | `/agents/:name/run`           | Run agent (JSON response)                                                                                 |
+| `POST` | `/agents/:name/stream`        | Run agent (SSE stream)                                                                                    |
+| `POST` | `/agents/:name/resume`        | Resume a paused run                                                                                       |
+| `POST` | `/agents/:name/resume/stream` | Resume a paused run (SSE stream)                                                                          |
+| `POST` | `/agents/:name/agui`          | Run or resume for an AG-UI client (AG-UI SSE), see [AG-UI](https://cogitator.app/docs/integrations/ag-ui) |
 
 ### Threads (Memory)
 

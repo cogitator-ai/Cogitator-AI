@@ -3,7 +3,7 @@
  *
  * This package provides full MCP support for Cogitator:
  * - MCPClient: Connect to external MCP servers and use their tools (protocol 2026-07-28 and 2025-11-25)
- * - MCPServer: Expose Cogitator tools as an MCP server
+ * - MCPServer: Expose Cogitator tools as an MCP server, with their MCP Apps (`ui://` resources)
  * - Tool Adapter: Convert between Cogitator and MCP tool formats
  */
 
@@ -40,12 +40,24 @@ export type {
 } from './server/serve-agents';
 
 export {
+  mcpApp,
+  toolAppRefOf,
+  MCP_APPS_EXTENSION,
+  MCP_APP_MIME_TYPE,
+  type MCPAppConfig,
+  type MCPAppMeta,
+  type MCPToolAppConfig,
+  type MCPToolAppRef,
+} from './apps';
+
+export {
   cogitatorToMCP,
   toolSchemaToMCP,
   mcpToCogitator,
   wrapMCPTools,
   normalizeMCPToolName,
   isDestructiveMCPTool,
+  mcpToolRequiresApproval,
   zodToJsonSchema,
   jsonSchemaToZod,
   jsonSchemaValueToZod,

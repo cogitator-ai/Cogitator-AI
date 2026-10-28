@@ -106,6 +106,26 @@ const ApprovalDecisionSchema = z.object({
     ),
 });
 
+export const AGUIRunBody = z
+  .looseObject({
+    threadId: z.string().describe("The AG-UI thread, the run's memory thread"),
+    runId: z.string(),
+    messages: z.array(z.looseObject({ id: z.string(), role: z.string() })),
+    state: z.unknown().optional(),
+    tools: z.array(z.unknown()).optional(),
+    context: z.array(z.looseObject({ description: z.string(), value: z.string() })).optional(),
+    resume: z
+      .array(
+        z.looseObject({
+          interruptId: z.string(),
+          status: z.enum(['resolved', 'cancelled']),
+          payload: z.unknown().optional(),
+        })
+      )
+      .optional(),
+  })
+  .describe('An AG-UI 1.0 RunAgentInput');
+
 export const ResumeBody = z.object({
   threadId: ThreadId.describe('Thread of the paused run'),
   decisions: z

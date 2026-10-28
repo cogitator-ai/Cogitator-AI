@@ -54,6 +54,7 @@ POST   /api/agents/:name/run               - Run agent (JSON response)
 POST   /api/agents/:name/stream            - Run agent (SSE stream)
 POST   /api/agents/:name/resume            - Resume a run paused for tool approvals
 POST   /api/agents/:name/resume/stream     - Resume a paused run (SSE stream)
+POST   /api/agents/:name/agui              - Run or resume for an AG-UI client (AG-UI SSE)
 ```
 
 Bodies are validated with JSON Schema (`input` must contain more than whitespace, the same rule the other adapters share from `@cogitator-ai/server-shared`); validation failures return `400 INVALID_INPUT` before the model is called. The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter. The `finish` event of an agent stream carries the same `usage` (never the run's cost or duration). The agent list exposes `config.description`, never the instructions. The authenticated `userId` is passed to the run, and runs are aborted when the client disconnects.

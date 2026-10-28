@@ -4,6 +4,7 @@
 
 import type { Message, ToolCall, ToolCallMessage, ToolResult, ToolResultMessage } from './message';
 import type {
+  RunDataPart,
   Tool,
   ToolInputAbandoned,
   ToolInputAvailable,
@@ -485,6 +486,27 @@ export interface RunOptions<TDeps = unknown> {
    * list every time
    */
   onTodos?: (todos: readonly TodoItem[]) => void;
+  /**
+   * The data parts the run's tools send with `context.data()`, each time one is sent: a part with
+   * an id seen before replaces the earlier one
+   */
+  onData?: (part: RunDataPart) => void;
+  /**
+   * The state the run starts from, shared with its client, such as the state of an AG-UI client:
+   * tools read and replace it with `context.state`. Any JSON value. It is not saved with the
+   * thread, so a client that holds the state sends it with every run and resume
+   */
+  state?: unknown;
+  /** The run's state each time a tool replaces it with `context.state.set()`, see `state` */
+  onState?: (state: unknown) => void;
+  /**
+   * A streamed step is taken back and tried again: what the step streamed so far (its text,
+   * reasoning and tool call input) is void, and the step streams anew. With it set, a model that
+   * fails after its answer began to stream moves on to the next of `fallbackModels`, and a model
+   * whose streamed answer came out empty is asked again; without it such a step fails the run, as
+   * what reached the caller cannot be taken back
+   */
+  onStepReset?: (reset: StepReset) => void;
 
   /** Enable/disable memory for this run. Default: true if adapter configured */
   useMemory?: boolean;
@@ -648,6 +670,17 @@ export interface DelegatedRunStart {
   depth: number;
 }
 
+/** Why a streamed step starts over, see `RunOptions.onStepReset` */
+export interface StepReset {
+  /**
+   * `fallback` when the model failed mid-answer and the step moves to the next model,
+   * `empty_answer` when the model's answer came out empty and it is asked again
+   */
+  reason: 'fallback' | 'empty_answer';
+  /** The model the step goes on with, as `provider/model` */
+  model: string;
+}
+
 /** The callbacks a delegated run streams through, see `RunOptions.onDelegatedRun` */
 export type DelegatedRunStream = Pick<
   RunOptions,
@@ -660,6 +693,8 @@ export type DelegatedRunStream = Pick<
   | 'onToolInputDelta'
   | 'onToolInputAvailable'
   | 'onToolInputAbandoned'
+  | 'onData'
+  | 'onStepReset'
   | 'onRunStart'
   | 'onRunComplete'
   | 'onRunError'

@@ -1,4 +1,10 @@
-import type { ChatMessage, PendingApproval, PendingInterrupt, ToolCall } from '../types.js';
+import type {
+  ChatDataPart,
+  ChatMessage,
+  PendingApproval,
+  PendingInterrupt,
+  ToolCall,
+} from '../types.js';
 
 export interface ChatState {
   messages: ChatMessage[];
@@ -10,8 +16,11 @@ export interface ChatState {
   currentContent: string;
   currentReasoning: string;
   currentToolCalls: ToolCall[];
+  currentData: ChatDataPart[];
   pendingApprovals: PendingApproval[];
   pendingInterrupts: PendingInterrupt[];
+  /** The run's state, see `UseChatReturn.state` */
+  agentState: unknown;
 }
 
 export type ChatAction =
@@ -28,6 +37,12 @@ export type ChatAction =
   | { type: 'ADD_TOOL_CALL'; payload: ToolCall }
   | { type: 'REMOVE_TOOL_CALL'; payload: string }
   | { type: 'UPDATE_TOOL_CALL'; payload: ToolCall }
+  | { type: 'UPSERT_DATA'; payload: ChatDataPart }
+  | { type: 'SET_AGENT_STATE'; payload: unknown }
+  | {
+      type: 'RESET_STEP';
+      payload: { content: number; reasoning: number; toolCallIds: readonly string[] };
+    }
   | { type: 'FINISH_ASSISTANT_MESSAGE' }
   | { type: 'SET_PENDING_APPROVALS'; payload: PendingApproval[] }
   | { type: 'SET_PENDING_INTERRUPTS'; payload: PendingInterrupt[] }
@@ -64,6 +79,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         currentContent: '',
         currentReasoning: '',
         currentToolCalls: [],
+        currentData: [],
       };
 
     case 'APPEND_CONTENT':
@@ -83,6 +99,34 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ),
       };
 
+    case 'UPSERT_DATA': {
+      const at = state.currentData.findIndex((part) => part.id === action.payload.id);
+      const currentData =
+        at === -1
+          ? [...state.currentData, action.payload]
+          : state.currentData.map((part, i) => (i === at ? action.payload : part));
+      return { ...state, currentData };
+    }
+
+    case 'SET_AGENT_STATE':
+      return { ...state, agentState: action.payload };
+
+    case 'RESET_STEP': {
+      const { content, reasoning, toolCallIds } = action.payload;
+      return {
+        ...state,
+        currentContent: state.currentContent.slice(
+          0,
+          Math.max(0, state.currentContent.length - content)
+        ),
+        currentReasoning: state.currentReasoning.slice(
+          0,
+          Math.max(0, state.currentReasoning.length - reasoning)
+        ),
+        currentToolCalls: state.currentToolCalls.filter((call) => !toolCallIds.includes(call.id)),
+      };
+    }
+
     case 'REMOVE_TOOL_CALL':
       return {
         ...state,
@@ -98,6 +142,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         content: state.currentContent,
         ...(state.currentReasoning && { reasoning: state.currentReasoning }),
         toolCalls: state.currentToolCalls.length > 0 ? state.currentToolCalls : undefined,
+        ...(state.currentData.length > 0 && { data: state.currentData }),
         createdAt: new Date(),
       };
 
@@ -108,6 +153,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         currentContent: '',
         currentReasoning: '',
         currentToolCalls: [],
+        currentData: [],
       };
     }
 
@@ -141,7 +187,9 @@ export function createInitialState(initialMessages?: ChatMessage[], threadId?: s
     currentContent: '',
     currentReasoning: '',
     currentToolCalls: [],
+    currentData: [],
     pendingApprovals: [],
     pendingInterrupts: [],
+    agentState: undefined,
   };
 }

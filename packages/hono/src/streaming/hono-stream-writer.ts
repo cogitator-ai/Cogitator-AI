@@ -79,6 +79,17 @@ export class HonoStreamWriter {
     return written;
   }
 
+  /**
+   * Sends one SSE frame of `data` as JSON outside the stream protocol, such as an AG-UI event,
+   * in order with the rest
+   */
+  sendData(data: unknown): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    const written = this.queue.then(() => this.write(data));
+    this.queue = written.catch(() => undefined);
+    return written;
+  }
+
   /** Resolves once every event sent so far is written */
   flush(): Promise<void> {
     return this.queue;

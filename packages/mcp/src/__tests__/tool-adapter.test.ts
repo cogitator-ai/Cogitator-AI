@@ -416,7 +416,7 @@ describe('mcpToCogitator', () => {
     expect(mockClient.callTool).toHaveBeenCalledWith(
       'get_weather',
       { city: 'Tokyo' },
-      { signal: context.signal, idempotent: false }
+      { signal: context.signal, idempotent: false, structuredDetails: true }
     );
     expect(result).toEqual({ temperature: 25 });
   });

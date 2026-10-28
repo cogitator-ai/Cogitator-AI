@@ -13,6 +13,7 @@ import {
   type StreamCaller,
   type StreamFollower,
 } from '@cogitator-ai/server-shared';
+import { parseAGUIRunInput, streamAGUIRun } from '@cogitator-ai/server-shared/agui';
 import type { AuthContext } from '../types.js';
 import { ExpressStreamWriter, setupSSEHeaders } from '../streaming/index.js';
 import {
@@ -316,6 +317,53 @@ export function createAgentRoutes(ctx: RouteContext): Router {
           ...admitted,
         })
       );
+    }
+  );
+
+  router.post(
+    '/agents/:name/agui',
+    async (req: CogitatorRequest<{ name: string }>, res: Response) => {
+      const { name } = req.params;
+      const agent = findAgent(name);
+      if (!agent) {
+        sendError(res, 404, `Agent '${name}' not found`, 'NOT_FOUND');
+        return;
+      }
+
+      const parsed = parseAGUIRunInput(req.body);
+      if (!parsed.ok) {
+        sendError(res, 400, parsed.message, 'INVALID_INPUT');
+        return;
+      }
+      const threadId = parsed.value.input.threadId;
+      const admitted = await admitAgentRun(ctx, req, res, threadId, 'AG-UI run error');
+      if (!admitted) return;
+      const userId = req.cogitator?.auth?.userId;
+
+      setupSSEHeaders(res);
+      const writer = new ExpressStreamWriter(res, { heartbeatMs: ctx.config.sseHeartbeatMs });
+      const abortController = new AbortController();
+      onClientDisconnect(res, () => {
+        abortController.abort();
+        writer.close();
+      });
+      try {
+        await streamAGUIRun({
+          request: parsed.value,
+          send: (event) => writer.sendData(event),
+          signal: abortController.signal,
+          describeError: (error) => resolveError(error, 'AG-UI run error'),
+          host: {
+            run: (options) => ctx.cogitator.run(agent, { ...options, userId, ...admitted }),
+            resume: (options) =>
+              ctx.cogitator.resume(agent, threadId, { ...options, userId, ...admitted }),
+            pausedRun: () => ctx.cogitator.pausedRun(threadId),
+            cancelPause: (reason) => ctx.cogitator.cancelPause(threadId, { userId, reason }),
+          },
+        });
+      } finally {
+        writer.close();
+      }
     }
   );
 

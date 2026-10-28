@@ -111,7 +111,7 @@ cogitator app-server generate-json-schema --out schema
 | `_cogitator/workflow/*`    | `list` and `run` of the host's workflows, only when it has a runner           |
 | `_cogitator/swarm/*`       | `list` and `run` of the host's swarms, only when it has a runner              |
 
-The answer to `turn/start` always goes out before `turn/started`, then come `turn/event` (each a `StreamEvent`, with `parentToolCallId` and `agent` for delegated runs) and `turn/completed` with the turn: `completed`, `paused` (with `pending`), `interrupted` or `failed` (with `error`). Other notifications: `thread/started`, `thread/archived`, `thread/unarchived` and `thread/log`, the memory adapter's changes to a thread.
+The answer to `turn/start` always goes out before `turn/started`, then come `turn/event` (each a `StreamEvent`, with `parentToolCallId` and `agent` for delegated runs) (`reset-step` among them: when a model fails mid-answer and a fallback model takes the step over, the client takes back the parts and tool calls it names) and `turn/completed` with the turn: `completed`, `paused` (with `pending`), `interrupted` or `failed` (with `error`). Other notifications: `thread/started`, `thread/archived`, `thread/unarchived` and `thread/log`, the memory adapter's changes to a thread.
 
 ## Traces
 

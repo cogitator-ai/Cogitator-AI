@@ -244,6 +244,8 @@ export interface ResumableAgentRunOptions<Auth = unknown> {
   threadId?: string;
   /** Stops the run when it aborts, such as a server that shuts down */
   signal?: AbortSignal;
+  /** Let a streamed step start over, for a client that handles `reset-step` (see `AgentStreamSessionOptions.resetSteps`) */
+  resetSteps?: boolean;
   /**
    * Starts the run with the session's thread and callbacks (`threadId: session.threadId`,
    * `...session.callbacks`, `stream: true`) and `signal`
@@ -713,6 +715,7 @@ export class ResumableStreams<Auth = unknown> {
     const stream = opened.stream;
     const session = new AgentStreamSession((event) => stream.emit(event), {
       threadId: stream.threadId,
+      ...(options.resetSteps === true && { resetSteps: true }),
     });
     void (async () => {
       try {

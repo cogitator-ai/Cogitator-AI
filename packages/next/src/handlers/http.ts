@@ -156,6 +156,18 @@ export function threadOf(
   return typeof runContext.threadId === 'string' ? runContext.threadId : input.threadId;
 }
 
+/**
+ * The signal a run stops on: the request's, and the `signal` `beforeRun` returned when it returned
+ * one, whichever aborts first
+ */
+export function runSignal(
+  signal: AbortSignal | undefined,
+  runContext: Record<string, unknown>
+): AbortSignal | undefined {
+  const hook = runContext.signal instanceof AbortSignal ? runContext.signal : undefined;
+  return signal && hook ? AbortSignal.any([signal, hook]) : (signal ?? hook);
+}
+
 /** The run options with the `deps` the server builds for the request, when it builds them */
 export async function depsOf(
   req: Request,

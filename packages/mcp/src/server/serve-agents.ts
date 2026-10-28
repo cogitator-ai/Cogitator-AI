@@ -11,6 +11,7 @@ import type {
   RunOptions,
   RunResult,
   Tool,
+  ToolApp,
   ToolApprovalDecision,
   ToolApprovalRequest,
   ToolInvoker,
@@ -51,6 +52,11 @@ export interface AgentToolsOptions {
    * own
    */
   allowRemember?: boolean;
+  /**
+   * An MCP App per agent, by agent name (see `mcpApp()`): the agent's tool points at it, so a host
+   * shows the app with the agent's answers, and the server serves it
+   */
+  apps?: Record<string, ToolApp>;
 }
 
 export interface ServeAgentsConfig extends Partial<MCPServerConfig>, AgentToolsOptions {
@@ -148,9 +154,14 @@ export function agentTools(
   return agents.flatMap((agent) => {
     const name = toolNames[agent.name] ?? toToolName(agent.name);
     const resumeName = `${name}_resume`;
+    const app =
+      options.apps && Object.hasOwn(options.apps, agent.name)
+        ? options.apps[agent.name]
+        : undefined;
 
     const ask = defineTool({
       name,
+      ...(app && { app }),
       description:
         agent.config.description ??
         `Ask the ${agent.name} agent. ${firstSentence(agent.instructions)}`,
@@ -215,7 +226,7 @@ export async function serveAgents(
   config: ServeAgentsConfig = {}
 ): Promise<MCPServer> {
   const list = Array.isArray(agents) ? agents : [agents as Agent];
-  const { toolNames, allowRemember, ...serverConfig } = config;
+  const { toolNames, allowRemember, apps, ...serverConfig } = config;
   const invokeTool = host.invokeTool?.bind(host);
   const server = new MCPServer({
     name: 'cogitator-agents',
@@ -226,7 +237,10 @@ export async function serveAgents(
     ...serverConfig,
   });
   server.registerTools(
-    agentTools(host, list, toolNames, { ...(allowRemember !== undefined && { allowRemember }) })
+    agentTools(host, list, toolNames, {
+      ...(allowRemember !== undefined && { allowRemember }),
+      ...(apps && { apps }),
+    })
   );
   await server.start();
   return server;
@@ -500,6 +514,7 @@ function defineTool<TParams>(definition: {
   name: string;
   description: string;
   parameters: z.ZodType<TParams>;
+  app?: ToolApp;
   execute: (params: TParams, context: MCPToolContext) => Promise<AgentToolAnswer | MCPInputPending>;
 }): Tool<TParams, AgentToolAnswer | MCPInputPending> {
   return {
@@ -507,6 +522,7 @@ function defineTool<TParams>(definition: {
     description: definition.description,
     parameters: definition.parameters,
     sideEffects: ['external'],
+    ...(definition.app && { app: definition.app }),
     execute: (params, context) => definition.execute(params, context),
     toJSON: (): ToolSchema => ({
       name: definition.name,
