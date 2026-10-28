@@ -14,6 +14,7 @@ const COLD_IMPORT = { timeout: 30_000 };
 describe('email channel without its optional packages', () => {
   it(
     'fails start() with an install hint when postal-mime is missing and IMAP is set',
+    COLD_IMPORT,
     async () => {
       vi.doMock('postal-mime', () => {
         throw new Error("Cannot find package 'postal-mime'");
@@ -28,12 +29,12 @@ describe('email channel without its optional packages', () => {
       });
       await expect(channel.start()).rejects.toThrow('postal-mime is required');
       await expect(channel.start()).rejects.toThrow('pnpm add postal-mime');
-    },
-    COLD_IMPORT
+    }
   );
 
   it(
     'fails start() with an install hint when nodemailer is missing for an SMTP server',
+    COLD_IMPORT,
     async () => {
       vi.doMock('nodemailer', () => {
         throw new Error("Cannot find package 'nodemailer'");
@@ -46,7 +47,6 @@ describe('email channel without its optional packages', () => {
         allowFrom: ['*'],
       });
       await expect(channel.start()).rejects.toThrow('nodemailer is required');
-    },
-    COLD_IMPORT
+    }
   );
 });
