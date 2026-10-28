@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/test-utils",
-  "version": "0.14.5",
+  "version": "0.14.6",
   "description": "Shared testing utilities for Cogitator packages",
   "keywords": [
     "cogitator",

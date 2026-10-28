@@ -1,5 +1,12 @@
 # @cogitator-ai/server-shared
 
+## 0.16.2
+
+### Patch Changes
+
+- Updated dependencies [[`ac89cec`](https://github.com/cogitator-ai/Cogitator-AI/commit/ac89cec9ea8d288afd58f7dbbe1531f8425d757a)]:
+  - @cogitator-ai/types@0.88.0
+
 ## 0.16.1
 
 ### Patch Changes
