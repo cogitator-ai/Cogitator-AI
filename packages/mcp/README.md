@@ -892,15 +892,15 @@ const app = await show?.app?.read();
 await show?.app?.callTool?.('refresh_sales', { year: 2025 });
 ```
 
-| Member                                        | What it does                                                                                                                                         |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tool.app.resourceUri`, `tool.app.visibility` | The app's `ui://` URI and who may call the tool                                                                                                      |
-| `tool.app.read()`                             | The page and its `csp`, `permissions`, `domain` and `prefersBorder`, the content's `_meta.ui` over the listing's                                     |
-| `tool.app.callTool(name, args)`               | Calls a tool of the same server for the page, only a tool open to apps, the result as the server sent it (`content`, `structuredContent`, `isError`) |
-| `tool.app.requiresApproval(name)`             | Whether that tool is destructive (`destructiveHint`), so a host asks the person first                                                                |
-| `client.getToolApp(name)`                     | The app of the server's tool `name`, `undefined` for one without                                                                                     |
-| `client.readApp(uri)`                         | Reads an app by URI, refusing a resource that is not `ui://` and `text/html;profile=mcp-app`                                                         |
-| `client.callToolForApp(name, args)`           | What `callTool` of an app does                                                                                                                       |
+| Member                                        | What it does                                                                                                                                                                                                         |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tool.app.resourceUri`, `tool.app.visibility` | The app's `ui://` URI and who may call the tool                                                                                                                                                                      |
+| `tool.app.read()`                             | The page and its `csp`, `permissions`, `domain` and `prefersBorder`, the content's `_meta.ui` over the listing's                                                                                                     |
+| `tool.app.callTool(name, args)`               | Calls a tool of the same server for the page, only a tool open to apps, the result as the server sent it (`content`, `structuredContent`, `isError`), a `structuredContent` that is no object as `{ result: value }` |
+| `tool.app.requiresApproval(name)`             | Whether that tool is destructive (`destructiveHint`), so a host asks the person first                                                                                                                                |
+| `client.getToolApp(name)`                     | The app of the server's tool `name`, `undefined` for one without                                                                                                                                                     |
+| `client.readApp(uri)`                         | Reads an app by URI, refusing a resource that is not `ui://` and `text/html;profile=mcp-app`                                                                                                                         |
+| `client.callToolForApp(name, args)`           | What `callTool` of an app does                                                                                                                                                                                       |
 
 A host renders the page: Cogitator Studio does it for every tool call with an app, see [Studio](https://cogitator.app/docs/getting-started/studio#mcp-apps). `toolAppRefOf(meta)` reads the app a tool's `_meta` points at, and `MCP_APPS_EXTENSION` and `MCP_APP_MIME_TYPE` are the extension's identifier and MIME type.
 

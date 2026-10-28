@@ -284,6 +284,7 @@ export interface ToolAppResource {
 /** What a tool call an app made returned, as an MCP `CallToolResult` */
 export interface ToolAppCallResult {
   content: Array<{ type: string } & Record<string, unknown>>;
+  /** The tool's structured result: an object, or `{ result: value }` for any other JSON value */
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
 }

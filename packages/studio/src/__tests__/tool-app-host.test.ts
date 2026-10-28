@@ -3,7 +3,13 @@ import { InMemoryTransport } from '@modelcontextprotocol/client';
 import { App } from '@modelcontextprotocol/ext-apps';
 import type { CallToolResult } from '@modelcontextprotocol/client';
 import type { ToolAppCallOutcome } from '../protocol.js';
-import { createToolAppHost, recordResult, toolCallResult } from '../ui/tool-app-host.js';
+import {
+  createConfirmQueue,
+  createToolAppHost,
+  recordResult,
+  toolCallResult,
+  type PendingAppCall,
+} from '../ui/tool-app-host.js';
 
 interface Seen {
   input?: Record<string, unknown>;
@@ -148,6 +154,7 @@ describe('results for apps', () => {
     });
     expect(recordResult({ result: [1, 2] })).toEqual({
       content: [{ type: 'text', text: '[1,2]' }],
+      structuredContent: { result: [1, 2] },
     });
     expect(recordResult({ result: null })).toEqual({ content: [] });
     expect(recordResult({ error: 'boom' })).toEqual({
@@ -160,5 +167,52 @@ describe('results for apps', () => {
     const result = { content: [{ type: 'text', text: 'ok' }], structuredContent: { ok: true } };
     expect(toolCallResult(result)).toEqual(result);
     expect(toolCallResult({ content: [{ type: 'nonsense' }] }).isError).toBe(true);
+  });
+});
+
+describe('createConfirmQueue', () => {
+  it('shows the calls one at a time, in order, each with its own answer', async () => {
+    const shown: Array<PendingAppCall | undefined> = [];
+    const queue = createConfirmQueue((call) => shown.push(call));
+    const first = queue.ask('empty_cart', { all: true });
+    const second = queue.ask('checkout', {});
+    expect(shown).toEqual([{ name: 'empty_cart', args: { all: true } }]);
+
+    queue.answer(false);
+    await expect(first).resolves.toBe(false);
+    expect(shown.at(-1)).toEqual({ name: 'checkout', args: {} });
+    queue.answer(true);
+    await expect(second).resolves.toBe(true);
+    expect(shown.at(-1)).toBeUndefined();
+  });
+
+  it('declines what still waits when the frame goes away, and what asks after', async () => {
+    const queue = createConfirmQueue(() => undefined);
+    const first = queue.ask('a', {});
+    const second = queue.ask('b', {});
+    queue.dispose();
+    await expect(first).resolves.toBe(false);
+    await expect(second).resolves.toBe(false);
+    await expect(queue.ask('c', {})).resolves.toBe(false);
+  });
+
+  it('gives both calls of an app their decisions through the bridge', async () => {
+    const queue = createConfirmQueue(() => undefined);
+    const { host, app } = await connect({
+      callTool: async (name, _args, approved) =>
+        approved
+          ? { status: 'done', result: { content: [{ type: 'text', text: `${name} ran` }] } }
+          : { status: 'approval', tool: name },
+      confirm: (name, args) => queue.ask(name, args),
+    });
+    const first = app.callServerTool({ name: 'one', arguments: {} });
+    const second = app.callServerTool({ name: 'two', arguments: {} });
+    await settle();
+    queue.answer(true);
+    await settle();
+    queue.answer(false);
+    await expect(first).resolves.toEqual({ content: [{ type: 'text', text: 'one ran' }] });
+    await expect(second).resolves.toMatchObject({ isError: true });
+    await host.close();
   });
 });

@@ -55,7 +55,7 @@ export function recordResult(call: Pick<ToolCallRecord, 'result' | 'error'>): Ca
   if (result === undefined || result === null) return { content: [] };
   return {
     content: [{ type: 'text', text: JSON.stringify(result) }],
-    ...(isRecord(result) && { structuredContent: result }),
+    structuredContent: isRecord(result) ? result : { result },
   };
 }
 
@@ -151,5 +151,55 @@ export function createToolAppHost(options: ToolAppHostOptions): ToolAppHost {
       flush();
     },
     close: () => bridge.close(),
+  };
+}
+
+/** A tool call of an app that waits for the person to allow it */
+export interface PendingAppCall {
+  name: string;
+  args: Record<string, unknown>;
+}
+
+/**
+ * The calls of an app that wait for the person, in the order the app asked: the first one is
+ * shown, each gets its own answer, and the ones left when the frame goes away are declined
+ */
+export interface ConfirmQueue {
+  /** Waits for the person's answer to the call, after the calls asked before it */
+  ask(name: string, args: Record<string, unknown>): Promise<boolean>;
+  /** Answers the call shown, and shows the next one */
+  answer(allowed: boolean): void;
+  /** Declines every call still waiting */
+  dispose(): void;
+}
+
+export function createConfirmQueue(
+  onChange: (shown: PendingAppCall | undefined) => void
+): ConfirmQueue {
+  const waiting: Array<PendingAppCall & { resolve: (allowed: boolean) => void }> = [];
+  let disposed = false;
+  const show = () => {
+    const [first] = waiting;
+    onChange(first && { name: first.name, args: first.args });
+  };
+  return {
+    ask(name, args) {
+      if (disposed) return Promise.resolve(false);
+      return new Promise<boolean>((resolve) => {
+        waiting.push({ name, args, resolve });
+        if (waiting.length === 1) show();
+      });
+    },
+    answer(allowed) {
+      const first = waiting.shift();
+      if (!first) return;
+      first.resolve(allowed);
+      show();
+    },
+    dispose() {
+      disposed = true;
+      for (const entry of waiting.splice(0)) entry.resolve(false);
+      onChange(undefined);
+    },
   };
 }

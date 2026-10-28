@@ -25,6 +25,29 @@ serveStdio(() => {
     async () => ({ content: [{ type: 'text', text: 'moved' }] })
   );
   server.registerTool(
+    'list_cards',
+    {
+      description: 'Lists the cards, for the board page only',
+      inputSchema: z.object({}),
+      outputSchema: z.array(z.string()),
+      _meta: { ui: { visibility: ['app'] } },
+    },
+    async () => ({
+      content: [{ type: 'text', text: '["todo","done"]' }],
+      structuredContent: ['todo', 'done'],
+    })
+  );
+  server.registerTool(
+    'count_cards',
+    {
+      description: 'Counts the cards, for the board page only',
+      inputSchema: z.object({}),
+      outputSchema: z.number(),
+      _meta: { ui: { visibility: ['app'] } },
+    },
+    async () => ({ content: [{ type: 'text', text: '2' }], structuredContent: 2 })
+  );
+  server.registerTool(
     'archive_board',
     {
       description: 'Archives the board, for the agent only',

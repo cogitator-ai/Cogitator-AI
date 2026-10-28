@@ -10,7 +10,7 @@ import {
 import { tool } from '@cogitator-ai/core';
 import type { Tool } from '@cogitator-ai/types';
 import { MCPServer } from '../server/mcp-server';
-import { MCPClient } from '../client/mcp-client';
+import { MCPClient, appStructuredContent } from '../client/mcp-client';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -401,6 +401,18 @@ describe('a server that sets visibility on tools without an app, and part of _me
       content: [{ type: 'text', text: 'moved' }],
     });
     await expect(app?.callTool?.('archive_board', {})).rejects.toThrow('not open to apps');
+  });
+
+  it('keeps a structured result that is no object, in the { result } container', async () => {
+    const app = await client.getToolApp('show_board');
+    await expect(app?.callTool?.('list_cards', {})).resolves.toMatchObject({
+      structuredContent: { result: ['todo', 'done'] },
+    });
+    await expect(app?.callTool?.('count_cards', {})).resolves.toMatchObject({
+      structuredContent: { result: 2 },
+    });
+    expect(appStructuredContent(null)).toEqual({ result: null });
+    expect(appStructuredContent({ a: 1 })).toEqual({ a: 1 });
   });
 
   it("merges the listing's _meta.ui with the content's, field by field", async () => {

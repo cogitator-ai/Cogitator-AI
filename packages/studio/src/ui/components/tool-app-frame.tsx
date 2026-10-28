@@ -4,7 +4,13 @@ import { PostMessageTransport } from '@modelcontextprotocol/ext-apps/app-bridge'
 import type { ToolAppFrameInfo, ToolCallRecord } from '../../protocol';
 import { appAllowAttribute, TOOL_APP_SANDBOX } from '../../tool-app-policy';
 import { api, toolAppUrl } from '../api';
-import { createToolAppHost, type ToolAppHost } from '../tool-app-host';
+import {
+  createConfirmQueue,
+  createToolAppHost,
+  type ConfirmQueue,
+  type PendingAppCall,
+  type ToolAppHost,
+} from '../tool-app-host';
 import { pretty } from '../format';
 import { resolvedTheme } from '../theme';
 import { ErrorText, messageOf } from './common';
@@ -12,13 +18,6 @@ import { ErrorText, messageOf } from './common';
 const MIN_HEIGHT = 48;
 const MAX_HEIGHT = 900;
 const DEFAULT_HEIGHT = 180;
-
-/** A tool call an app asked for, waiting for the person to allow it */
-interface PendingCall {
-  name: string;
-  args: Record<string, unknown>;
-  answer: (allowed: boolean) => void;
-}
 
 /**
  * The MCP App of a tool call: the app's page, served by the studio with the CSP the app declared,
@@ -38,7 +37,8 @@ export function ToolAppFrame({
   const [info, setInfo] = useState<ToolAppFrameInfo>();
   const [failure, setFailure] = useState<string>();
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
-  const [pending, setPending] = useState<PendingCall>();
+  const [pending, setPending] = useState<PendingAppCall>();
+  const confirms = useRef<ConfirmQueue>(undefined);
   const tool = call.name;
 
   useEffect(() => {
@@ -55,19 +55,11 @@ export function ToolAppFrame({
   useLayoutEffect(() => {
     const target = frame.current?.contentWindow;
     if (!info || !target) return;
+    const queue = createConfirmQueue(setPending);
+    confirms.current = queue;
     const current = createToolAppHost({
       callTool: (name, args, approved) => api.callToolApp(agent, tool, name, args, approved),
-      confirm: (name, args) =>
-        new Promise<boolean>((resolve) => {
-          setPending({
-            name,
-            args,
-            answer: (allowed) => {
-              setPending(undefined);
-              resolve(allowed);
-            },
-          });
-        }),
+      confirm: (name, args) => queue.ask(name, args),
       onSize: ({ height: asked }) => {
         if (asked !== undefined) setHeight(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, asked)));
       },
@@ -85,6 +77,8 @@ export function ToolAppFrame({
       });
     return () => {
       if (host.current === current) host.current = undefined;
+      if (confirms.current === queue) confirms.current = undefined;
+      queue.dispose();
       void current.close();
     };
   }, [info, agent, tool]);
@@ -136,7 +130,7 @@ export function ToolAppFrame({
             <button
               type="button"
               className="btn btn-secondary"
-              onClick={() => pending.answer(false)}
+              onClick={() => confirms.current?.answer(false)}
               data-testid="tool-app-deny"
             >
               Deny
@@ -144,7 +138,7 @@ export function ToolAppFrame({
             <button
               type="button"
               className="btn btn-primary"
-              onClick={() => pending.answer(true)}
+              onClick={() => confirms.current?.answer(true)}
               data-testid="tool-app-allow"
             >
               Allow

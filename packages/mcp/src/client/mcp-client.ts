@@ -1237,7 +1237,9 @@ export class MCPClient {
   /**
    * Calls the server's tool `name` for one of its apps, as MCP Apps allows: only a tool visible to
    * apps (`_meta.ui.visibility` with `app`, or none). The result comes back as the server sent it,
-   * an error of the tool as `isError`
+   * an error of the tool as `isError`. A `structuredContent` that is no object (an array, a string,
+   * a number, `null`) comes as `{ result: value }`, the container the MCP SDK puts such a value in
+   * for clients that read objects only, as apps built on older SDKs do
    *
    * @throws Error when the server has no such tool, or keeps it from apps
    */
@@ -1257,7 +1259,9 @@ export class MCPClient {
     );
     return {
       content: result.content.map((block) => ({ ...block })),
-      ...(isRecord(result.structuredContent) && { structuredContent: result.structuredContent }),
+      ...(result.structuredContent !== undefined && {
+        structuredContent: appStructuredContent(result.structuredContent),
+      }),
       ...(result.isError === true && { isError: true }),
     };
   }
@@ -1504,4 +1508,12 @@ export async function connectMCPServer(config: MCPClientConfig): Promise<{
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * `structuredContent` as an app reads it: an object as it is, any other value in the `{ result }`
+ * container the MCP SDK uses for it
+ */
+export function appStructuredContent(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : { result: value };
 }
