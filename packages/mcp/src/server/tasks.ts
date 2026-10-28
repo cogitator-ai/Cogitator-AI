@@ -94,9 +94,13 @@ export class ServerTasks {
   private readonly pollIntervalMs: number;
   private readonly runners = new Map<string, Runner>();
 
+  private readonly expiries = new Map<string, ReturnType<typeof setTimeout>>();
+
   constructor(
     options: MCPServerTaskOptions,
-    private readonly log: (message: string) => void
+    private readonly log: (message: string) => void,
+    /** How long a question of a task waits for its answer, in ms */
+    private readonly questionTimeoutMs: () => number
   ) {
     this.store = options.store ?? new InMemoryMCPTaskStore();
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
@@ -121,6 +125,9 @@ export class ServerTasks {
     await this.store.create(record);
     const runner: Runner = { execution, waiting: new Map(), cancelled: false };
     this.runners.set(record.taskId, runner);
+    const expiry = setTimeout(() => void this.expire(record.taskId), this.ttlMs);
+    expiry.unref?.();
+    this.expiries.set(record.taskId, expiry);
     void this.run(record.taskId, runner, restart);
     return toWire(record);
   }
@@ -160,10 +167,7 @@ export class ServerTasks {
     }
     const runner = this.runners.get(taskId);
     if (runner) {
-      runner.cancelled = true;
-      runner.execution.cancel(new Error('The task was cancelled'));
-      for (const deliver of runner.waiting.values()) deliver({ action: 'cancel' });
-      runner.waiting.clear();
+      this.stop(runner, new Error('The task was cancelled'));
       this.runners.delete(taskId);
     }
     await this.patch(taskId, { status: 'cancelled', statusMessage: 'Cancelled by the client' });
@@ -171,11 +175,28 @@ export class ServerTasks {
 
   /** Stops every run, for a server that stops */
   closeAll(): void {
-    for (const runner of this.runners.values()) {
-      runner.cancelled = true;
-      runner.execution.cancel(new Error('The server stopped'));
-    }
+    for (const runner of this.runners.values()) this.stop(runner, new Error('The server stopped'));
     this.runners.clear();
+    for (const expiry of this.expiries.values()) clearTimeout(expiry);
+    this.expiries.clear();
+  }
+
+  /** Ends a task whose TTL ran out: its run stops and its record goes */
+  private async expire(taskId: string): Promise<void> {
+    this.expiries.delete(taskId);
+    const runner = this.runners.get(taskId);
+    if (runner) {
+      this.runners.delete(taskId);
+      this.stop(runner, new Error('The task expired'));
+    }
+    await this.store.delete(taskId).catch(() => undefined);
+  }
+
+  private stop(runner: Runner, reason: Error): void {
+    runner.cancelled = true;
+    runner.execution.cancel(reason);
+    for (const deliver of runner.waiting.values()) deliver({ action: 'cancel' });
+    runner.waiting.clear();
   }
 
   private async run(taskId: string, runner: Runner, restart: TaskRestart): Promise<void> {
@@ -242,7 +263,10 @@ export class ServerTasks {
     }
   }
 
-  /** Sets the task `input_required` with `requests` and waits for every answer */
+  /**
+   * Sets the task `input_required` with `requests` and waits for every answer. A question
+   * nobody answers within the question timeout counts as dismissed (`cancel`)
+   */
   private async waitFor(
     taskId: string,
     runner: Runner,
@@ -254,6 +278,13 @@ export class ServerTasks {
           runner.waiting.set(key, (answer) => resolve({ key, answer }));
         })
     );
+    const timer = setTimeout(() => {
+      this.log(`Nobody answered the questions of task ${taskId} in time`);
+      for (const deliver of runner.waiting.values()) deliver({ action: 'cancel' });
+      runner.waiting.clear();
+    }, this.questionTimeoutMs());
+    timer.unref?.();
+    void Promise.all(answers).finally(() => clearTimeout(timer));
     await this.patch(taskId, {
       status: 'input_required',
       statusMessage: 'Waiting for the user to answer',

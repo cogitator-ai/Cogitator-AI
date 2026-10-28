@@ -213,6 +213,47 @@ describe('MCPServer tasks', () => {
     expect(JSON.stringify(done.result)).toContain('red');
   });
 
+  it('counts a question of a task nobody answers in time as dismissed', async () => {
+    let reply: unknown;
+    const ask = tool({
+      name: 'ask',
+      description: 'Asks late',
+      parameters: z.object({}),
+      execute: async (_params, context) => {
+        await sleep(150);
+        reply = await (context as MCPToolContext).elicit!({
+          message: 'Color?',
+          schema: { type: 'object', properties: {} },
+        });
+        return 'went on';
+      },
+    }) as Tool;
+    const url = await serve([ask], { elicitationTimeoutMs: 300 });
+    const created = await rawRequest(url, 'tools/call', {
+      capabilities: { ...TASKS, ...ELICITATION },
+      params: { name: 'ask', arguments: {} },
+    });
+    const task = await pollUntil(url, String(created.result?.taskId), (s) => s === 'completed');
+    expect(reply).toEqual({ action: 'cancel' });
+    expect(JSON.stringify(task.result)).toContain('went on');
+  });
+
+  it('stops the run of a task and forgets it once its TTL ends', async () => {
+    const { slow, execute } = slowTool(5000);
+    const url = await serve([slow], { tasks: { promoteAfterMs: 0, ttlMs: 300 } });
+    const created = await rawRequest(url, 'tools/call', {
+      capabilities: TASKS,
+      params: { name: 'slow', arguments: {} },
+    });
+    await sleep(500);
+    expect(execute.mock.calls[0]?.[1].signal.aborted).toBe(true);
+    const gone = await rawRequest(url, 'tasks/get', {
+      capabilities: TASKS,
+      params: { taskId: String(created.result?.taskId) },
+    });
+    expect(gone.error?.code).toBe(-32602);
+  });
+
   it('forgets a task once its TTL ends', async () => {
     const store = new InMemoryMCPTaskStore();
     await store.create({

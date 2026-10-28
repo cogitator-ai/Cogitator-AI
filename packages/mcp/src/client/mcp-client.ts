@@ -237,7 +237,10 @@ export class MCPClient {
         ? undefined
         : isOAuthClientProvider(config.auth)
           ? config.auth
-          : createMCPOAuthProvider(config.auth, config.clientName ?? 'cogitator-mcp-client');
+          : createMCPOAuthProvider(config.auth, {
+              resource: config.url ?? 'mcp://unknown',
+              clientName: config.clientName ?? 'cogitator-mcp-client',
+            });
     this.dispatcher = new RawDispatcher(() => this.requestMeta());
     const tasks = typeof config.tasks === 'object' ? config.tasks : undefined;
     this.taskStore = tasks?.store ?? new InMemoryMCPClientTaskStore();

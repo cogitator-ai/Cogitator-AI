@@ -12,16 +12,54 @@ import {
 } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 
-/** What a call waits on between two rounds */
-export type CallState =
-  | { kind: 'approval'; tool: string; digest: string; key: string }
-  | { kind: 'parked'; tool: string; digest: string; id: string }
-  | { kind: 'tool'; tool: string; digest: string; data: unknown };
+/** An approval the person gave in an earlier round, for the request with `digest` */
+export interface GrantedApproval {
+  digest: string;
+  approved: boolean;
+  reason?: string;
+}
+
+/**
+ * What a call waits on between two rounds, with the approvals it was given so far: an
+ * approval (`pending` the digest of the request asked), a run waiting in this process
+ * (`parked`), or the questions of `context.input.ask()` and what the tool kept (`tool`)
+ */
+export type CallState = { tool: string; digest: string; approvals?: GrantedApproval[] } & (
+  | {
+      kind: 'approval';
+      key: string;
+      pending: string;
+      /** The answers and kept state of `context.input` the run had when it asked */
+      resume?: { responses: Record<string, unknown>; data?: unknown };
+    }
+  | { kind: 'parked'; id: string }
+  | { kind: 'tool'; data?: unknown }
+);
+
+const GrantedApprovalSchema = z.object({
+  digest: z.string(),
+  approved: z.boolean(),
+  reason: z.string().optional(),
+});
+
+const base = {
+  tool: z.string(),
+  digest: z.string(),
+  approvals: z.array(GrantedApprovalSchema).optional(),
+};
 
 const CallStateSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('approval'), tool: z.string(), digest: z.string(), key: z.string() }),
-  z.object({ kind: z.literal('parked'), tool: z.string(), digest: z.string(), id: z.string() }),
-  z.object({ kind: z.literal('tool'), tool: z.string(), digest: z.string(), data: z.unknown() }),
+  z.object({
+    ...base,
+    kind: z.literal('approval'),
+    key: z.string(),
+    pending: z.string(),
+    resume: z
+      .object({ responses: z.record(z.string(), z.unknown()), data: z.unknown().optional() })
+      .optional(),
+  }),
+  z.object({ ...base, kind: z.literal('parked'), id: z.string() }),
+  z.object({ ...base, kind: z.literal('tool'), data: z.unknown().optional() }),
 ]);
 
 /** A state that did not verify: expired, tampered with, or signed by another key or for another caller */

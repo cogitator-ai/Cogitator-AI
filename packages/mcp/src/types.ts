@@ -487,7 +487,9 @@ export interface MCPServerConfig {
   /**
    * For HTTP transport: establishes the caller of every request; requests it
    * returns `undefined` for are answered 401. Without it the server is open
-   * to anyone who can reach it.
+   * to anyone who can reach it. Tasks, waiting calls and round states belong to
+   * the caller's `userId`, else to the request's credential (`Authorization` or
+   * `Cookie` header): a caller with neither is answered 401 too.
    */
   auth?: MCPAuthFunction;
 
@@ -530,7 +532,8 @@ export interface MCPServerConfig {
 
   /**
    * For HTTP transport: the origins browsers may call the server from. A request with another
-   * `Origin` is refused with 403. Default: any origin when `corsOrigin` is `*`, else `corsOrigin`
+   * `Origin` is refused with 403, one without `Origin` passes. Default: `corsOrigin` when it is
+   * not `*`, else only loopback origins for a server on a loopback host, else any origin
    */
   allowedOrigins?: string[];
 

@@ -18,6 +18,7 @@ export {
   createMCPOAuthProvider,
   InMemoryMCPOAuthStore,
   type MCPOAuthProvider,
+  type MCPOAuthProviderOptions,
 } from './client/oauth';
 export { createStdioTransport, createHttpTransport, createSseTransport } from './client/transports';
 export {

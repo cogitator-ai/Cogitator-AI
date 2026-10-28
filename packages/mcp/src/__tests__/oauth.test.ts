@@ -11,6 +11,7 @@ import { createMCPOAuthProvider, InMemoryMCPOAuthStore } from '../client/oauth';
 import { MCPServer } from '../server/mcp-server';
 
 const CLIENT_METADATA_URL = 'https://app.example.com/oauth/client.json';
+const SERVER = 'https://mcp-a.example.com/mcp';
 
 interface AuthServerOptions {
   cimd: boolean;
@@ -160,23 +161,31 @@ describe('createMCPOAuthProvider', () => {
   it('takes only an https client metadata URL with a path', () => {
     const base = { redirectUrl: 'http://127.0.0.1:9/cb', authorize: browse };
     expect(() =>
-      createMCPOAuthProvider({ ...base, clientMetadataUrl: 'http://app.example.com/c.json' })
+      createMCPOAuthProvider(
+        { ...base, clientMetadataUrl: 'http://app.example.com/c.json' },
+        { resource: SERVER }
+      )
     ).toThrow(/https URL with a path/);
     expect(() =>
-      createMCPOAuthProvider({ ...base, clientMetadataUrl: 'https://app.example.com/' })
+      createMCPOAuthProvider(
+        { ...base, clientMetadataUrl: 'https://app.example.com/' },
+        { resource: SERVER }
+      )
     ).toThrow(/https URL with a path/);
     expect(
-      createMCPOAuthProvider({ ...base, clientMetadataUrl: CLIENT_METADATA_URL }).clientMetadataUrl
+      createMCPOAuthProvider(
+        { ...base, clientMetadataUrl: CLIENT_METADATA_URL },
+        { resource: SERVER }
+      ).clientMetadataUrl
     ).toBe(CLIENT_METADATA_URL);
   });
 
   it('keeps tokens and registrations per authorization server', async () => {
     const store = new InMemoryMCPOAuthStore();
-    const provider = createMCPOAuthProvider({
-      redirectUrl: 'http://127.0.0.1:9/cb',
-      store,
-      authorize: browse,
-    });
+    const provider = createMCPOAuthProvider(
+      { redirectUrl: 'http://127.0.0.1:9/cb', store, authorize: browse },
+      { resource: SERVER }
+    );
     await provider.saveTokens(
       { access_token: 'a', token_type: 'Bearer' },
       { issuer: 'https://as1' }
@@ -192,22 +201,63 @@ describe('createMCPOAuthProvider', () => {
     });
   });
 
+  it('forgets the credentials of every authorization server when the SDK invalidates them', async () => {
+    const store = new InMemoryMCPOAuthStore();
+    const provider = createMCPOAuthProvider(
+      { redirectUrl: 'http://127.0.0.1:9/cb', store, authorize: browse },
+      { resource: SERVER }
+    );
+    for (const issuer of ['https://as1', 'https://as2']) {
+      await provider.saveTokens({ access_token: issuer, token_type: 'Bearer' }, { issuer });
+      await provider.saveClientInformation?.({ client_id: issuer }, { issuer });
+    }
+
+    await provider.invalidateCredentials?.('tokens');
+    expect(await provider.tokens({ issuer: 'https://as1' })).toBeUndefined();
+    expect(await provider.tokens({ issuer: 'https://as2' })).toBeUndefined();
+    expect(await provider.tokens()).toBeUndefined();
+    expect(await provider.clientInformation({ issuer: 'https://as2' })).toBeDefined();
+
+    await provider.invalidateCredentials?.('client');
+    expect(await provider.clientInformation({ issuer: 'https://as1' })).toBeUndefined();
+    expect(await provider.clientInformation({ issuer: 'https://as2' })).toBeUndefined();
+  });
+
+  it('keeps what it stores under the server, so one store serves several servers', async () => {
+    const store = new InMemoryMCPOAuthStore();
+    const config = { redirectUrl: 'http://127.0.0.1:9/cb', store, authorize: browse };
+    const forA = createMCPOAuthProvider(config, { resource: SERVER });
+    const forB = createMCPOAuthProvider(config, { resource: 'https://mcp-b.example.com/mcp' });
+
+    await forB.saveTokens({ access_token: 'b', token_type: 'Bearer' }, { issuer: 'https://as' });
+    await forB.saveCodeVerifier('verifier-b');
+    await forA.saveCodeVerifier('verifier-a');
+
+    expect(await forA.tokens({ issuer: 'https://as' })).toBeUndefined();
+    expect(await forA.tokens()).toBeUndefined();
+    expect(await forB.tokens()).toMatchObject({ access_token: 'b' });
+    expect(await forA.codeVerifier()).toBe('verifier-a');
+    expect(await forB.codeVerifier()).toBe('verifier-b');
+  });
+
   it('uses a pre-registered client id for every authorization server', async () => {
-    const provider = createMCPOAuthProvider({
-      redirectUrl: 'http://127.0.0.1:9/cb',
-      clientId: 'pre',
-      authorize: browse,
-    });
+    const provider = createMCPOAuthProvider(
+      { redirectUrl: 'http://127.0.0.1:9/cb', clientId: 'pre', authorize: browse },
+      { resource: SERVER }
+    );
     expect(await provider.clientInformation({ issuer: 'https://any' })).toEqual({
       client_id: 'pre',
     });
   });
 
   it('refuses a callback whose state is not the one it sent', async () => {
-    const provider = createMCPOAuthProvider({
-      redirectUrl: 'http://127.0.0.1:9/cb',
-      authorize: async () => new URL('http://127.0.0.1:9/cb?code=x&state=other'),
-    });
+    const provider = createMCPOAuthProvider(
+      {
+        redirectUrl: 'http://127.0.0.1:9/cb',
+        authorize: async () => new URL('http://127.0.0.1:9/cb?code=x&state=other'),
+      },
+      { resource: SERVER }
+    );
     await provider.redirectToAuthorization(new URL('https://as/authorize?state=mine'));
     await expect(provider.completeAuthorization()).rejects.toThrow(/another state/);
   });

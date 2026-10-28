@@ -6,6 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { ToolApprovalRequest } from '@cogitator-ai/types';
+import type { GrantedApproval } from './request-state';
 import type { MCPElicitRequest, MCPElicitResult, MCPInputPending, MCPToolInput } from '../types';
 
 /** A tool result as an MCP server sends it */
@@ -28,6 +29,14 @@ export type ExecutionStep =
   | { kind: 'done'; result: ServerToolResult; pendingApproval?: ToolApprovalRequest }
   | { kind: 'ask'; key: string; request: MCPElicitRequest }
   | { kind: 'input'; requests: Record<string, MCPElicitRequest>; state: unknown };
+
+/** What a call carries from round to round */
+export interface ExecutionCarry {
+  /** The approvals the person gave the call so far, by the digest of the request */
+  approvals: GrantedApproval[];
+  /** The answers and kept state the run started with (`context.input`) */
+  input?: { responses: Record<string, MCPElicitResult>; state: unknown };
+}
 
 /** What a run of a call gets to ask with */
 export interface ExecutionAskers {
@@ -65,6 +74,8 @@ export class CallExecution {
     readonly owner: string,
     readonly tool: string,
     readonly digest: string,
+    /** What the call carries from round to round: the approvals given and the last input */
+    readonly carry: ExecutionCarry,
     run: (askers: ExecutionAskers) => Promise<ExecutionStep>
   ) {
     let asked: { requests: Record<string, MCPElicitRequest>; state: unknown } | undefined;
@@ -100,10 +111,15 @@ export class CallExecution {
     );
   }
 
-  /** What the run came to next */
+  /**
+   * What the run came to next. Rejects when the run already ended and told what it came to,
+   * or when another round already waits on it
+   */
   next(): Promise<ExecutionStep> {
     const step = this.queue.shift();
     if (step) return Promise.resolve(step);
+    const refused = this.refusal();
+    if (refused) return Promise.reject(refused);
     return new Promise((resolve) => {
       this.waiter = resolve;
     });
@@ -113,6 +129,8 @@ export class CallExecution {
   nextWithin(ms: number): Promise<ExecutionStep | undefined> {
     const step = this.queue.shift();
     if (step) return Promise.resolve(step);
+    const refused = this.refusal();
+    if (refused) return Promise.reject(refused);
     return new Promise((resolve) => {
       const waiter = (next: ExecutionStep): void => {
         clearTimeout(timer);
@@ -124,6 +142,12 @@ export class CallExecution {
       }, ms);
       this.waiter = waiter;
     });
+  }
+
+  private refusal(): Error | undefined {
+    if (this.done) return new Error('The run of this call already ended');
+    if (this.waiter) return new Error('Another round already waits on the run of this call');
+    return undefined;
   }
 
   /** The question the run waits on, if it waits on one */

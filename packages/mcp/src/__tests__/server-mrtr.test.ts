@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { tool } from '@cogitator-ai/core';
-import type { Tool } from '@cogitator-ai/types';
+import type { Tool, ToolInvoker } from '@cogitator-ai/types';
 import { MCPServer } from '../server/mcp-server';
 import type { MCPServerConfig, MCPToolContext } from '../types';
 import { ELICITATION, TASKS, rawRequest } from './support/raw-mcp';
@@ -336,5 +336,188 @@ describe('tasks/* without the tasks extension', () => {
       params: { taskId: 'x' },
     });
     expect(unknown.error?.code).toBe(-32602);
+  });
+});
+
+describe('approvals carried across rounds', () => {
+  it('keeps an approval when the approved call then asks with context.input', async () => {
+    const effects = vi.fn();
+    const deploy = tool({
+      name: 'deploy',
+      description: 'Deploy after approval, asking the environment',
+      parameters: z.object({ app: z.string() }),
+      requiresApproval: true,
+      execute: async ({ app }, context) => {
+        const input = (context as MCPToolContext).input!;
+        const env = input.responses.env;
+        if (env?.action !== 'accept') {
+          return input.ask(
+            {
+              env: {
+                message: 'Where?',
+                schema: { type: 'object', properties: { to: { type: 'string' } } },
+              },
+            },
+            { asked: true }
+          );
+        }
+        effects(app, env.content.to);
+        return `deployed ${app} to ${String(env.content.to)}`;
+      },
+    }) as Tool;
+    const url = await serve([deploy]);
+    const send = (extra: Record<string, unknown> = {}) =>
+      rawRequest(url, 'tools/call', {
+        capabilities: ELICITATION,
+        params: { name: 'deploy', arguments: { app: 'api' }, ...extra },
+      });
+
+    const first = await send();
+    expect(Object.keys(first.result?.inputRequests as object)).toEqual(['approval']);
+    const second = await send({
+      requestState: first.result?.requestState,
+      inputResponses: approve,
+    });
+    expect(Object.keys(second.result?.inputRequests as object)).toEqual(['env']);
+    const third = await send({
+      requestState: second.result?.requestState,
+      inputResponses: { env: { action: 'accept', content: { to: 'prod' } } },
+    });
+    expect(third.result?.content).toEqual([{ type: 'text', text: 'deployed api to prod' }]);
+    expect(effects).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies an approval only to the request it was given for', async () => {
+    const seen: string[] = [];
+    const invoker: ToolInvoker = {
+      invokeTool: async (_tool, _args, options) => {
+        for (const path of ['/a', '/b']) {
+          const decision = await options?.onApproval?.({
+            toolCallId: path,
+            toolName: 'delete_file',
+            arguments: { path },
+            description: 'Delete a file',
+          });
+          if (!decision || decision === 'pause')
+            return {
+              pendingApproval: {
+                toolCallId: path,
+                toolName: 'delete_file',
+                arguments: { path },
+                description: 'Delete a file',
+              },
+            };
+          seen.push(`${path}:${String(decision.approved)}`);
+        }
+        return { result: 'both decided' };
+      },
+    } as ToolInvoker;
+    const url = await serve([deleteTool().deleteFile], { toolInvoker: invoker });
+    const first = await call(url, { path: '/x' });
+    const second = await call(
+      url,
+      { path: '/x' },
+      {
+        inputResponses: approve,
+        requestState: first.result?.requestState,
+      }
+    );
+    expect(second.result?.resultType).toBe('input_required');
+    expect(JSON.stringify(second.result?.inputRequests)).toContain('/b');
+    const third = await call(
+      url,
+      { path: '/x' },
+      {
+        inputResponses: approve,
+        requestState: second.result?.requestState,
+      }
+    );
+    expect(third.result?.content).toEqual([{ type: 'text', text: 'both decided' }]);
+    expect(seen.slice(-2)).toEqual(['/a:true', '/b:true']);
+  });
+});
+
+describe('a run waiting in the server between rounds', () => {
+  function askOnce() {
+    const runs = vi.fn();
+    const ask = tool({
+      name: 'ask',
+      description: 'Ask once',
+      parameters: z.object({}),
+      execute: async (_params, context) => {
+        runs();
+        const reply = await (context as MCPToolContext).elicit!({
+          message: 'Name?',
+          schema: { type: 'object', properties: { name: { type: 'string' } } },
+        });
+        return `hi ${JSON.stringify(reply)}`;
+      },
+    }) as Tool;
+    return { ask, runs };
+  }
+
+  const answer = { 'elicit:1': { action: 'accept', content: { name: 'Ann' } } };
+
+  it('refuses the state of a round once the run went on, instead of running the tool again', async () => {
+    const { ask, runs } = askOnce();
+    const url = await serve([ask]);
+    const send = (extra: Record<string, unknown> = {}) =>
+      rawRequest(url, 'tools/call', {
+        capabilities: ELICITATION,
+        params: { name: 'ask', arguments: {}, ...extra },
+      });
+    const first = await send();
+    const done = await send({ requestState: first.result?.requestState, inputResponses: answer });
+    expect(done.result?.isError).toBeFalsy();
+
+    const replay = await send({ requestState: first.result?.requestState, inputResponses: answer });
+    expect(replay.result?.isError).toBe(true);
+    expect(JSON.stringify(replay.result?.content)).toContain('expired or was answered already');
+    expect(runs).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets one of two rounds that answer at once go on, and refuses the other', async () => {
+    const { ask, runs } = askOnce();
+    const url = await serve([ask]);
+    const first = await rawRequest(url, 'tools/call', {
+      capabilities: ELICITATION,
+      params: { name: 'ask', arguments: {} },
+    });
+    const both = await Promise.all(
+      [0, 1].map(() =>
+        rawRequest(url, 'tools/call', {
+          capabilities: ELICITATION,
+          params: {
+            name: 'ask',
+            arguments: {},
+            requestState: first.result?.requestState,
+            inputResponses: answer,
+          },
+        })
+      )
+    );
+    expect(both.filter((reply) => reply.result?.isError === true)).toHaveLength(1);
+    expect(runs).toHaveBeenCalledTimes(1);
+  });
+
+  it('says the question expired once nobody answered in time', async () => {
+    const { ask, runs } = askOnce();
+    const url = await serve([ask], { elicitationTimeoutMs: 1000 });
+    const first = await rawRequest(url, 'tools/call', {
+      capabilities: ELICITATION,
+      params: { name: 'ask', arguments: {} },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const late = await rawRequest(url, 'tools/call', {
+      capabilities: ELICITATION,
+      params: {
+        name: 'ask',
+        arguments: {},
+        requestState: first.result?.requestState,
+        inputResponses: answer,
+      },
+    });
+    expect(JSON.stringify(late.result)).toMatch(/expired/);
+    expect(runs).toHaveBeenCalledTimes(1);
   });
 });

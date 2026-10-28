@@ -58,15 +58,29 @@ export interface MCPOAuthProvider extends OAuthClientProvider {
   completeAuthorization(): Promise<URLSearchParams | undefined>;
 }
 
+/** Which server a provider authorizes for, and the name it registers under */
+export interface MCPOAuthProviderOptions {
+  /**
+   * The MCP server's URL. Everything the provider keeps in its store is kept under it, so one
+   * store serves several servers without one's tokens reaching another
+   */
+  resource: string;
+  /** Name shown on consent pages when `config.clientName` is not set. Default: `cogitator` */
+  clientName?: string;
+}
+
 /**
- * An MCP SDK `OAuthClientProvider` from `config`. With `clientMetadataUrl` the client id is that
- * URL, which authorization servers that support Client ID Metadata Documents fetch, others fall
- * back to Dynamic Client Registration (`application_type` follows the redirect host)
+ * An MCP SDK `OAuthClientProvider` from `config` for the server at `options.resource`. With
+ * `clientMetadataUrl` the client id is that URL, which authorization servers that support Client
+ * ID Metadata Documents fetch, others fall back to Dynamic Client Registration
+ * (`application_type` follows the redirect host). Registrations and tokens are kept per
+ * authorization server (`issuer`), everything under the server's URL
  */
 export function createMCPOAuthProvider(
   config: MCPOAuthConfig,
-  clientName = 'cogitator'
+  options: MCPOAuthProviderOptions
 ): MCPOAuthProvider {
+  const clientName = options.clientName ?? 'cogitator';
   if (config.clientMetadataUrl !== undefined) {
     const url = new URL(config.clientMetadataUrl);
     if (url.protocol !== 'https:' || url.pathname === '/' || url.pathname === '') {
@@ -87,8 +101,26 @@ export function createMCPOAuthProvider(
     ...(config.scope && { scope: config.scope }),
   };
 
+  const resource = new URL(options.resource);
+  resource.hash = '';
+  const prefix = `mcp-oauth ${resource.href} `;
   const keyOf = (kind: string, ctx?: OAuthClientInformationContext): string =>
-    ctx ? `${kind}:${ctx.issuer}` : `${kind}:latest`;
+    `${prefix}${ctx ? `${kind}:${ctx.issuer}` : `${kind}:latest`}`;
+  const plain = (kind: string): string => `${prefix}${kind}`;
+
+  const issuers = async (): Promise<string[]> => {
+    const stored = z.array(z.string()).safeParse(await store.load(plain('issuers')));
+    return stored.success ? stored.data : [];
+  };
+  const remember = async (ctx: OAuthClientInformationContext | undefined): Promise<void> => {
+    if (!ctx) return;
+    const known = await issuers();
+    if (!known.includes(ctx.issuer)) await store.save(plain('issuers'), [...known, ctx.issuer]);
+  };
+  const forget = async (kind: 'tokens' | 'client'): Promise<void> => {
+    for (const issuer of await issuers()) await store.delete(keyOf(kind, { issuer }));
+    await store.delete(keyOf(kind));
+  };
 
   return {
     get redirectUrl() {
@@ -101,7 +133,7 @@ export function createMCPOAuthProvider(
 
     async state() {
       const state = randomBytes(16).toString('base64url');
-      await store.save('state', state);
+      await store.save(plain('state'), state);
       return state;
     },
 
@@ -117,6 +149,7 @@ export function createMCPOAuthProvider(
     },
 
     async saveClientInformation(information, ctx) {
+      await remember(ctx);
       await store.save(keyOf('client', ctx), information);
     },
 
@@ -126,6 +159,7 @@ export function createMCPOAuthProvider(
     },
 
     async saveTokens(tokens, ctx) {
+      await remember(ctx);
       await store.save(keyOf('tokens', ctx), tokens);
       await store.save(keyOf('tokens'), tokens);
     },
@@ -135,20 +169,20 @@ export function createMCPOAuthProvider(
     },
 
     async saveDiscoveryState(state) {
-      await store.save('discovery', state);
+      await store.save(plain('discovery'), state);
     },
 
     async discoveryState() {
-      const stored = DiscoveryStateSchema.safeParse(await store.load('discovery'));
+      const stored = DiscoveryStateSchema.safeParse(await store.load(plain('discovery')));
       return stored.success ? (stored.data as OAuthDiscoveryState) : undefined;
     },
 
     async saveCodeVerifier(codeVerifier) {
-      await store.save('verifier', codeVerifier);
+      await store.save(plain('verifier'), codeVerifier);
     },
 
     async codeVerifier() {
-      const verifier = await store.load('verifier');
+      const verifier = await store.load(plain('verifier'));
       if (typeof verifier !== 'string') {
         throw new Error('No PKCE code verifier saved for the authorization in progress');
       }
@@ -156,11 +190,14 @@ export function createMCPOAuthProvider(
     },
 
     async invalidateCredentials(scope) {
-      if (scope === 'all' || scope === 'tokens') {
-        await store.delete(keyOf('tokens'));
+      if (scope === 'all' || scope === 'tokens') await forget('tokens');
+      if (scope === 'all' || scope === 'client') await forget('client');
+      if (scope === 'all' || scope === 'verifier') await store.delete(plain('verifier'));
+      if (scope === 'all' || scope === 'discovery') await store.delete(plain('discovery'));
+      if (scope === 'all') {
+        await store.delete(plain('state'));
+        await store.delete(plain('issuers'));
       }
-      if (scope === 'all' || scope === 'verifier') await store.delete('verifier');
-      if (scope === 'all' || scope === 'discovery') await store.delete('discovery');
     },
 
     async completeAuthorization() {

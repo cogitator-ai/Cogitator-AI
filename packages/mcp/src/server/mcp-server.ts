@@ -6,7 +6,7 @@
  * Serves clients of protocol 2026-07-28 and of 2025-11-25.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 import {
   CLIENT_CAPABILITIES_META_KEY,
@@ -67,6 +67,7 @@ import {
   callStateCodec,
   randomStateKey,
   type CallState,
+  type GrantedApproval,
   type VerifiedState,
 } from './request-state';
 import { DEFAULT_PROMOTE_AFTER_MS, ServerTasks, TASKS_EXTENSION, parseElicitResult } from './tasks';
@@ -130,6 +131,8 @@ const AnyResult = z.looseObject({});
 interface ServeScope {
   era: 'modern' | 'legacy';
   caller: MCPCaller | undefined;
+  /** Whom tasks, waiting runs and round states belong to, see `ownerOf` */
+  owner: string;
   /** For the 2025 era: whether a request of the server can reach the client (stdio, sessions) */
   legacyCanAsk: boolean;
   server?: McpServer;
@@ -142,7 +145,8 @@ interface ServeScope {
 interface RunMode {
   mode: 'round' | 'task' | 'legacy' | 'direct';
   elicit?: (request: MCPElicitRequest) => Promise<MCPElicitResult | undefined>;
-  decision?: ToolApprovalDecision;
+  /** The approvals the person gave in earlier rounds, by the digest of the request */
+  approvals?: GrantedApproval[];
   input?: { responses: Record<string, MCPElicitResult>; state: unknown; stateRejected: boolean };
 }
 
@@ -186,6 +190,7 @@ export class MCPServer {
       transport: NodeStreamableHTTPServerTransport;
       server: McpServer;
       caller: MCPCaller | undefined;
+      owner: string;
     }
   >();
 
@@ -200,7 +205,11 @@ export class MCPServer {
     this.tasks =
       config.tasks === false
         ? undefined
-        : new ServerTasks(config.tasks ?? {}, (message) => this.log('error', message));
+        : new ServerTasks(
+            config.tasks ?? {},
+            (message) => this.log('error', message),
+            () => this.elicitationTimeout()
+          );
   }
 
   /**
@@ -327,7 +336,7 @@ export class MCPServer {
    * HTTP requests never share a single server/transport binding.
    */
   private buildServer(scope: ServeScope): McpServer {
-    const codec = callStateCodec(this.stateKey, callerKey(scope.caller), this.elicitationTimeout());
+    const codec = callStateCodec(this.stateKey, scope.owner, this.elicitationTimeout());
     const server = new McpServer(
       { name: this.config.name, version: this.config.version },
       {
@@ -412,7 +421,7 @@ export class MCPServer {
     outputSchema: z.ZodType | undefined
   ): Promise<CallToolResult | InputRequiredResult> {
     const capabilities = this.clientCapabilities(ctx, scope);
-    const owner = callerKey(scope.caller);
+    const owner = scope.owner;
     const takesTasks =
       scope.era === 'modern' && capabilities?.extensions?.[TASKS_EXTENSION] !== undefined;
     if (capabilities?.elicitation === undefined || scope.era === 'legacy') {
@@ -434,32 +443,49 @@ export class MCPServer {
 
     if (state?.kind === 'parked') {
       const execution = this.parked.get(state.id);
-      if (execution?.owner === owner) {
-        const question = execution.question;
-        const answer = question && responses[question.key];
-        if (question && !answer) return this.askInRound(execution, question, ctx, mint);
-        if (answer) execution.respond(answer);
-        return this.drive(
-          execution,
-          ctx,
-          scope,
+      const question = execution?.question;
+      if (execution?.owner !== owner || !question || execution.finished) {
+        return this.toolError(
           tool,
-          args,
-          mint,
-          outputSchema,
-          takesTasks,
-          'task'
-        );
+          'The question of this call expired or was answered already: call the tool again'
+        ) as CallToolResult;
       }
+      const answer = responses[question.key];
+      if (!answer) return this.askInRound(execution, question, ctx, mint);
+      this.parked.delete(execution.id);
+      execution.respond(answer);
+      return this.drive(execution, ctx, scope, tool, args, mint, outputSchema, takesTasks, 'task');
     }
 
-    const approval = state?.kind === 'approval' ? responses[state.key] : undefined;
+    let approvals = state?.approvals ?? [];
+    let input: { responses: Record<string, MCPElicitResult>; state: unknown } | undefined;
+    if (state?.kind === 'approval') {
+      const reply = responses[state.key];
+      if (reply) {
+        const decision = approvalDecision(reply);
+        approvals = [
+          ...approvals.filter((granted) => granted.digest !== state.pending),
+          decision.approved
+            ? { digest: state.pending, approved: true }
+            : {
+                digest: state.pending,
+                approved: false,
+                ...(decision.reason !== undefined && { reason: decision.reason }),
+              },
+        ];
+      }
+      if (state.resume) {
+        input = { responses: elicitResults(state.resume.responses), state: state.resume.data };
+      }
+    } else if (state?.kind === 'tool') {
+      input = { responses, state: state.data };
+    }
     const execution = this.startExecution(tool, args, owner, digest, scope.caller, outputSchema, {
       mode: 'round',
-      ...(approval && { decision: approvalDecision(approval) }),
+      approvals,
       input: {
-        responses: state?.kind === 'tool' ? responses : {},
-        state: state?.kind === 'tool' ? state.data : undefined,
+        responses: input?.responses ?? {},
+        state: input?.state,
         stateRejected:
           verified === REJECTED_STATE || (verified !== undefined && state === undefined),
       },
@@ -503,6 +529,7 @@ export class MCPServer {
             outputSchema,
             {
               mode: taskMode === 'legacy' ? 'direct' : taskMode,
+              approvals: execution.carry.approvals,
               ...(resume.input && { input: { ...resume.input, stateRejected: false } }),
             }
           )
@@ -510,9 +537,12 @@ export class MCPServer {
         return taskResult(task);
       }
       if (step === undefined) throw new Error('A tool call ended without a result');
+      if (step.kind !== 'ask') this.parked.delete(execution.id);
       return await this.roundAnswer(step, execution, ctx, mint, () => {
         kept = true;
       });
+    } catch (error) {
+      return this.toolError(tool, errorMessageOf(error)) as CallToolResult;
     } finally {
       ctx.mcpReq.signal.removeEventListener('abort', onAbort);
     }
@@ -525,13 +555,31 @@ export class MCPServer {
     mint: (state: CallState, ctx: ServerContext) => Promise<string>,
     keep: () => void
   ): Promise<CallToolResult | InputRequiredResult> {
-    const base = { tool: execution.tool, digest: execution.digest };
+    const base = {
+      tool: execution.tool,
+      digest: execution.digest,
+      ...(execution.carry.approvals.length > 0 && { approvals: execution.carry.approvals }),
+    };
     switch (step.kind) {
       case 'done':
         if (step.pendingApproval && execution.digest !== '') {
+          const carried = execution.carry.input;
+          const resumable =
+            carried && (Object.keys(carried.responses).length > 0 || carried.state !== undefined);
           return inputRequired({
             inputRequests: { [APPROVAL_KEY]: elicitInput(approvalForm(step.pendingApproval)) },
-            requestState: await mint({ kind: 'approval', ...base, key: APPROVAL_KEY }, ctx),
+            requestState: await mint(
+              {
+                kind: 'approval',
+                ...base,
+                key: APPROVAL_KEY,
+                pending: approvalDigest(step.pendingApproval),
+                ...(resumable && {
+                  resume: { responses: { ...carried.responses }, data: carried.state },
+                }),
+              },
+              ctx
+            ),
           });
         }
         return step.result as CallToolResult;
@@ -584,7 +632,11 @@ export class MCPServer {
     outputSchema: z.ZodType | undefined,
     run: RunMode
   ): CallExecution {
-    return new CallExecution(owner, tool.name, digest, async (askers) => {
+    const carry = {
+      approvals: [...(run.approvals ?? [])],
+      ...(run.input && { input: { responses: run.input.responses, state: run.input.state } }),
+    };
+    return new CallExecution(owner, tool.name, digest, carry, async (askers) => {
       let pendingApproval: ToolApprovalRequest | undefined;
       const elicit: MCPToolContext['elicit'] =
         run.mode === 'direct' ? undefined : run.mode === 'legacy' ? run.elicit : askers.elicit;
@@ -594,8 +646,13 @@ export class MCPServer {
       const onApproval = async (
         request: ToolApprovalRequest
       ): Promise<ToolApprovalDecision | undefined> => {
+        const granted = carry.approvals.find((entry) => entry.digest === approvalDigest(request));
+        if (granted) {
+          return granted.approved
+            ? { approved: true }
+            : { approved: false, ...(granted.reason !== undefined && { reason: granted.reason }) };
+        }
         if (run.mode === 'task' || run.mode === 'legacy') return elicitApproval(elicit, request);
-        if (run.decision) return run.decision;
         if (run.mode === 'round') pendingApproval = request;
         return undefined;
       };
@@ -724,7 +781,7 @@ export class MCPServer {
   }
 
   private registerTaskHandlers(server: McpServer, scope: ServeScope, tasks: ServerTasks): void {
-    const owner = callerKey(scope.caller);
+    const owner = scope.owner;
     const requireTasks = (ctx: ServerContext): void => {
       if (this.clientCapabilities(ctx, scope)?.extensions?.[TASKS_EXTENSION] === undefined) {
         throw new MissingRequiredClientCapabilityError({
@@ -916,7 +973,8 @@ export class MCPServer {
     switch (this.config.transport) {
       case 'stdio': {
         this.stdio = serveStdio(
-          (ctx) => this.buildServer({ era: ctx.era, caller: undefined, legacyCanAsk: true }),
+          (ctx) =>
+            this.buildServer({ era: ctx.era, caller: undefined, owner: '', legacyCanAsk: true }),
           {
             legacy: this.config.legacyClients === false ? 'reject' : 'serve',
             onerror: (error) => this.log('error', `stdio error: ${error.message}`),
@@ -975,7 +1033,8 @@ export class MCPServer {
     req: IncomingMessage & { auth?: AuthInfo },
     res: ServerResponse,
     body: unknown,
-    caller: MCPCaller | undefined
+    caller: MCPCaller | undefined,
+    owner: string
   ): Promise<void> {
     const header = req.headers['mcp-session-id'];
     const sessionId = Array.isArray(header) ? header[0] : header;
@@ -986,7 +1045,7 @@ export class MCPServer {
         writeJsonRpcError(res, 404, -32001, 'Session not found');
         return;
       }
-      if (session.caller?.userId !== caller?.userId) {
+      if (session.owner !== owner) {
         writeJsonRpcError(res, 403, -32001, 'The session belongs to another caller');
         return;
       }
@@ -994,11 +1053,11 @@ export class MCPServer {
       return;
     }
 
-    const server = this.buildServer({ era: 'legacy', caller, legacyCanAsk: true });
+    const server = this.buildServer({ era: 'legacy', caller, owner, legacyCanAsk: true });
     const transport: NodeStreamableHTTPServerTransport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
-        this.sessions.set(id, { transport, server, caller });
+        this.sessions.set(id, { transport, server, caller, owner });
       },
     });
     transport.onclose = () => {
@@ -1014,9 +1073,10 @@ export class MCPServer {
     req: IncomingMessage & { auth?: AuthInfo },
     res: ServerResponse,
     body: unknown,
-    caller: MCPCaller | undefined
+    caller: MCPCaller | undefined,
+    owner: string
   ): Promise<void> {
-    const server = this.buildServer({ era: 'legacy', caller, legacyCanAsk: false });
+    const server = this.buildServer({ era: 'legacy', caller, owner, legacyCanAsk: false });
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
       transport.close().catch(() => {});
@@ -1047,7 +1107,12 @@ export class MCPServer {
 
     const modern = createMcpHandler(
       (ctx) =>
-        this.buildServer({ era: 'modern', caller: callerOf(ctx.authInfo), legacyCanAsk: false }),
+        this.buildServer({
+          era: 'modern',
+          caller: callerOf(ctx.authInfo),
+          owner: ownerOfAuthInfo(ctx.authInfo),
+          legacyCanAsk: false,
+        }),
       {
         legacy: 'reject',
         maxRequestBodySize: maxBodySize,
@@ -1067,7 +1132,7 @@ export class MCPServer {
       res.setHeader('Access-Control-Allow-Headers', allowedHeaders(req));
       res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, MCP-Protocol-Version');
 
-      if (origin !== undefined && allowedOrigins && !allowedOrigins.includes(origin)) {
+      if (origin !== undefined && !originAllowed(origin, allowedOrigins, host)) {
         writeJsonRpcError(res, 403, -32001, 'Forbidden: this origin may not call the server');
         return;
       }
@@ -1115,9 +1180,19 @@ export class MCPServer {
           res.end('Method Not Allowed');
           return;
         }
+        const owner = ownerOf(caller, req, this.config.auth !== undefined);
+        if (owner === undefined) {
+          writeJsonRpcError(
+            res,
+            401,
+            -32001,
+            'Unauthorized: auth gave no userId and the request has no credential to tell callers apart'
+          );
+          return;
+        }
         const body = req.method === 'POST' ? await readJsonBody(req, res, maxBodySize) : undefined;
         if (body === null) return;
-        req.auth = authInfoOf(caller);
+        req.auth = authInfoOf(caller, owner);
 
         const legacy =
           this.config.legacyClients !== false &&
@@ -1127,10 +1202,10 @@ export class MCPServer {
           return;
         }
         if (this.config.sessions) {
-          await this.handleSessionRequest(req, res, body, caller);
+          await this.handleSessionRequest(req, res, body, caller, owner);
           return;
         }
-        await this.handleStatelessLegacyRequest(req, res, body, caller);
+        await this.handleStatelessLegacyRequest(req, res, body, caller, owner);
       } catch (error) {
         this.log('error', `HTTP request error: ${errorMessageOf(error)}`);
         if (!res.headersSent) {
@@ -1245,6 +1320,11 @@ function taskResult(task: Record<string, unknown>): CallToolResult {
   return { content: [], ...task, resultType: 'task' } as CallToolResult;
 }
 
+/** The digest an approval is kept by: the tool and arguments of the request it decides */
+function approvalDigest(request: ToolApprovalRequest): string {
+  return callDigest(request.toolName, request.arguments);
+}
+
 /** An elicitation form as an input request of `InputRequiredResult` */
 function elicitInput(request: MCPElicitRequest): InputRequest {
   return inputRequired.elicit({
@@ -1265,24 +1345,67 @@ function elicitResults(
   return results;
 }
 
-function callerKey(caller: MCPCaller | undefined): string {
-  return caller?.userId ?? '';
+/**
+ * Whom the tasks, waiting runs and round states of a request belong to: everyone alike on a
+ * server without `auth`, else the caller's `userId`, else the credential the request carries (a
+ * digest of its `Authorization` or `Cookie` header). Undefined for a caller `auth` let in that
+ * nothing tells apart from other callers, a request the server refuses
+ */
+function ownerOf(
+  caller: MCPCaller | undefined,
+  req: IncomingMessage,
+  hasAuth: boolean
+): string | undefined {
+  if (!hasAuth) return '';
+  if (caller?.userId !== undefined) return `user:${caller.userId}`;
+  const credential = req.headers.authorization ?? req.headers.cookie;
+  if (!credential) return undefined;
+  return `credential:${createHash('sha256').update(credential).digest('base64url')}`;
 }
 
 /** The `AuthInfo` the MCP SDK carries for a caller to the server it builds for the request */
-function authInfoOf(caller: MCPCaller | undefined): AuthInfo | undefined {
-  if (!caller) return undefined;
+function authInfoOf(caller: MCPCaller | undefined, owner: string): AuthInfo {
   return {
     token: '',
-    clientId: caller.userId ?? 'anonymous',
-    scopes: caller.scopes ?? [],
-    extra: { caller },
+    clientId: caller?.userId ?? 'anonymous',
+    scopes: caller?.scopes ?? [],
+    extra: { ...(caller && { caller }), owner },
   };
 }
 
 function callerOf(authInfo: AuthInfo | undefined): MCPCaller | undefined {
   const caller: unknown = authInfo?.extra?.caller;
   return isRecord(caller) ? (caller as MCPCaller) : undefined;
+}
+
+function ownerOfAuthInfo(authInfo: AuthInfo | undefined): string {
+  const owner: unknown = authInfo?.extra?.owner;
+  return typeof owner === 'string' ? owner : '';
+}
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host) || host.startsWith('127.') || host.endsWith('.localhost');
+}
+
+/**
+ * Whether a browser of `origin` may call the server: one of `allowed` when it is set, else a
+ * loopback origin when the server listens on a loopback host (so a web page cannot reach a local
+ * server through DNS rebinding), else any origin
+ */
+function originAllowed(
+  origin: string,
+  allowed: readonly string[] | undefined,
+  host: string
+): boolean {
+  if (allowed) return allowed.includes(origin);
+  if (!isLoopbackHost(host)) return true;
+  try {
+    return isLoopbackHost(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
 }
 
 const PRM_PATH = '/.well-known/oauth-protected-resource';

@@ -288,7 +288,7 @@ const client = await MCPClient.connect({
 });
 ```
 
-On a 401 the client finds the authorization server through the server's Protected Resource Metadata, registers, sends the person to `authorize` with PKCE and the `resource` of the server, checks the `iss` of the answer against the authorization server, and connects again with the token. It registers with `clientId` when you give one, else with its Client ID Metadata Document (`clientMetadataUrl`, an HTTPS URL of a JSON document you host, with `client_id`, `client_name` and `redirect_uris`) when the authorization server supports those, else by Dynamic Client Registration (`application_type: "native"` for a loopback redirect). Registrations and tokens are kept per authorization server. `createMCPOAuthProvider()` builds the provider on its own, and `auth` also takes an `OAuthClientProvider` of the MCP SDK.
+On a 401 the client finds the authorization server through the server's Protected Resource Metadata, registers, sends the person to `authorize` with PKCE and the `resource` of the server, checks the `iss` of the answer against the authorization server, and connects again with the token. It registers with `clientId` when you give one, else with its Client ID Metadata Document (`clientMetadataUrl`, an HTTPS URL of a JSON document you host, with `client_id`, `client_name` and `redirect_uris`) when the authorization server supports those, else by Dynamic Client Registration (`application_type: "native"` for a loopback redirect). Registrations and tokens are kept per authorization server, everything in `store` under the MCP server's URL, so one store serves several servers without one's token reaching another. When the authorization server rejects a token or a registration, the provider forgets those of every authorization server. `createMCPOAuthProvider(config, { resource })` builds the provider on its own, and `auth` also takes an `OAuthClientProvider` of the MCP SDK.
 
 ### Subscriptions
 
@@ -694,13 +694,13 @@ The MCP endpoint is `/mcp` (other paths answer 404); it takes `POST`, `GET` and 
 
 The server speaks 2026-07-28 to clients that do and 2025-11-25 to older ones (`legacyClients: false` refuses those). Clients of 2026-07-28 have no sessions: every request stands on its own, and the server asks them through multi round-trip requests (see [Approvals and Questions](#approvals-and-questions-across-rounds)). For 2025-11-25 clients every request is served on its own by default. With `sessions: true` the server keeps a session per such client, keyed by the `mcp-session-id` header: a request without one starts a session, an unknown session id gets 404, and a session can only be used by the caller (`userId`) that started it (403 otherwise). Sessions are what let the server send requests back to a 2025-11-25 client, such as elicitation.
 
-CORS preflights may send the MCP headers (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` and the `Mcp-Param-*` headers of tool arguments). `allowedOrigins` refuses requests from other browser origins with 403 (by default any origin when `corsOrigin` is `*`).
+CORS preflights may send the MCP headers (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` and the `Mcp-Param-*` headers of tool arguments). `allowedOrigins` refuses requests from other browser origins with 403. Without it, a server on a loopback host (`localhost`, `127.0.0.1`, `::1`) takes only loopback origins, so a web page cannot reach it through DNS rebinding, and a server on another host takes any origin while `corsOrigin` is `*`. Requests without an `Origin` header (not from a browser) always pass.
 
 ### Approvals and Questions Across Rounds
 
 On 2026-07-28 a call that needs the person at the client ends its round: a tool call that needs approval answers with an approval form and a signed `requestState`, and runs once the client calls again with the decision. The state is signed with HMAC under `requestStateKey`, bound to the caller and to the tool and its arguments, and valid for `elicitationTimeoutMs`: a state that was changed, expired, or brought by another caller or for other arguments asks again. Give every process that serves the same clients the same `requestStateKey` (at least 32 bytes), by default each process makes its own.
 
-`context.elicit()` keeps working as before: the call waits in the server process while the client answers, so every round of such a call has to reach the same process. `context.input` asks without waiting: `input.ask(requests, state)` ends the round, and the tool runs again with `input.responses` and the `state` it kept, on any process with the key.
+`context.elicit()` keeps working as before: the call waits in the server process while the client answers, so every round of such a call has to reach the same process. A round that comes back for a question that expired or was answered already (a replay, a second answer at once, another process) gets an error result that says so, the tool does not run again. `context.input` asks without waiting: `input.ask(requests, state)` ends the round, and the tool runs again with `input.responses` and the `state` it kept, on any process with the key.
 
 ```typescript
 const pickColor = tool({
@@ -728,7 +728,7 @@ const pickColor = tool({
 
 ### Tasks
 
-A call still running after `tasks.promoteAfterMs` (default 2 s) becomes an MCP task for clients that take tasks: the client gets the task, polls it with `tasks/get`, answers its questions with `tasks/update` and stops it with `tasks/cancel`. Approvals and `context.elicit()` of a task are asked in its `input_required` status. A task belongs to the caller that started it, others get `Unknown task`. Tasks live in `tasks.store` (an `InMemoryMCPTaskStore` by default) for `tasks.ttlMs` (an hour), `tasks: false` turns them off.
+A call still running after `tasks.promoteAfterMs` (default 2 s) becomes an MCP task for clients that take tasks: the client gets the task, polls it with `tasks/get`, answers its questions with `tasks/update` and stops it with `tasks/cancel`. Approvals and `context.elicit()` of a task are asked in its `input_required` status. A task belongs to the caller that started it, others get `Unknown task`. A question of a task nobody answers within `elicitationTimeoutMs` counts as dismissed. Tasks live in `tasks.store` (an `InMemoryMCPTaskStore` by default) for `tasks.ttlMs` (an hour): then a task still running is stopped and forgotten. `tasks: false` turns them off.
 
 ### OAuth Protected Resource Metadata
 
@@ -736,7 +736,7 @@ With `protectedResource: { authorizationServers: ['https://auth.example.com'] }`
 
 ### Authentication and Per-User Tools
 
-Over HTTP the server is open to anyone who can reach it. `auth` establishes the caller of every request; requests it returns `undefined` for (or throws on) get `401`. The caller's `userId` reaches tools as `context.userId`, and resource `read` / prompt `get` handlers get the caller as their second argument:
+Over HTTP the server is open to anyone who can reach it. `auth` establishes the caller of every request; requests it returns `undefined` for (or throws on) get `401`. Tasks, waiting calls and round states belong to the caller's `userId`. A caller without one is told apart by the credential the request carries (its `Authorization` or `Cookie` header), and a request with neither gets `401`. The caller's `userId` reaches tools as `context.userId`, and resource `read` / prompt `get` handlers get the caller as their second argument:
 
 ```typescript
 import { MCPServer } from '@cogitator-ai/mcp';

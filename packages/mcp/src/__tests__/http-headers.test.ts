@@ -94,7 +94,7 @@ describe('CORS and origins', () => {
     const response = await fetch(url, {
       method: 'OPTIONS',
       headers: {
-        Origin: 'http://app.test',
+        Origin: 'http://localhost:5173',
         'Access-Control-Request-Method': 'POST',
         'Access-Control-Request-Headers': 'content-type, mcp-param-region, x-other',
       },
@@ -105,6 +105,19 @@ describe('CORS and origins', () => {
       expect(allowed).toContain(name);
     }
     expect(allowed).not.toContain('x-other');
+  });
+
+  it('takes only loopback origins by default on a loopback host, and requests without Origin', async () => {
+    const url = await serve();
+    const post = (origin?: string) =>
+      fetch(url, {
+        method: 'OPTIONS',
+        headers: { ...(origin && { Origin: origin }) },
+      });
+    expect((await post('http://evil.test')).status).toBe(403);
+    expect((await post('http://127.0.0.1:3000')).status).toBe(204);
+    expect((await post('http://localhost:8080')).status).toBe(204);
+    expect((await post()).status).toBe(204);
   });
 
   it('refuses an origin that is not allowed with 403', async () => {
@@ -120,5 +133,63 @@ describe('CORS and origins', () => {
       headers: { Origin: 'http://app.test' },
     });
     expect(allowed.status).toBe(204);
+  });
+});
+
+describe('who owns tasks and rounds', () => {
+  it('refuses a caller auth lets in without a userId and without a credential', async () => {
+    const url = await serve({ auth: () => ({ scopes: ['read'] }) });
+    const bare = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    expect(bare.status).toBe(401);
+    expect(await bare.text()).toContain('no userId');
+  });
+
+  it('tells callers without a userId apart by their credential', async () => {
+    const slow = tool({
+      name: 'slow',
+      description: 'Takes a while',
+      parameters: z.object({}),
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return 'done';
+      },
+    }) as Tool;
+    const server = new MCPServer({
+      name: 'owners',
+      version: '1.0.0',
+      transport: 'http',
+      host: '127.0.0.1',
+      port: 0,
+      tasks: { promoteAfterMs: 0 },
+      auth: () => ({ scopes: ['read'] }),
+    });
+    server.registerTool(slow);
+    await server.start();
+    cleanups.push(() => server.stop());
+    const url = `http://127.0.0.1:${server.getPort()}/mcp`;
+    const tasks = { extensions: { 'io.modelcontextprotocol/tasks': {} } };
+
+    const created = await rawRequest(url, 'tools/call', {
+      capabilities: tasks,
+      params: { name: 'slow', arguments: {} },
+      headers: { Authorization: 'Bearer token-a' },
+    });
+    const taskId = String(created.result?.taskId);
+    const other = await rawRequest(url, 'tasks/get', {
+      capabilities: tasks,
+      params: { taskId },
+      headers: { Authorization: 'Bearer token-b' },
+    });
+    expect(other.error?.code).toBe(-32602);
+    const same = await rawRequest(url, 'tasks/get', {
+      capabilities: tasks,
+      params: { taskId },
+      headers: { Authorization: 'Bearer token-a' },
+    });
+    expect(same.result?.taskId).toBe(taskId);
   });
 });

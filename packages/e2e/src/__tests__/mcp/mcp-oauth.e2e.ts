@@ -70,7 +70,7 @@ async function authorizationServer() {
       const challenge = createHash('sha256')
         .update(params.get('code_verifier') ?? '')
         .digest('base64url');
-      if (!grant || grant.challenge !== challenge || grant.clientId !== params.get('client_id')) {
+      if (grant?.challenge !== challenge || grant.clientId !== params.get('client_id')) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'invalid_grant' }));
         return;
@@ -144,7 +144,9 @@ describe('MCP OAuth 2.1 with a Client ID Metadata Document', () => {
     expect(opened).toHaveLength(1);
     expect(auth.seen.authorize[0]?.get('client_id')).toBe(CLIENT_METADATA_URL);
     expect(auth.seen.authorize[0]?.get('resource')).toBe(url);
-    expect(await store.load(`tokens:${auth.issuer}`)).toMatchObject({ token_type: 'Bearer' });
+    expect(await store.load(`mcp-oauth ${url} tokens:${auth.issuer}`)).toMatchObject({
+      token_type: 'Bearer',
+    });
 
     const again = await MCPClient.connect({
       transport: 'http',
