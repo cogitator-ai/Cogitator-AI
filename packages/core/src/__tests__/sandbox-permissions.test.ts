@@ -433,6 +433,25 @@ describe('the command checks', () => {
     expect(criticalRemoval(line('xargs echo rm'), root, root)).toBe('xargs echo rm');
   });
 
+  it('sees a removal behind env options, other wrappers, tilde forms, mv and rsync', () => {
+    const home = '/home/dev';
+    const at = (text: string) =>
+      criticalRemoval(parseCommandLine(text, { home }), root, root, { home });
+    expect(at('env -i rm -rf ~')).toBe(home);
+    expect(at('env -u PATH rm -rf ~')).toBe(home);
+    expect(at('caffeinate -t 5 rm -rf ~')).toBe(home);
+    expect(at('rm -rf ~dev')).toBe('~dev');
+    expect(at('rm -rf ~+')).toBe('~+');
+    expect(at('mv ~ /tmp/x')).toBe(home);
+    expect(at('mv .git /tmp/old')).toBe('.git');
+    expect(at('mv -t /tmp/x .git')).toBe('.git');
+    expect(at('mv build /tmp/x')).toBeUndefined();
+    expect(at('mv notes.txt ~')).toBeUndefined();
+    expect(at('rsync -a --delete empty/ ~/')).toBe(`${home}/`);
+    expect(at('rsync -a --delete dist/ /tmp/site/')).toBeUndefined();
+    expect(at('rsync -a dist/ ~/')).toBeUndefined();
+  });
+
   it('tells plain commands from those that can change the program they run', () => {
     expect(plainForSandbox(parseCommandLine('npm test && git status'))).toBe(true);
     expect(plainForSandbox(parseCommandLine('PATH=. ls'))).toBe(false);

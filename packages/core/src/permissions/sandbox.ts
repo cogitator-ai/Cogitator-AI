@@ -135,7 +135,9 @@ interface RemovalTarget {
  * backtick), a brace expansion (`{a,b}`, `{1..3}`), or the `{}` of `find -exec` and `xargs -I`
  */
 function decidedAtRunTime(word: string): boolean {
-  return /[$`]/.test(word) || hasBraceExpansion(word) || word.includes('{}');
+  return (
+    /[$`]/.test(word) || word.startsWith('~') || hasBraceExpansion(word) || word.includes('{}')
+  );
 }
 
 /** Whether `word` holds a `{...}` with a comma or `..` and no brace inside, scanned once */
@@ -166,9 +168,17 @@ function removalTargets(
       targets.push({ word: generated });
       continue;
     }
-    if (!REMOVERS.has(basename(command.argv[0] ?? ''))) continue;
+    const program = basename(command.argv[0] ?? '');
+    const words = REMOVERS.has(program)
+      ? operandsOf(command)
+      : program === 'mv'
+        ? movedOperands(command)
+        : program === 'rsync'
+          ? rsyncDeletes(command)
+          : [];
+    if (words.length === 0) continue;
     const from = command.dir === undefined ? undefined : resolve(cwd, command.dir);
-    for (const word of operandsOf(command)) {
+    for (const word of words) {
       if (decidedAtRunTime(word) || (from === undefined && !isAbsolute(word))) {
         targets.push({ word });
         continue;
@@ -205,6 +215,33 @@ function generatedRemoval(command: ShellCommand): string | undefined {
     (word, index) => FIND_EXECUTORS.has(word) && REMOVERS.has(basename(args[index + 1] ?? ''))
   );
   return runsRemover || args.includes('-delete') ? command.text : undefined;
+}
+
+/** The sources of an `mv`: every operand but the destination, which `-t` may name instead */
+function movedOperands(command: ShellCommand): string[] {
+  const args = command.argv.slice(1);
+  const target = args.findIndex((word) => word === '-t' || word === '--target-directory');
+  const named = target !== -1 || args.some((word) => /^(-t.|--target-directory=)/.test(word));
+  const operands = operandsOf({
+    ...command,
+    argv: [command.argv[0], ...args.filter((_, index) => target === -1 || index !== target + 1)],
+  });
+  return named ? operands : operands.slice(0, -1);
+}
+
+/**
+ * What an `rsync` removes: with `--delete` (any form) the destination, whose content it prunes,
+ * with `--remove-source-files` the sources too. Nothing without either
+ */
+function rsyncDeletes(command: ShellCommand): string[] {
+  const args = command.argv.slice(1);
+  const operands = operandsOf(command);
+  const removed: string[] = [];
+  if (args.includes('--remove-source-files')) removed.push(...operands.slice(0, -1));
+  if (args.some((word) => word.startsWith('--delete')) && operands.length > 1) {
+    removed.push(operands[operands.length - 1]);
+  }
+  return removed;
 }
 
 function operandsOf(command: ShellCommand): string[] {

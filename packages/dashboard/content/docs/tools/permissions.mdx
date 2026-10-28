@@ -210,7 +210,7 @@ The classifier reads what the user asked for, the newest messages of the convers
 
 1. a `deny` rule refuses the call
 2. `plan` mode refuses a call that is not read-only
-3. an `rm` or `rmdir` of a critical path (the workspace root or above it, `~`, `/`, `.git`, compared without case where the filesystem ignores it, an operand the shell or another program decides such as `$DIR`, `{a,b}`, `xargs rm` or `find -delete`) asks, in every mode. Plugin hook commands skip this check and the next outside-removal one (`removalChecks: false`), as in Claude Code
+3. an `rm` or `rmdir` of a critical path (the workspace root or above it, `~`, `/`, `.git`, compared without case where the filesystem ignores it, an operand the shell or another program decides such as `$DIR`, `~user`, `{a,b}`, `xargs rm` or `find -delete`), an `mv` that moves one away, or an `rsync --delete` into one asks, in every mode, behind wrappers such as `env -i`, `nice` or `caffeinate` too. Plugin hook commands skip this check and the next outside-removal one (`removalChecks: false`), as in Claude Code
 4. an `ask` rule asks (`bypassPermissions` runs it). A bare `Bash` ask rule is skipped for a command the next steps would let run in the workspace's [OS sandbox](/docs/tools/os-sandbox) (step 7), never in `plan` mode
 5. a removal outside the workspace by a command that runs without a sandbox asks, in every mode but `bypassPermissions`
 6. an `allow` rule runs it (not a sandboxed command that names hosts of its own)

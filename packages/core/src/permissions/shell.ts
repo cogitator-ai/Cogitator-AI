@@ -759,6 +759,7 @@ const WRAPPER_VALUE_OPTIONS: Record<string, readonly string[]> = {
   ionice: ['-c', '-n', '-p'],
   flock: ['-w', '-E', '--timeout', '--conflict-exit-code'],
   exec: ['-a'],
+  caffeinate: ['-t', '-w'],
   strace: ['-e', '-o', '-p', '-s', '-u'],
   ltrace: ['-e', '-o', '-p', '-s', '-u'],
   runuser: ['-u', '-g', '-G'],
@@ -788,6 +789,10 @@ const LOOSE_WRAPPERS = new Set([
   'runuser',
   'busybox',
   'toybox',
+  'caffeinate',
+  'unbuffer',
+  'chronic',
+  'nocorrect',
 ]);
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'csh', 'tcsh']);
@@ -1037,7 +1042,10 @@ export function parseCommandLine(
         assigned.push(words[i].slice(0, words[i].indexOf('=')));
         i++;
       }
-      if (words[i]?.startsWith('-') || words[i] === undefined) understood = false;
+      if (words[i]?.startsWith('-') || words[i] === undefined) {
+        understood = false;
+        return words;
+      }
       return words.slice(i);
     };
     const argv = takeEnv(rest.map((word) => word.value));
