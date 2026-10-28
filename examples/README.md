@@ -76,8 +76,8 @@ Express, Fastify, Hono, Koa, Next.js, OpenAI compatibility, Vercel AI SDK.
 
 ### [`infrastructure/`](./infrastructure/) — Infrastructure
 
-Redis memory, PostgreSQL with pgvector, BullMQ workers, Docker deployment, and agent workspaces
-in E2B, Daytona and Vercel sandboxes.
+Redis memory, PostgreSQL with pgvector, BullMQ workers, Docker deployment, agent workspaces
+in E2B, Daytona and Vercel sandboxes, and local commands under Seatbelt or bubblewrap.
 Requires `docker-compose up -d`, the remote workspace example a provider account instead.
 
 ### [`rag/`](./rag/) — RAG Pipeline

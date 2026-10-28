@@ -1,8 +1,8 @@
 /**
  * @cogitator-ai/sandbox
  *
- * Docker, WASM and native sandbox execution for Cogitator agents, and workspaces in Docker,
- * E2B, Daytona and Vercel Sandbox
+ * Docker, WASM, OS (Seatbelt, bubblewrap) and native sandbox execution for Cogitator agents, and
+ * workspaces in Docker, E2B, Daytona and Vercel Sandbox
  */
 
 export { SandboxManager } from './sandbox-manager';
@@ -13,7 +13,18 @@ export {
   type DockerExecutorOptions,
   WasmSandboxExecutor,
   type WasmExecutorOptions,
+  OsSandboxExecutor,
+  type OsExecutorOptions,
 } from './executors/index';
+export { OsSandbox, type OsSandboxOptions } from './os/os-sandbox';
+export { probeOsSandbox, type OsSandboxProbe } from './os/probe';
+export { seatbeltProfile, type SeatbeltProfileInput, type SeatbeltMatcher } from './os/seatbelt';
+export {
+  bubblewrapCommand,
+  type BubblewrapInput,
+  type BubblewrapCommand,
+  type BubblewrapPath,
+} from './os/bubblewrap';
 export {
   ContainerPool,
   SANDBOX_CONTAINER_LABEL,
@@ -67,4 +78,13 @@ export type {
   SandboxDockerConfig,
   SandboxWasmConfig,
   SandboxResult,
+  OsSandboxKind,
+  OsSandboxPolicy,
+  OsSandboxFilesystemPolicy,
+  OsSandboxNetworkPolicy,
+  OsSandboxCredentialsPolicy,
+  OsSandboxAvailability,
+  SandboxViolation,
+  SandboxHostRequest,
+  SandboxHostDecider,
 } from '@cogitator-ai/types';

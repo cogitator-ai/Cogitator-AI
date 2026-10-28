@@ -14,6 +14,12 @@ import {
   type PermissionRememberLayer,
   type PermissionSettingsOptions,
 } from '@cogitator-ai/types';
+import {
+  readSandboxSection,
+  sandboxPolicyOf,
+  untrustedSandbox,
+  type SandboxPolicyResult,
+} from './sandbox-settings';
 
 type FileLayer = Exclude<PermissionLayer, 'session'>;
 
@@ -126,7 +132,10 @@ function stringsOf(
   return strings;
 }
 
-/** The `permissions` of one settings file as a layer, problems with it in `warnings` */
+/**
+ * The `permissions` and `sandbox` of one settings file as a layer, problems with them in
+ * `warnings`. Undefined for a file with neither
+ */
 export function readPermissionLayer(
   json: unknown,
   layer: FileLayer,
@@ -138,15 +147,17 @@ export function readPermissionLayer(
     warnings.push(`${origin}: the file does not hold a JSON object, it is ignored`);
     return undefined;
   }
+  const sandbox = readSandboxSection(json.sandbox, origin, warnings);
+  const sandboxOnly = sandbox ? { layer, origin, anchor, sandbox } : undefined;
   const raw = json.permissions;
-  if (raw === undefined) return undefined;
+  if (raw === undefined) return sandboxOnly;
   const parsed = PermissionsSchema.safeParse(raw);
   if (!parsed.success) {
     warnings.push(`${origin}: permissions is not an object of lists, it is ignored`);
-    return undefined;
+    return sandboxOnly;
   }
   const value = parsed.data;
-  const settings: PermissionLayerSettings = { layer, origin, anchor };
+  const settings: PermissionLayerSettings = { layer, origin, anchor, ...(sandbox && { sandbox }) };
   const allow = stringsOf(value.allow, 'allow', origin, warnings);
   const ask = stringsOf(value.ask, 'ask', origin, warnings);
   const deny = stringsOf(value.deny, 'deny', origin, warnings);
@@ -187,10 +198,13 @@ export function readPermissionLayer(
   return settings;
 }
 
-/** An untrusted project's file, without what grants: its allow rules, extra directories and mode */
+/**
+ * An untrusted project's file, without what grants: its allow rules, extra directories, mode and
+ * what of its `sandbox` section loosens the sandbox
+ */
 function untrusted(settings: PermissionLayerSettings): PermissionLayerSettings {
   const { allow: _allow, additionalDirectories: _dirs, defaultMode: _mode, ...rest } = settings;
-  return rest;
+  return rest.sandbox ? { ...rest, sandbox: untrustedSandbox(rest.sandbox) } : rest;
 }
 
 /**
@@ -322,4 +336,23 @@ export async function listingOf(dir: string): Promise<string> {
   const entries: string[] = [];
   for (const name of names) entries.push(`${name}:${await changedAt(join(dir, name))}`);
   return entries.join('\n');
+}
+
+/**
+ * Reads the `sandbox` sections (with the `Edit`, `Read` and `WebFetch(domain:...)` rules) of the
+ * settings files for the project at `root`, as {@link loadPermissionSettings} finds them, and
+ * merges them into the policy of an OS sandbox, see `sandboxPolicyOf`. Hand `policy` to
+ * `OsSandbox` of `@cogitator-ai/sandbox` when `policy.enabled`, so `.claude/settings.json` of
+ * Claude Code configures it as it is
+ */
+export async function loadSandboxPolicy(
+  root: string,
+  options: PermissionSettingsOptions & { home?: string } = {}
+): Promise<SandboxPolicyResult> {
+  const loaded = await loadPermissionSettings(root, options);
+  const merged = sandboxPolicyOf(
+    loaded.layers,
+    options.home !== undefined ? { home: options.home } : {}
+  );
+  return { policy: merged.policy, warnings: [...loaded.warnings, ...merged.warnings] };
 }

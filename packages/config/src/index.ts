@@ -45,6 +45,7 @@ export {
   EmbeddingConfigSchema,
   SandboxConfigSchema,
   SandboxTypeSchema,
+  OsSandboxPolicySchema,
   SandboxResourcesSchema,
   SandboxNetworkSchema,
   SandboxDefaultsSchema,

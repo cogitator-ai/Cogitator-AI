@@ -398,16 +398,16 @@ describe('createHarnessAgent: overrides', () => {
 
 describe('createHarnessAgent: tool_search', () => {
   it('counts every tool the model sees, the built-in ones too, against the threshold', () => {
-    const few = createHarnessAgent({ workspace: dir, tools: extraTools(5) });
+    const few = createHarnessAgent({ workspace: dir, tools: extraTools(4) });
     expect(few.agent.config.deferredTools).toBeUndefined();
 
-    const many = createHarnessAgent({ workspace: dir, tools: extraTools(6) });
-    expect(many.agent.config.deferredTools).toEqual(names(extraTools(6)));
+    const many = createHarnessAgent({ workspace: dir, tools: extraTools(5) });
+    expect(many.agent.config.deferredTools).toEqual(names(extraTools(5)));
     expect(many.agent.instructions).toContain('## More tools');
 
     const lean = createHarnessAgent({
       workspace: dir,
-      tools: extraTools(6),
+      tools: extraTools(5),
       subagents: false,
       skills: false,
     });

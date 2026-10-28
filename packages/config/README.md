@@ -303,7 +303,7 @@ The `Cogitator` runtime builds the store `adapter` names from its section: `redi
 ```yaml
 sandbox:
   defaults:
-    type: docker # docker | native | wasm
+    type: docker # docker | native | wasm | os
     image: python:3.11-slim
     timeout: 30000
     workdir: /workspace

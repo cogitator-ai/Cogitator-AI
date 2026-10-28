@@ -52,6 +52,13 @@ import {
   type ShellCommand,
 } from './shell';
 import { own } from '../utils/own';
+import {
+  commandWorkspace,
+  criticalRemoval,
+  plainForSandbox,
+  removesOutside,
+  sandboxedCall,
+} from './sandbox';
 
 const BEHAVIORS: readonly PermissionBehavior[] = ['deny', 'ask', 'allow'];
 
@@ -202,6 +209,18 @@ export interface PermissionContext {
   rules: PermissionRuleSet;
   /** Whether the call needs approval without any rule: its tool's `requiresApproval`, the guardrails */
   needsApproval: boolean;
+  /**
+   * Whether the guardrails (not the tool's own setting) make the call need approval: a command
+   * that runs in the workspace's OS sandbox skips only the tool's own approval
+   */
+  guardrailsApproval?: boolean;
+  /**
+   * Whether removals ask as an agent's tool calls do: an `rm` or `rmdir` of a critical path in
+   * every mode, and a removal outside the workspace by a command no sandbox confines in every mode
+   * but `bypassPermissions` (default true). The capability checks of plugin hooks turn it off, so
+   * their commands keep running as in Claude Code
+   */
+  removalChecks?: boolean;
   /** The run's workspace: relative paths of calls start from its root, `acceptEdits` keeps inside it */
   workspace?: Workspace;
   /** The working directory without a workspace (default: the process's) */
@@ -233,6 +252,8 @@ export interface PermissionContext {
 
 /** A command line of a call with where and how it runs */
 interface CommandCall {
+  /** The command line as the call gives it */
+  text: string;
   line: ParsedCommandLine;
   /** The directory it runs in, absolute */
   cwd: string;
@@ -319,6 +340,7 @@ class CallSubject {
     }
     if (text === undefined) return undefined;
     this.commandCall = {
+      text,
       line: parseCommandLine(text, env?.HOME !== undefined ? { home: env.HOME } : {}),
       cwd: cwd === undefined ? this.cwd : isAbsolute(cwd) ? resolve(cwd) : resolve(this.base, cwd),
       envSafe: Object.keys(env ?? {}).every(isSafeVariable),
@@ -766,6 +788,29 @@ async function editsInside(
   return false;
 }
 
+/** Whether a bare rule names the command tool `tool`: `Bash`, `Bash(*)` or the tool's own name */
+function commandRule(rule: CompiledRule, tool: Tool): boolean {
+  return (
+    (rule.target.kind === 'family' && rule.target.family === 'command') ||
+    (rule.target.kind === 'name' && rule.target.name === tool.name)
+  );
+}
+
+/** Whether a deleting tool (`file_delete`) removes a path outside the workspace */
+async function deletesOutside(
+  subject: CallSubject,
+  inside: (absolute: string) => Promise<boolean>
+): Promise<boolean> {
+  if (subject.kind !== 'edit' || !DELETERS.has(subject.tool.name)) return false;
+  for (const path of subject.rawPaths()) {
+    if (!(await inside(isAbsolute(path) ? path : resolve(subject.base, path)))) return true;
+  }
+  return false;
+}
+
+/** Tools that delete the files they name for good */
+const DELETERS = new Set(['file_delete']);
+
 /** Whether `tool` only reads: the runtime's read-only tools, never what an MCP server claims */
 function isReadOnly(tool: Tool, planTools: ReadonlySet<Tool> | undefined): boolean {
   if (planTools?.has(tool) === true) return true;
@@ -897,15 +942,66 @@ async function decide(
       `The run is in plan mode: only read-only tools and commands run until the plan is approved (present it with exit_plan_mode)`
     );
   }
+  const commandCall = subject.kind === 'command' ? subject.command() : undefined;
+  const runsIn = commandCall ? commandWorkspace(tool, context.workspace) : undefined;
+  const sandboxed = commandCall
+    ? await sandboxedCall(runsIn, commandCall.text, subject.values)
+    : undefined;
+  const inSandbox = sandboxed?.route.sandboxed === true;
+  const removalChecks = context.removalChecks !== false;
+  if (commandCall && removalChecks) {
+    const critical = criticalRemoval(commandCall.line, commandCall.cwd, runsIn?.root ?? base, {
+      ignoreCase: subject.ignoreCase,
+    });
+    if (critical !== undefined) {
+      return decision(
+        'ask',
+        'mode',
+        `The command removes ${critical}, a critical path (the workspace root or a directory above it, the home directory, / or a .git directory) or one the shell decides, which always asks`
+      );
+    }
+  }
+  const hidden = commandCall !== undefined && guarded && !(await allowableLine(commandCall, allow));
+  const autoAllow =
+    sandboxed !== undefined &&
+    inSandbox &&
+    sandboxed.sandbox.autoAllow &&
+    mode !== 'plan' &&
+    !sandboxed.domains &&
+    !hidden &&
+    context.guardrailsApproval !== true &&
+    commandCall !== undefined &&
+    plainForSandbox(commandCall.line);
   for (const rule of rules.rules('ask')) {
     if (!(await restrictiveMatch(rule, subject, projectRoot))) continue;
     if (mode === 'bypassPermissions') break;
+    if (autoAllow && rule.parsed.specifier === undefined && commandRule(rule, tool)) continue;
     return decision('ask', 'rule', ruleReason(rule.ref, 'Asked'), rule.ref);
   }
-  const allowing = await allowingRule(subject, rules.rules('allow'), projectRoot, allow);
+  if (mode !== 'bypassPermissions' && !inSandbox && removalChecks) {
+    const outside = commandCall
+      ? await removesOutside(commandCall.line, commandCall.cwd, inside)
+      : await deletesOutside(subject, inside);
+    if (outside) {
+      return decision(
+        'ask',
+        'mode',
+        'The call removes files outside the workspace, and no sandbox confines it, which always asks'
+      );
+    }
+  }
+  const allowing =
+    inSandbox && sandboxed.domains
+      ? undefined
+      : await allowingRule(subject, rules.rules('allow'), projectRoot, allow);
   if (allowing) return decision('allow', 'rule', ruleReason(allowing.ref, 'Allowed'), allowing.ref);
-  const call = subject.kind === 'command' ? subject.command() : undefined;
-  const hidden = call !== undefined && guarded && !(await allowableLine(call, allow));
+  if (autoAllow) {
+    return decision(
+      'allow',
+      'sandbox',
+      `The command runs in the workspace's OS sandbox (${sandboxed.sandbox.kind}), which allows it without asking`
+    );
+  }
   if (mode === 'bypassPermissions') {
     if (hidden && guardsCommands(rules, tool, true)) {
       return decision(
@@ -927,7 +1023,8 @@ async function decide(
     return decision('allow', 'mode', 'plan mode runs read-only commands');
   }
   const editAsks = subject.kind === 'edit' || hidden;
-  if (!context.needsApproval && !editAsks) {
+  const namesHosts = inSandbox && sandboxed.domains;
+  if (!context.needsApproval && !editAsks && !namesHosts) {
     return decision('allow', 'default', `${tool.name} needs no approval`);
   }
   if (context.allowedByHook && !hidden) {
@@ -935,9 +1032,11 @@ async function decide(
   }
   const reason = hidden
     ? 'The command line is not plain enough to tell whether it runs a command or reads a file a deny or ask rule names'
-    : editAsks && !context.needsApproval
-      ? `${tool.name} edits files, which asks unless a rule allows it or the mode is acceptEdits`
-      : `${tool.name} needs approval for this call`;
+    : namesHosts
+      ? 'The command names hosts of its own to reach through the sandbox'
+      : editAsks && !context.needsApproval
+        ? `${tool.name} edits files, which asks unless a rule allows it or the mode is acceptEdits`
+        : `${tool.name} needs approval for this call`;
   if (mode === 'auto' && context.classify && !hidden) {
     try {
       const classified = await context.classify(reason);

@@ -1,3 +1,5 @@
+import type { SandboxHostDecider, WorkspaceExecSandbox, WorkspaceSandbox } from './os-sandbox';
+
 /**
  * Workspace: the directory an agent works in, with file access and command execution that
  * cannot leave it.
@@ -22,6 +24,11 @@ export interface Workspace {
    * default, and project instructions (`AGENTS.md`) are looked up from the root down to it
    */
   readonly cwd: string;
+  /**
+   * The operating system sandbox its commands run in, when it has one (a `LocalWorkspace` with
+   * `exec.sandbox`): the permission engine lets a command that runs inside skip its approval
+   */
+  readonly sandbox?: WorkspaceSandbox;
 
   /** Prepares the workspace (creates the root, starts a container). Idempotent, optional: the first operation does it */
   start(): Promise<void>;
@@ -59,6 +66,23 @@ export interface Workspace {
   remove(path: string, options?: WorkspaceRemoveOptions): Promise<WorkspaceRemoveResult>;
   /** Moves or renames a file or a directory inside the workspace */
   rename(from: string, to: string, options?: WorkspaceRenameOptions): Promise<void>;
+
+  /**
+   * What `remove(path, { trash: true })` moved to the trash and is still there, oldest first.
+   * Optional: a workspace that cannot list its trash leaves these methods out
+   */
+  listTrash?(): Promise<WorkspaceTrashEntry[]>;
+  /**
+   * Moves an entry of the trash back where it was removed from (or to `options.to`). Fails with
+   * `NOT_FOUND` for an id the trash does not hold and `EXISTS` when something is there already,
+   * unless `overwrite` replaces it
+   */
+  restoreFromTrash?(
+    id: string,
+    options?: WorkspaceTrashRestoreOptions
+  ): Promise<WorkspaceTrashRestoreResult>;
+  /** Deletes for good what the trash holds, or only the entries trashed `olderThan` ago or longer */
+  emptyTrash?(options?: WorkspaceEmptyTrashOptions): Promise<WorkspaceEmptyTrashResult>;
 
   /**
    * Runs a shell command in the workspace (`sh -c`, `cmd.exe /d /s /c` for a local workspace on
@@ -173,6 +197,24 @@ export interface WorkspaceExecOptions {
    * no longer read, so redirect it (`server > server.log 2>&1 &`)
    */
   background?: 'kill' | 'keep';
+  /**
+   * Run the command outside the workspace's OS sandbox (`Workspace.sandbox`). Honored only when
+   * the sandbox policy allows it (`allowUnsandboxed`), ignored otherwise and by a workspace
+   * without a sandbox
+   */
+  dangerouslyDisableSandbox?: boolean;
+  /**
+   * Hosts this command alone may reach through the sandbox proxy, on top of the policy's
+   * `allowedDomains`, for as long as it runs: a host no entry names is then refused without
+   * `onUnknownHost` asked. `deniedDomains` still wins, and a policy with `strictAllowlist`
+   * refuses the call. Ignored by a workspace without a sandbox
+   */
+  allowedDomains?: readonly string[];
+  /**
+   * Decides a host the sandbox's lists do not decide, for this command: instead of the sandbox's
+   * own decider. Without either the connection is refused
+   */
+  onUnknownHost?: SandboxHostDecider;
 }
 
 export interface WorkspaceExecResult {
@@ -184,6 +226,117 @@ export interface WorkspaceExecResult {
   /** Whether stdout or stderr was cut at `maxOutputBytes` */
   truncated: boolean;
   durationMs: number;
+  /** How the command ran with respect to the workspace's OS sandbox, when it has one */
+  sandbox?: WorkspaceExecSandbox;
+}
+
+/** An entry of the trash, see `Workspace.listTrash()` */
+export interface WorkspaceTrashEntry {
+  /** What `restoreFromTrash()` and `emptyTrash()` name it by */
+  id: string;
+  /** Where it was removed from, relative to the root */
+  path: string;
+  /** Where it is now, relative to the root */
+  trashedTo: string;
+  /** When it was trashed, in milliseconds since the epoch */
+  trashedAt: number;
+  type: WorkspaceEntryType;
+  /** Bytes of a file, or of everything a directory holds */
+  size: number;
+}
+
+export interface WorkspaceTrashRestoreOptions {
+  /** Where to put it instead of where it was removed from, relative to the root */
+  to?: string;
+  /** Replace what is there already (an empty directory, or a file by a file) (default: false) */
+  overwrite?: boolean;
+}
+
+export interface WorkspaceTrashRestoreResult {
+  /** Where it is again, relative to the root */
+  path: string;
+}
+
+export interface WorkspaceEmptyTrashOptions {
+  /** Only the entries trashed at least this many milliseconds ago (default: every entry) */
+  olderThan?: number;
+}
+
+export interface WorkspaceEmptyTrashResult {
+  /** Ids of the entries deleted */
+  deleted: string[];
+}
+
+/** What a `LocalWorkspace` would spawn for a command, see `LocalWorkspaceExecConfig.launch`. */
+export interface WorkspaceLaunch {
+  /** The program, e.g. `/bin/sh` */
+  file: string;
+  /** Its arguments, e.g. `['-c', command]` */
+  args: string[];
+  /** The directory it runs in, inside the root */
+  cwd: string;
+  /** Its whole environment */
+  env: Record<string, string>;
+  /** The root of the workspace, with symlinks resolved */
+  root: string;
+  /** The command line as the call gave it */
+  command: string;
+  /** What the call asked of the sandbox: see `WorkspaceExecOptions` */
+  request: WorkspaceLaunchRequest;
+}
+
+/** The sandbox options of an exec call, as a launcher gets them */
+export interface WorkspaceLaunchRequest {
+  dangerouslyDisableSandbox?: boolean;
+  allowedDomains?: readonly string[];
+  onUnknownHost?: SandboxHostDecider;
+}
+
+/**
+ * What a launcher spawns instead: the program and arguments, the whole environment when it
+ * replaces it (the proxy variables and `TMPDIR` of a sandbox), and what to do once the command
+ * exited, also after a failed spawn, a timeout or an abort (the result is then undefined)
+ */
+export interface WorkspaceLaunchOverride {
+  file: string;
+  args: string[];
+  /** The environment instead of the one the workspace made */
+  env?: Record<string, string>;
+  /**
+   * Bytes the program reads from descriptors past stdio: the first from descriptor 3, the next
+   * from 4, each through a pipe closed once written (bubblewrap's `--seccomp 3` reads its filter
+   * so)
+   */
+  extraInputs?: readonly Uint8Array[];
+  /** Runs once the command is over, before its result is returned */
+  cleanup?: (
+    result: WorkspaceExecResult | undefined
+  ) => WorkspaceLaunchReport | void | Promise<WorkspaceLaunchReport | void>;
+}
+
+/** What a launcher's cleanup adds to the command's result */
+export interface WorkspaceLaunchReport {
+  /** Set as the result's `sandbox` */
+  sandbox?: WorkspaceExecSandbox;
+  /** Text appended to the result's `stderr`, such as a `<sandbox_violations>` block */
+  notice?: string;
+  /**
+   * The command's output to return instead of what it wrote, such as with its own
+   * `<sandbox_violations>` tags neutralized so it cannot forge the sandbox's block. Listeners of
+   * the streamed output still get what it wrote
+   */
+  output?: { stdout: string; stderr: string };
+}
+
+/**
+ * An OS sandbox a `LocalWorkspace` runs its commands in (`exec.sandbox`), such as `OsSandbox` of
+ * `@cogitator-ai/sandbox`: it decides how each command runs (`route`), wraps it (`launch`) and
+ * is checked when the workspace starts (`start`), which fails with `SANDBOX_UNAVAILABLE` when
+ * the sandbox cannot run here and the policy does not let commands run without it
+ */
+export interface WorkspaceCommandSandbox extends WorkspaceSandbox {
+  start(): Promise<void>;
+  launch(launch: WorkspaceLaunch): Promise<WorkspaceLaunchOverride>;
 }
 
 export type WorkspaceEntryType = 'file' | 'directory' | 'symlink' | 'other';
@@ -340,7 +493,7 @@ export interface WorkspaceRestoreResult {
  * - `TOO_LARGE`: a file or content is over the size limit
  * - `INVALID_PATH`: the path is malformed (empty, a NUL byte) or names the root where it cannot
  * - `NOT_STARTED`, `DISPOSED`: the workspace is not started yet or disposed already
- * - `UNAVAILABLE`: what the workspace needs is missing, e.g. Docker
+ * - `UNAVAILABLE`: what the workspace needs is missing, e.g. Docker or the OS sandbox of its commands
  * - `ABORTED`: the operation's signal aborted it
  * - `DENIED`: the operating system or a policy refused it (permissions, a sandbox rule)
  * - `BUSY`: a process the workspace started is still running, and the operation would race it

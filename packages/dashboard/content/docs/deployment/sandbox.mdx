@@ -5,7 +5,7 @@ description: Run untrusted code safely with Docker containers and WASM isolation
 
 ## Overview
 
-The `@cogitator-ai/sandbox` package provides isolated execution for agent-generated code. It ships three backends -- Docker containers, WASM via Extism, and a native fallback -- managed through `SandboxManager`.
+The `@cogitator-ai/sandbox` package provides isolated execution for agent-generated code. It ships four backends -- Docker containers, WASM via Extism, the operating system's sandbox (Seatbelt on macOS, bubblewrap on Linux), and a native fallback -- managed through `SandboxManager`.
 
 ```bash
 pnpm add @cogitator-ai/sandbox
@@ -168,6 +168,26 @@ Modules load from `http(s)` URLs, file paths, or package paths. A path that is a
 
 Idle plugins are pooled per module, WASI flag and allowed hosts (up to `cacheSize`, default 10). `network.allowedHosts` feeds Extism's HTTP allow-list; `network.mode: 'none'` clears it. `memoryPages` (default 256 = 16 MB) caps the module's own memory: its memory section gets that maximum before the module loads, so `memory.grow` past it fails inside the module, and a module that needs more to start is refused. Extism's memory for plugin input, output and vars gets the same limit. Modules from a URL are fetched by the executor so the cap applies to them too.
 
+## OS Sandbox
+
+The `os` type runs a command on the host under the operating system's sandbox: Seatbelt (`sandbox-exec`) on macOS, bubblewrap with `socat` on Linux. Its `workdir` (default: the process's working directory, never `/`) is the one writable directory besides a temporary one, whatever `cwd` a request names, every command runs sandboxed (`excludedCommands` and `allowUnsandboxed` of the policy are ignored there), the network goes only through a proxy that allows the hosts the policy lists, and `os` holds the policy, the same as an `OsSandbox` takes:
+
+```typescript
+const result = await manager.execute(
+  { command: ['npm test'] },
+  {
+    type: 'os',
+    workdir: '/srv/project',
+    os: {
+      network: { allowedDomains: ['registry.npmjs.org'] },
+      filesystem: { denyRead: ['~/.ssh'] },
+    },
+  }
+);
+```
+
+A violation (a write outside the workdir, a refused host) fails the command and is reported in a `<sandbox_violations>` block of its stderr. There is no fallback: on a machine without the sandbox the execution fails with the reason, whatever `allowNativeFallback` or the policy's `failIfUnavailable` say. A tool with `sandbox: { type: 'os' }` runs `sh -c <command>` through the manager the same way, and fails with `SANDBOX_UNAVAILABLE` when there is no manager, never running its own `execute` on the host. `manager.isOsAvailable()` tells ahead. For an agent's commands give a `LocalWorkspace` an `OsSandbox` instead, see [OS Sandbox](/docs/tools/os-sandbox).
+
 ## ContainerPool
 
 Keeps Docker containers ready for executions. Containers stay alive with `sleep infinity` and commands run via `docker exec`. By default every execution gets a container nothing ran in before: a released container is destroyed and a fresh one with the same settings is started in its place, so the next execution finds a warm spare instead of waiting for startup. Nothing an execution leaves behind — files, processes — is visible to the next run or user.
@@ -238,6 +258,7 @@ try {
 `SandboxManager` falls back in one case only:
 
 - **Docker requested, Docker unavailable** → the command runs on the host through the native executor, with no isolation, and the first such call logs a warning. `allowNativeFallback: false` refuses instead with `{ success: false, error }`. The option defaults to `true`.
+- **OS sandbox requested, unavailable** → the execution fails with the reason, never runs on the host: `allowNativeFallback` does not apply to it.
 - **WASM requested, WASM unavailable** → `{ success: false, error }` asking you to install `@extism/extism`. Nothing else can run a WASM module.
 - **Native requested** → always available, no isolation.
 

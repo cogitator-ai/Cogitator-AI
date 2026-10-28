@@ -586,7 +586,7 @@ describe('shell commands an allow rule cannot be fooled by', () => {
     expect(await run(command, { deny: ['Bash(rm *)'], allow: ['Bash'] })).toBe('deny');
   });
 
-  it.each(['$(echo rm) -rf /', 'f=rm; $f -rf /', 'find . -delete'])(
+  it.each(['$(echo rm) -rf /', 'f=rm; $f -rf /'])(
     'a line that may hide a denied command asks, and is refused in modes that never ask: %j',
     async (command) => {
       expect(await run(command, { deny: ['Bash(rm *)'], allow: ['Bash'] })).toBe('ask');
@@ -595,6 +595,12 @@ describe('shell commands an allow rule cannot be fooled by', () => {
       expect(await run(command, { ask: ['Bash(rm *)'] }, 'bypassPermissions')).toBe('allow');
     }
   );
+
+  it('treats find -delete as a critical removal, which asks in every mode but dontAsk', async () => {
+    expect(await run('find . -delete', { allow: ['Bash'] })).toBe('ask');
+    expect(await run('find . -delete', {}, 'bypassPermissions')).toBe('ask');
+    expect(await run('find . -delete', {}, 'dontAsk')).toBe('deny');
+  });
 
   it.each([
     'git push --force',
