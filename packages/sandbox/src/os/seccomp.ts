@@ -28,12 +28,14 @@ const BPF_LD_W_ABS = 0x20;
 const BPF_JEQ_K = 0x15;
 const BPF_JGE_K = 0x35;
 const BPF_JSET_K = 0x45;
+const BPF_AND_K = 0x54;
 const BPF_RET_K = 0x06;
 
 /** Offsets in `struct seccomp_data` */
 const NR = 0;
 const ARCH = 4;
 const ARG0_LOW = 16;
+const ARG1_LOW = 24;
 
 const SECCOMP_RET_ALLOW = 0x7fff0000;
 const SECCOMP_RET_ERRNO = 0x00050000;
@@ -41,6 +43,10 @@ const EPERM = 1;
 const ENOSYS = 38;
 
 const AF_UNIX = 1;
+/** The socket type without `SOCK_NONBLOCK` and `SOCK_CLOEXEC` */
+const SOCK_TYPE_MASK = 0xf;
+const SOCK_STREAM = 1;
+const SOCK_SEQPACKET = 5;
 /** `x32` system calls on x86_64 carry this bit in their number */
 const X32_SYSCALL_BIT = 0x40000000;
 
@@ -53,6 +59,7 @@ interface ArchTable {
   clone: number;
   clone3: number;
   socket: number;
+  socketpair: number;
   /** Calls refused with `EPERM` whatever their arguments */
   denied: readonly number[];
 }
@@ -71,6 +78,7 @@ export const SECCOMP_ARCHES: Readonly<Record<SeccompArch, ArchTable>> = {
     clone: 56,
     clone3: 435,
     socket: 41,
+    socketpair: 53,
     denied: [272, 308, 165, 166, 155, ...COMMON_DENIED],
   },
   arm64: {
@@ -78,6 +86,7 @@ export const SECCOMP_ARCHES: Readonly<Record<SeccompArch, ArchTable>> = {
     clone: 220,
     clone3: 435,
     socket: 198,
+    socketpair: 199,
     denied: [97, 268, 40, 39, 41, ...COMMON_DENIED],
   },
 };
@@ -95,7 +104,9 @@ const errno = (code: number): BpfInstruction => ret(SECCOMP_RET_ERRNO | code);
  * The filter for `options`: a call of another architecture (`int 0x80` on x86_64, which numbers
  * calls differently) and an x32 call are refused, then the denied calls, `clone3` with `ENOSYS`
  * (its flags sit in memory a filter cannot read, so the C library falls back to `clone`), `clone`
- * with a namespace flag, and `socket(AF_UNIX, ...)` unless allowed. Everything else is allowed
+ * with a namespace flag, and unless allowed `socket(AF_UNIX, ...)` and a `socketpair(AF_UNIX, ...)`
+ * of a datagram type, whose ends can be connected again to any path (a stream or seqpacket pair,
+ * which libuv makes for child process pipes, cannot). Everything else is allowed
  */
 export function seccompProgram(options: SeccompOptions): BpfInstruction[] {
   const table = SECCOMP_ARCHES[options.arch];
@@ -124,6 +135,15 @@ export function seccompProgram(options: SeccompOptions): BpfInstruction[] {
       { code: BPF_JEQ_K, jt: 0, jf: 4, k: table.socket },
       load(ARG0_LOW),
       { code: BPF_JEQ_K, jt: 0, jf: 1, k: AF_UNIX },
+      errno(EPERM),
+      ret(SECCOMP_RET_ALLOW),
+      { code: BPF_JEQ_K, jt: 0, jf: 8, k: table.socketpair },
+      load(ARG0_LOW),
+      { code: BPF_JEQ_K, jt: 0, jf: 5, k: AF_UNIX },
+      load(ARG1_LOW),
+      { code: BPF_AND_K, jt: 0, jf: 0, k: SOCK_TYPE_MASK },
+      { code: BPF_JEQ_K, jt: 2, jf: 0, k: SOCK_STREAM },
+      { code: BPF_JEQ_K, jt: 1, jf: 0, k: SOCK_SEQPACKET },
       errno(EPERM),
       ret(SECCOMP_RET_ALLOW)
     );

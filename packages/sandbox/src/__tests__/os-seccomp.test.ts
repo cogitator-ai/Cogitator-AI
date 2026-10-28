@@ -46,6 +46,9 @@ function evaluate(bytes: Uint8Array, call: Call): number {
       case 0x45:
         pc += (accumulator & k) !== 0 ? jt : jf;
         break;
+      case 0x54:
+        accumulator = (accumulator & k) >>> 0;
+        break;
       case 0x06:
         return k;
       default:
@@ -91,6 +94,19 @@ describe.each(['x64', 'arm64'] as const)('the seccomp filter on %s', (arch) => {
     const open = seccompFilter({ arch, allowUnixSockets: true });
     expect(run(table.socket, [1, 1, 0], open)).toBe(ALLOW);
     expect(run(NUMBERS[arch].unshare, [], open)).toBe(EPERM);
+  });
+
+  it('refuses datagram Unix socket pairs unless allowed, keeping stream pairs for pipes', () => {
+    const SOCK_NONBLOCK_CLOEXEC = 0o4000 | 0o2000000;
+    expect(run(table.socketpair, [1, 2, 0])).toBe(EPERM);
+    expect(run(table.socketpair, [1, 2 | SOCK_NONBLOCK_CLOEXEC, 0])).toBe(EPERM);
+    expect(run(table.socketpair, [1, 3, 0])).toBe(EPERM);
+    expect(run(table.socketpair, [1, 1, 0])).toBe(ALLOW);
+    expect(run(table.socketpair, [1, 1 | SOCK_NONBLOCK_CLOEXEC, 0])).toBe(ALLOW);
+    expect(run(table.socketpair, [1, 5, 0])).toBe(ALLOW);
+    expect(run(table.socketpair, [30, 2, 0])).toBe(ALLOW);
+    const open = seccompFilter({ arch, allowUnixSockets: true });
+    expect(run(table.socketpair, [1, 2, 0], open)).toBe(ALLOW);
   });
 
   it('allows ordinary calls and refuses calls of another architecture', () => {
