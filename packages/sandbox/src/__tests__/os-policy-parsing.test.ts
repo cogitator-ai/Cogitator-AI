@@ -1,8 +1,11 @@
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { canonicalAddress, carriedIPv4, localAddressClass } from '../os/addresses';
 import { isExcludedCommand, matchesCommandPattern, plainCommands } from '../os/commands';
 import { domainMatches, firstMatch, normalizeHost, parseDomainList } from '../os/domains';
-import { globRegExp, globSource, resolvePolicyPath } from '../os/paths';
+import { expandWildcard, globRegExp, globSource, resolvePolicyPath } from '../os/paths';
 import {
   fileViolations,
   neutralizeViolationTags,
@@ -256,5 +259,25 @@ describe('violations', () => {
     const block = violationsBlock(many)!;
     expect(block.split('\n')).toHaveLength(23);
     expect(block).toContain('... and 5 more');
+  });
+});
+
+describe('expandWildcard', () => {
+  it('walks into a symlinked directory once, so a cycle ends', async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'expand-')));
+    try {
+      await mkdir(join(base, 'real', 'account'), { recursive: true });
+      await writeFile(join(base, 'real', 'account', 'token'), 'x');
+      await mkdir(join(base, 'secrets'));
+      await symlink(join(base, 'real', 'account'), join(base, 'secrets', 'account'));
+      await symlink(join(base, 'secrets'), join(base, 'secrets', 'loop'));
+      const expanded = await expandWildcard(
+        resolvePolicyPath(join(base, 'secrets', '**', 'token'), base)
+      );
+      expect(expanded.truncated).toBe(false);
+      expect(expanded.matches).toContain(join(base, 'secrets', 'account', 'token'));
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 });

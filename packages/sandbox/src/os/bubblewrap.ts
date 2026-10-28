@@ -167,7 +167,10 @@ function writeDenied(path: string, denyWrite: readonly BubblewrapPath[]): boolea
  * The mounts of the file system rules, one per path, applied from the shallowest. Each shows its
  * path as every rule over it decides, so what lies below without a mount of its own inherits the
  * right view: a hidden path stays hidden under a writable root or a reopened read, a write-denied
- * one stays read-only under a writable root or a writable child
+ * one stays read-only under a writable root or a writable child. Every directory between a
+ * writable root and a protected or hidden path is bound over itself as well: a mount point cannot
+ * be renamed or removed, so no command moves a protected path's directory aside and makes a new
+ * one in its place
  */
 function filesystemMounts(
   input: BubblewrapInput,
@@ -205,6 +208,17 @@ function filesystemMounts(
       args: directory ? ['--ro-bind', input.emptyDir, at] : ['--ro-bind', '/dev/null', at],
     });
   }
+  const strictlyWritable = (dir: string) =>
+    input.writable.some((root) => root !== dir && isWithin(root, dir));
+  const pinAncestors = (path: string, exists: boolean) => {
+    const parts = path.split('/');
+    for (let i = parts.length - 1; i >= 2; i--) {
+      const dir = parts.slice(0, i).join('/');
+      if (strictlyWritable(dir) && (exists || existing(dir))) view(dir);
+    }
+  };
+  for (const entry of input.denyWrite) pinAncestors(entry.path, entry.exists);
+  for (const entry of input.denyRead) pinAncestors(entry.path, true);
   return [...mounts.values()].sort((a, b) => depthOf(a.path) - depthOf(b.path));
 }
 

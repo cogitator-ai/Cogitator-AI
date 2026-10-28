@@ -179,6 +179,25 @@ describe('bubblewrapCommand', () => {
     expect(joined).toContain('--ro-bind /dev/null /w/secret.txt');
   });
 
+  it('binds every directory between a writable root and a protected path over itself', () => {
+    const { args } = bubblewrapCommand(
+      {
+        ...input,
+        denyWrite: [{ path: '/w/.claude/settings.json', directory: false, exists: true }],
+        denyRead: [{ path: '/w/data/vault', directory: true, exists: true }],
+      },
+      (path) => existing.has(path)
+    );
+    const joined = args.join(' ');
+    const at = (text: string) => joined.indexOf(text);
+    expect(at('--bind /w/.claude /w/.claude')).toBeGreaterThan(at('--bind /w /w'));
+    expect(at('--bind /w/.claude /w/.claude')).toBeLessThan(
+      at('--ro-bind /w/.claude/settings.json /w/.claude/settings.json')
+    );
+    expect(at('--bind /w/data /w/data')).toBeLessThan(at('--tmpfs /w/data/vault'));
+    expect(joined).not.toContain('--bind /w/.claude/settings.json');
+  });
+
   it('keeps a read hidden when allowRead names the same path', () => {
     const { args } = bubblewrapCommand(
       {

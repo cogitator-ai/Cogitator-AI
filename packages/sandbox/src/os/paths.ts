@@ -1,4 +1,4 @@
-import { lstat, readdir, readlink, realpath } from 'node:fs/promises';
+import { lstat, readdir, readlink, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
@@ -170,8 +170,8 @@ const MAX_EXPANSION_VISITS = 20_000;
 
 /**
  * The existing paths a wildcard entry matches, for bubblewrap, which can only mount concrete
- * paths: the tree under its base walked (symlinked directories not entered), each match kept
- * and not descended. `truncated` when the walk gave up before the end
+ * paths: the tree under its base walked (a symlinked directory entered too, each directory once
+ * by where it leads, so a cycle ends), each match kept and not descended. `truncated` when the walk gave up before the end
  */
 export async function expandWildcard(
   entry: PolicyPath
@@ -181,9 +181,13 @@ export async function expandWildcard(
   const exact = new RegExp(`^${globSource(entry.path)}$`);
   const matches: string[] = [];
   const queue = [entry.base];
+  const seen = new Set<string>();
   let visits = 0;
   while (queue.length > 0) {
     const dir = queue.shift()!;
+    const real = await realpath(dir).catch(() => undefined);
+    if (real === undefined || seen.has(real)) continue;
+    seen.add(real);
     const names = await readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const dirent of names) {
       if (++visits > MAX_EXPANSION_VISITS) return { matches, truncated: true };
@@ -193,6 +197,12 @@ export async function expandWildcard(
         continue;
       }
       if (dirent.isDirectory()) queue.push(full);
+      else if (
+        dirent.isSymbolicLink() &&
+        (await stat(full).catch(() => undefined))?.isDirectory()
+      ) {
+        queue.push(full);
+      }
     }
   }
   return { matches, truncated: false };

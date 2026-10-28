@@ -286,6 +286,16 @@ describe.skipIf(!probe.available)(`OsSandbox on this machine (${probe.kind})`, (
     );
   });
 
+  it('refuses to launch while a file in a denied directory has another hard link', async () => {
+    await mkdir(join(outside, 'vault'), { recursive: true });
+    await writeFile(join(outside, 'vault', 'token'), 'secret');
+    await link(join(outside, 'vault', 'token'), join(root, 'token-copy'));
+    const sandbox = make({ policy: { filesystem: { denyRead: [join(outside, 'vault')] } } });
+    await expect(runSandboxed(sandbox, root, 'cat token-copy')).rejects.toThrow(
+      /token is denied reading but has 2 hard links/
+    );
+  });
+
   it('keeps loader variables out of the launcher environment', async () => {
     const sandbox = make();
     const launch = await sandbox.launch({

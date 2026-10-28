@@ -456,7 +456,9 @@ export class OsSandbox implements WorkspaceCommandSandbox {
             ...(entry.watched && { watched: true }),
           }));
     const denyRead = [...resolveAll(fs.denyRead), ...resolveAll(this.policy.credentials?.files)];
-    if (fs.disabled !== true) await refuseLinkedDenies(denyRead);
+    if (fs.disabled !== true) {
+      await refuseLinkedDenies(denyRead, (message) => this.warnOnce(message));
+    }
     const allowRead: PolicyPath[] = [];
     for (const entry of resolveAll(fs.allowRead)) {
       if (await reopensThroughLink(entry.base ?? entry.path, denyRead)) {
@@ -530,10 +532,13 @@ export class OsSandbox implements WorkspaceCommandSandbox {
       const paths = entry.pattern
         ? (await expandWildcard(entry)).matches
         : await namesOf(entry.path);
-      for (const path of paths) {
-        if (denyWrite.some((known) => known.path === path) || (await throughSymlink(path))) {
-          continue;
+      for (const match of paths) {
+        let path = match;
+        if (await throughSymlink(match)) {
+          if (!entry.pattern) continue;
+          path = await canonicalPath(match);
         }
+        if (denyWrite.some((known) => known.path === path)) continue;
         const kind = await kindOf(path);
         if (entry.watched && kind === undefined) {
           watched.push(path);
@@ -564,8 +569,12 @@ export class OsSandbox implements WorkspaceCommandSandbox {
       } else {
         paths = await namesOf(entry.path);
       }
-      for (const path of paths) {
-        if (await throughSymlink(path)) continue;
+      for (const match of paths) {
+        let path = match;
+        if (await throughSymlink(match)) {
+          if (!entry.pattern) continue;
+          path = await canonicalPath(match);
+        }
         const kind = await kindOf(path);
         if (kind === undefined) continue;
         const real = kind === 'symlink' ? await canonicalPath(path) : path;
@@ -756,19 +765,48 @@ function splitLoaderEnvironment(env: Record<string, string>): {
   return { launcher, loader };
 }
 
+/** The most entries under a denied directory looked at for files with other hard links */
+const MAX_LINK_CHECK_VISITS = 5_000;
+
 /**
- * Fails when a file `denyRead` names (or a wildcard of it matches) has more than one hard link: a
- * deny holds for the names it lists, so a command could read the file through another one
+ * Fails when a file `denyRead` names, a wildcard of it matches or a denied directory holds has
+ * more than one hard link: a deny holds for the names it covers, so a command could read the file
+ * through another one. A directory with more entries than can be looked at in time is checked as
+ * far as the walk gets, and `warn` says so
  */
-async function refuseLinkedDenies(denyRead: readonly PolicyPath[]): Promise<void> {
+async function refuseLinkedDenies(
+  denyRead: readonly PolicyPath[],
+  warn: (message: string) => void
+): Promise<void> {
+  const refuse = (path: string, links: number) => {
+    throw new Error(
+      `${path} is denied reading but has ${links} hard links, through any of which a sandboxed command could read it: remove the other links before running commands`
+    );
+  };
   for (const entry of denyRead) {
     const paths = entry.pattern ? (await expandWildcard(entry)).matches : [entry.path];
     for (const path of paths) {
       const info = await stat(path).catch(() => undefined);
-      if (info?.isFile() && info.nlink > 1) {
-        throw new Error(
-          `${path} is denied reading but has ${info.nlink} hard links, through any of which a sandboxed command could read it: remove the other links before running commands`
-        );
+      if (info?.isFile() && info.nlink > 1) refuse(path, info.nlink);
+      if (!info?.isDirectory()) continue;
+      const queue = [path];
+      let visits = 0;
+      walk: while (queue.length > 0) {
+        const dir = queue.shift()!;
+        for (const dirent of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+          if (++visits > MAX_LINK_CHECK_VISITS) {
+            warn(
+              `denyRead ${entry.entry}: more than ${MAX_LINK_CHECK_VISITS} entries, files beneath it with other hard links were not all looked for`
+            );
+            break walk;
+          }
+          const full = join(dir, dirent.name);
+          if (dirent.isDirectory()) queue.push(full);
+          else if (dirent.isFile()) {
+            const links = (await lstat(full).catch(() => undefined))?.nlink ?? 1;
+            if (links > 1) refuse(full, links);
+          }
+        }
       }
     }
   }
