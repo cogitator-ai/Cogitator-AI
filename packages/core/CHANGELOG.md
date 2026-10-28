@@ -1,5 +1,39 @@
 # @cogitator-ai/core
 
+## 0.76.0
+
+### Minor Changes
+
+- [#315](https://github.com/cogitator-ai/Cogitator-AI/pull/315) [`e2f1c87`](https://github.com/cogitator-ai/Cogitator-AI/commit/e2f1c8793df4d1fdb06e9d8a5d0e8be984cbd2d2) - MCP 2026-07-28 in the client and the server, next to 2025-11-25.
+
+  `@cogitator-ai/mcp` moves from `@modelcontextprotocol/sdk` 1.x to the MCP SDK v2 packages (`@modelcontextprotocol/client`, `/server`, `/node`), which know the new revision.
+
+  The client:
+
+  - `MCPClient` now asks a server with `server/discover` first (`protocol: 'auto'`, the new default) and speaks 2026-07-28 to servers that answer, 2025-11-25 (`initialize`) to the others. On stdio the SDK probes in a short-lived copy of the server process, so a stdio server starts twice on the first connect. Set `protocol: 'legacy'` to keep the previous behavior exactly, or `{ pin: '2026-07-28' }` to require the new revision. `client.era`, `client.protocolVersion` and `client.discover()` tell what was agreed.
+  - Input requests of a server (multi round-trip requests) are answered through the run of the call: the run pauses with an interrupt carrying the server's form, and resuming it with the answer sends it to the round the server asked in (kept by tool call id, `rounds.store`), without calling the tool anew. Outside a run the new `elicitation` handler answers. A call nobody can answer does not declare elicitation, so the server knows.
+  - MCP tasks: a long call answered with a task is polled, its questions answered and cancelled with the call's signal. Tasks are kept by tool call id, so a resumed call comes back to its task. `tasks: false` turns them off.
+  - OAuth 2.1 through `auth`: Client ID Metadata Documents with a `clientMetadataUrl` you host, Dynamic Client Registration as a native app as the fallback, `iss` checked, registrations and tokens per authorization server, kept under the MCP server's URL (`createMCPOAuthProvider(config, { resource })`, `InMemoryMCPOAuthStore`).
+  - `client.subscribe()` for tool, prompt and resource changes, over `subscriptions/listen` on the new revision.
+  - Output schemas of any shape and `structuredContent` of any JSON value. Imported tools keep the server's output schema in `toJSON()`.
+
+  The server:
+
+  - `MCPServer` and `serveAgents` serve both revisions on stdio and HTTP (`legacyClients: false` refuses 2025-11-25 clients). Approvals and the questions of an agent's tools end the round for new clients, with a state signed by `requestStateKey` and bound to the caller, the tool and its arguments. An agent run pauses and the next round resumes it. 2025-11-25 clients are asked through elicitation requests as before, `sessions: true` still needed for them over HTTP.
+  - `context.input` lets a tool ask without waiting between rounds, `context.elicit()` works as before.
+  - Calls still running after `tasks.promoteAfterMs` become MCP tasks for clients that take them (`InMemoryMCPTaskStore` by default).
+  - `protectedResource` serves OAuth Protected Resource Metadata, `allowedOrigins` refuses other browser origins, CORS takes the new MCP headers. Without `allowedOrigins` a server on a loopback host now takes only loopback origins (requests without `Origin` still pass). With `auth`, a caller without `userId` is told apart by its credential, and a request with no credential either is answered 401.
+  - Output schemas of any shape are advertised, the warning about non-object output schemas is gone.
+
+  `@cogitator-ai/types` and `@cogitator-ai/core`: `ToolSchema.outputSchema` carries a tool's output schema, Gemini gets it as the function's `responseJsonSchema`. Other providers get nothing new by default, `llm.toolOutputSchemas: 'description'` adds it to the end of the tool description for them.
+
+### Patch Changes
+
+- Updated dependencies [[`e2f1c87`](https://github.com/cogitator-ai/Cogitator-AI/commit/e2f1c8793df4d1fdb06e9d8a5d0e8be984cbd2d2)]:
+  - @cogitator-ai/types@0.87.0
+  - @cogitator-ai/memory@0.29.5
+  - @cogitator-ai/sandbox@0.10.2
+
 ## 0.75.0
 
 ### Minor Changes
