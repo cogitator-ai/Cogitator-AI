@@ -4,10 +4,13 @@
  * Provides factory functions for creating MCP transports.
  */
 
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import {
+  SSEClientTransport,
+  StreamableHTTPClientTransport,
+  type OAuthClientProvider,
+  type Transport,
+} from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
 export interface StdioTransportConfig {
   /** Command to execute */
@@ -29,6 +32,9 @@ export interface HttpTransportConfig {
 
   /** Custom headers */
   headers?: Record<string, string>;
+
+  /** OAuth for a server that asks for it */
+  authProvider?: OAuthClientProvider;
 }
 
 /**
@@ -55,9 +61,9 @@ export function createStdioTransport(config: StdioTransportConfig): Transport {
 
   return new StdioClientTransport({
     command: config.command,
-    args: config.args,
-    env,
-    cwd: config.cwd,
+    ...(config.args && { args: config.args }),
+    ...(env && { env }),
+    ...(config.cwd && { cwd: config.cwd }),
   });
 }
 
@@ -71,9 +77,10 @@ export function createStdioTransport(config: StdioTransportConfig): Transport {
  * });
  * ```
  */
-export function createHttpTransport(config: HttpTransportConfig): Transport {
+export function createHttpTransport(config: HttpTransportConfig): StreamableHTTPClientTransport {
   return new StreamableHTTPClientTransport(new URL(config.url), {
-    requestInit: config.headers ? { headers: config.headers } : undefined,
+    ...(config.headers && { requestInit: { headers: config.headers } }),
+    ...(config.authProvider && { authProvider: config.authProvider }),
   });
 }
 
@@ -86,8 +93,9 @@ export function createHttpTransport(config: HttpTransportConfig): Transport {
  * const transport = createSseTransport({ url: 'http://localhost:3000/sse' });
  * ```
  */
-export function createSseTransport(config: HttpTransportConfig): Transport {
+export function createSseTransport(config: HttpTransportConfig): SSEClientTransport {
   return new SSEClientTransport(new URL(config.url), {
-    requestInit: config.headers ? { headers: config.headers } : undefined,
+    ...(config.headers && { requestInit: { headers: config.headers } }),
+    ...(config.authProvider && { authProvider: config.authProvider }),
   });
 }

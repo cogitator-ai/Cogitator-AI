@@ -1,33 +1,43 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ProtocolError,
+  ProtocolErrorCode,
+  SdkError,
+  SdkErrorCode,
+} from '@modelcontextprotocol/client';
 
 const state = vi.hoisted(() => ({
   instances: 0,
   connectImpl: (() => Promise.resolve()) as () => Promise<void>,
   callToolImpl: (() => Promise.resolve({ content: [] })) as (
     params: unknown,
-    schema: unknown,
     options: unknown
   ) => Promise<unknown>,
   closeCalls: 0,
 }));
 
-vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
+vi.mock('@modelcontextprotocol/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@modelcontextprotocol/client')>();
   class Client {
+    onclose?: () => void;
     constructor() {
       state.instances++;
     }
+    setRequestHandler = vi.fn();
+    setNotificationHandler = vi.fn();
+    getNegotiatedProtocolVersion = vi.fn().mockReturnValue('2025-11-25');
+    getDiscoverResult = vi.fn().mockReturnValue(undefined);
+    getInstructions = vi.fn().mockReturnValue(undefined);
+    getServerVersion = vi.fn().mockReturnValue(undefined);
     connect = vi.fn(() => state.connectImpl());
     close = vi.fn(() => {
       state.closeCalls++;
       return Promise.resolve();
     });
     getServerCapabilities = vi.fn().mockReturnValue({ tools: {} });
-    callTool = vi.fn((params: unknown, schema: unknown, options: unknown) =>
-      state.callToolImpl(params, schema, options)
-    );
+    callTool = vi.fn((params: unknown, options: unknown) => state.callToolImpl(params, options));
   }
-  return { Client };
+  return { ...actual, Client };
 });
 
 vi.mock('../client/transports', () => ({
@@ -84,7 +94,7 @@ describe('MCPClient.callTool result mapping', () => {
 
   it('forwards signal and timeout to the SDK', async () => {
     const seen: unknown[] = [];
-    state.callToolImpl = (_params, _schema, options) => {
+    state.callToolImpl = (_params, options) => {
       seen.push(options);
       return Promise.resolve({ content: [{ type: 'text', text: 'ok' }] });
     };
@@ -93,7 +103,11 @@ describe('MCPClient.callTool result mapping', () => {
 
     await client.callTool('t', {}, { signal: controller.signal, timeout: 1234 });
 
-    expect(seen[0]).toEqual({ signal: controller.signal, timeout: 1234 });
+    expect(seen[0]).toEqual({
+      signal: controller.signal,
+      timeout: 1234,
+      allowInputRequired: true,
+    });
   });
 });
 
@@ -102,7 +116,9 @@ describe('MCPClient retry policy', () => {
     const calls = vi.fn();
     state.callToolImpl = () => {
       calls();
-      return Promise.reject(new McpError(ErrorCode.InvalidParams, 'bad connection string'));
+      return Promise.reject(
+        new ProtocolError(ProtocolErrorCode.InvalidParams, 'bad connection string')
+      );
     };
     const client = await MCPClient.connect({
       transport: 'stdio',
@@ -120,7 +136,7 @@ describe('MCPClient retry policy', () => {
     state.callToolImpl = () => {
       attempts++;
       if (attempts < 3) {
-        return Promise.reject(new McpError(ErrorCode.RequestTimeout, 'Request timed out'));
+        return Promise.reject(new SdkError(SdkErrorCode.RequestTimeout, 'Request timed out'));
       }
       return Promise.resolve({ content: [{ type: 'text', text: '"done"' }] });
     };
@@ -159,7 +175,7 @@ describe('MCPClient retry policy', () => {
     state.callToolImpl = () =>
       healthy
         ? Promise.resolve({ content: [{ type: 'text', text: '1' }] })
-        : Promise.reject(new McpError(ErrorCode.ConnectionClosed, 'Connection closed'));
+        : Promise.reject(new SdkError(SdkErrorCode.ConnectionClosed, 'Connection closed'));
 
     const onReconnecting = vi.fn();
     const client = await MCPClient.connect({
@@ -189,7 +205,7 @@ describe('MCPClient retry policy', () => {
 
   it('reports a permanent reconnect failure through onReconnectFailed', async () => {
     state.callToolImpl = () =>
-      Promise.reject(new McpError(ErrorCode.ConnectionClosed, 'Connection closed'));
+      Promise.reject(new SdkError(SdkErrorCode.ConnectionClosed, 'Connection closed'));
     const onReconnectFailed = vi.fn();
     const client = await MCPClient.connect({
       transport: 'stdio',
@@ -211,7 +227,7 @@ describe('MCPClient calls that must not run twice', () => {
     state.callToolImpl = () => {
       calls();
       return Promise.reject(
-        new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 })
+        new SdkError(SdkErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 })
       );
     };
     const client = await MCPClient.connect({ transport: 'stdio', command: 'x', retry: fastRetry });
@@ -231,7 +247,7 @@ describe('MCPClient calls that must not run twice', () => {
     const calls = vi.fn();
     state.callToolImpl = () => {
       calls();
-      return Promise.reject(new McpError(ErrorCode.ConnectionClosed, 'Connection closed'));
+      return Promise.reject(new SdkError(SdkErrorCode.ConnectionClosed, 'Connection closed'));
     };
     const client = await MCPClient.connect({ transport: 'stdio', command: 'x', retry: fastRetry });
 
@@ -259,7 +275,7 @@ describe('MCPClient calls that must not run twice', () => {
     state.callToolImpl = () =>
       healthy
         ? Promise.resolve({ content: [{ type: 'text', text: '"sent"' }] })
-        : Promise.reject(new McpError(ErrorCode.ConnectionClosed, 'Connection closed'));
+        : Promise.reject(new SdkError(SdkErrorCode.ConnectionClosed, 'Connection closed'));
     const client = await MCPClient.connect({ transport: 'stdio', command: 'x', retry: fastRetry });
 
     await expect(client.callTool('send_email', {})).rejects.toThrow(MCPToolInterruptedError);
@@ -285,7 +301,7 @@ describe('MCPClient lifecycle', () => {
 
   it('close() releases the transport even after the connection dropped', async () => {
     state.callToolImpl = () =>
-      Promise.reject(new McpError(ErrorCode.ConnectionClosed, 'Connection closed'));
+      Promise.reject(new SdkError(SdkErrorCode.ConnectionClosed, 'Connection closed'));
     const client = await MCPClient.connect({
       transport: 'stdio',
       command: 'x',

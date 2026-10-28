@@ -18,10 +18,16 @@ import type {
 } from '@cogitator-ai/types';
 import { pendingQuestions } from '@cogitator-ai/core';
 import { z } from 'zod';
-import type { MCPServerConfig, MCPToolContext } from '../types';
+import type {
+  MCPElicitRequest,
+  MCPInputPending,
+  MCPServerConfig,
+  MCPToolContext,
+  MCPToolInput,
+} from '../types';
 import { MCPServer } from './mcp-server';
-import { elicitApproval } from './approval';
-import { elicitAnswers, refusedQuestion } from './questions';
+import { approvalDecision, approvalForm, elicitApproval } from './approval';
+import { answerOfReply, elicitAnswers, questionRequest, refusedQuestion } from './questions';
 
 /** How often a question is asked when the run refuses its answers, before the call fails. */
 const MAX_ANSWER_ATTEMPTS = 3;
@@ -76,6 +82,31 @@ const resumeSchema = z.object({
   reason: z.string().optional().describe('Why the user declined, when they did'),
 });
 
+/** What an agent tool keeps between rounds of a call that asks the user */
+const RoundStateSchema = z.object({
+  agent: z.string(),
+  threadId: z.string(),
+  approvals: z.array(z.object({ toolCallId: z.string(), offersAlways: z.boolean() })),
+  questions: z.array(
+    z.object({
+      id: z.string(),
+      kind: z.enum(['approval', 'input', 'plan', 'budget']),
+      reason: z.string(),
+      message: z.string(),
+      responseSchema: z.record(z.string(), z.unknown()).optional(),
+      details: z.record(z.string(), z.unknown()).optional(),
+      single: z.boolean(),
+    })
+  ),
+  requests: z.record(
+    z.string(),
+    z.object({ message: z.string(), schema: z.record(z.string(), z.unknown()) })
+  ),
+  attempts: z.record(z.string(), z.number()),
+});
+
+type RoundState = z.output<typeof RoundStateSchema>;
+
 const rememberingResumeSchema = resumeSchema.extend({
   remember: z
     .boolean()
@@ -113,42 +144,46 @@ export function agentTools(
         agent.config.description ??
         `Ask the ${agent.name} agent. ${firstSentence(agent.instructions)}`,
       parameters: askSchema,
-      execute: async ({ task, threadId }, context) =>
-        settle(
-          host,
-          agent,
-          await host.run(agent, {
-            input: task,
-            ...(threadId && { threadId }),
-            ...runContext(context, allowRemember),
-          }),
-          context,
-          resumeName,
-          allowRemember
-        ),
+      execute: async ({ task, threadId }, context) => {
+        const input = context.input;
+        if (input) {
+          const resumed = await resumeRound(host, agent, input, context, resumeName, allowRemember);
+          if (resumed) return resumed;
+        }
+        const result = await host.run(agent, {
+          input: task,
+          ...(threadId && { threadId }),
+          ...runContext(context, allowRemember),
+        });
+        return input
+          ? askInRound(agent, result, input, resumeName, allowRemember, {})
+          : settle(host, agent, result, context, resumeName, allowRemember);
+      },
     });
 
     const resume = defineTool({
       name: resumeName,
       description: `Continue a ${agent.name} answer that waits for the user's approval, with the user's decision.`,
       parameters: allowRemember ? rememberingResumeSchema : resumeSchema,
-      execute: async (params: z.output<typeof rememberingResumeSchema>, context) =>
-        settle(
-          host,
-          agent,
-          await host.resume(agent, params.threadId, {
-            defaultDecision: params.approved
-              ? {
-                  approved: true,
-                  ...(allowRemember && params.remember === true && { remember: true }),
-                }
-              : { approved: false, reason: params.reason },
-            ...runContext(context, allowRemember),
-          }),
-          context,
-          resumeName,
-          allowRemember
-        ),
+      execute: async (params: z.output<typeof rememberingResumeSchema>, context) => {
+        const input = context.input;
+        if (input) {
+          const resumed = await resumeRound(host, agent, input, context, resumeName, allowRemember);
+          if (resumed) return resumed;
+        }
+        const result = await host.resume(agent, params.threadId, {
+          defaultDecision: params.approved
+            ? {
+                approved: true,
+                ...(allowRemember && params.remember === true && { remember: true }),
+              }
+            : { approved: false, reason: params.reason },
+          ...runContext(context, allowRemember),
+        });
+        return input
+          ? askInRound(agent, result, input, resumeName, allowRemember, {})
+          : settle(host, agent, result, context, resumeName, allowRemember);
+      },
     });
     return [ask, resume];
   });
@@ -186,13 +221,169 @@ export async function serveAgents(
   return server;
 }
 
+/**
+ * How the run of an agent tool decides approvals: by asking the person at the client in place
+ * (elicitation), or, when the call asks by ending its rounds (`context.input`), by pausing, the
+ * approvals then asked with the round's questions
+ */
 function runContext(context: MCPToolContext, allowRemember: boolean) {
-  const { elicit } = context;
+  const { elicit, input } = context;
   return {
     signal: context.signal,
     ...(context.userId !== undefined && { userId: context.userId }),
     onApproval: async (request: ToolApprovalRequest): Promise<ToolApprovalDecision | 'pause'> =>
-      (await elicitApproval(elicit, request, { allowRemember })) ?? 'pause',
+      input ? 'pause' : ((await elicitApproval(elicit, request, { allowRemember })) ?? 'pause'),
+  };
+}
+
+/**
+ * Ends the round of a call whose run paused, asking the approvals and questions it waits on,
+ * with what the next round needs to resume it. A run that does not wait on any is answered
+ */
+function askInRound(
+  agent: Agent,
+  result: RunResult,
+  input: MCPToolInput,
+  resumeName: string,
+  allowRemember: boolean,
+  attempts: Record<string, number>,
+  problems: ReadonlyMap<string, string> = new Map()
+): AgentToolAnswer | MCPInputPending {
+  const approvals = result.status === 'paused' ? (result.pendingApprovals ?? []) : [];
+  const questions = pendingQuestions(result);
+  if (approvals.length === 0 && questions.length === 0) return answer(result, resumeName);
+
+  const requests: Record<string, MCPElicitRequest> = {};
+  const state: RoundState = {
+    agent: agent.name,
+    threadId: result.threadId,
+    approvals: [],
+    questions: [],
+    requests: {},
+    attempts,
+  };
+  for (const approval of approvals) {
+    const offersAlways = allowRemember && approval.suggestedRule !== undefined;
+    requests[`approval:${approval.toolCallId}`] = approvalForm(approval, { allowRemember });
+    state.approvals.push({ toolCallId: approval.toolCallId, offersAlways });
+  }
+  for (const question of questions) {
+    const asked = questionRequest(question, agent.name, problems.get(question.id));
+    requests[`question:${question.id}`] = asked.request;
+    state.questions.push(questionState(question, asked.single));
+  }
+  state.requests = Object.fromEntries(
+    Object.entries(requests).map(([key, request]) => [
+      key,
+      { message: request.message, schema: request.schema },
+    ])
+  );
+  return input.ask(requests, state);
+}
+
+/**
+ * The round of a call that comes back with the answers to the approvals and questions of its
+ * last round: the run resumes with them. Undefined for a first round. A question still without
+ * an answer is asked again, one whose answer the run refuses is asked again saying why, up to
+ * `MAX_ANSWER_ATTEMPTS` times
+ *
+ * @throws CogitatorError `RUN_PAUSED` when the state of the call expired or the person declined
+ * a question, `INTERRUPT_ANSWER_INVALID` once a question's answers were refused too often
+ */
+async function resumeRound(
+  host: AgentHost,
+  agent: Agent,
+  input: MCPToolInput,
+  context: MCPToolContext,
+  resumeName: string,
+  allowRemember: boolean
+): Promise<AgentToolAnswer | MCPInputPending | undefined> {
+  const parsed = RoundStateSchema.safeParse(input.state);
+  if (!parsed.success || parsed.data.agent !== agent.name) {
+    if (input.stateRejected) {
+      throw new CogitatorError({
+        message:
+          `The answers for agent "${agent.name}" came back after their state expired, or from ` +
+          'another server: call the tool again, or answer the run with cogitator.resume().',
+        code: ErrorCode.RUN_PAUSED,
+      });
+    }
+    return undefined;
+  }
+  const state = parsed.data;
+  const missing = Object.keys(state.requests).filter((key) => input.responses[key] === undefined);
+  if (missing.length > 0) {
+    const requests = Object.fromEntries(
+      missing.map((key) => [key, state.requests[key] as MCPElicitRequest])
+    );
+    return input.ask(requests, state);
+  }
+
+  const decisions: Record<string, ToolApprovalDecision> = {};
+  for (const { toolCallId, offersAlways } of state.approvals) {
+    const reply = input.responses[`approval:${toolCallId}`];
+    if (reply) decisions[toolCallId] = approvalDecision(reply, offersAlways);
+  }
+  const paused = pendingAt(state);
+  const responses: Record<string, unknown> = {};
+  for (const { single, ...question } of state.questions) {
+    const reply = input.responses[`question:${question.id}`];
+    if (reply) responses[question.id] = answerOfReply(question, agent.name, reply, single);
+  }
+
+  let result: RunResult;
+  try {
+    result = await host.resume(agent, state.threadId, {
+      ...(Object.keys(decisions).length > 0 && { decisions }),
+      ...(Object.keys(responses).length > 0 && { responses }),
+      ...runContext(context, allowRemember),
+    });
+  } catch (error) {
+    const refused = refusedQuestion(error, paused);
+    if (!refused || context.signal?.aborted) throw error;
+    const { question, problem } = refused;
+    const attempts = (state.attempts[question.id] ?? 1) + 1;
+    if (attempts > MAX_ANSWER_ATTEMPTS) {
+      throw new CogitatorError({
+        message:
+          `Agent "${agent.name}" asked ${question.reason} ("${question.message}") ` +
+          `${MAX_ANSWER_ATTEMPTS} times and refused every answer, the last one because: ${problem}. ` +
+          'The run stays paused: answer it with cogitator.resume() and responses.',
+        code: ErrorCode.INTERRUPT_ANSWER_INVALID,
+        details: { interrupt: { ...question } },
+      });
+    }
+    const asked = questionRequest(question, agent.name, `That answer was refused: ${problem}`);
+    const key = `question:${question.id}`;
+    return input.ask(
+      { [key]: asked.request },
+      {
+        ...state,
+        approvals: [],
+        questions: [questionState(question, asked.single)],
+        requests: { [key]: { message: asked.request.message, schema: asked.request.schema } },
+        attempts: { ...state.attempts, [question.id]: attempts },
+      }
+    );
+  }
+  return askInRound(agent, result, input, resumeName, allowRemember, {});
+}
+
+/** The questions of the round's state, as the run asked them */
+function pendingAt(state: RoundState): RunInterrupt[] {
+  return state.questions.map(({ single: _single, ...question }) => question);
+}
+
+/** A question as the round's state keeps it */
+function questionState(question: RunInterrupt, single: boolean): RoundState['questions'][number] {
+  return {
+    id: question.id,
+    kind: question.kind,
+    reason: question.reason,
+    message: question.message,
+    ...(question.responseSchema && { responseSchema: question.responseSchema }),
+    ...(question.details && { details: question.details }),
+    single,
   };
 }
 
@@ -288,8 +479,8 @@ function defineTool<TParams>(definition: {
   name: string;
   description: string;
   parameters: z.ZodType<TParams>;
-  execute: (params: TParams, context: MCPToolContext) => Promise<AgentToolAnswer>;
-}): Tool<TParams, AgentToolAnswer> {
+  execute: (params: TParams, context: MCPToolContext) => Promise<AgentToolAnswer | MCPInputPending>;
+}): Tool<TParams, AgentToolAnswer | MCPInputPending> {
   return {
     name: definition.name,
     description: definition.description,

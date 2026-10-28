@@ -16,7 +16,7 @@ import {
 } from '@cogitator-ai/core';
 import type { Tool, ToolSchema, ToolContext, ToolContentPart } from '@cogitator-ai/types';
 import type {
-  MCPObjectSchema,
+  MCPJsonSchema,
   MCPToolDefinition,
   MCPToolContent,
   ToolAdapterOptions,
@@ -314,12 +314,11 @@ function compilePattern(pattern: string): RegExp | undefined {
 
 /**
  * Convert a Cogitator Tool to MCP tool definition format, with its `title`, `annotations` and
- * `outputSchema`. Only a `z.object()` output schema is kept, the one an MCP server can advertise
- * (see `mcpOutputSchema`).
+ * `outputSchema`, of any shape since protocol 2026-07-28 (see `mcpOutputSchema`).
  */
 export function cogitatorToMCP(tool: Tool): MCPToolDefinition {
-  const objectSchema = mcpOutputSchema(tool);
-  const outputSchema = objectSchema && outputSchemaToMCP(objectSchema);
+  const zodSchema = mcpOutputSchema(tool);
+  const outputSchema = zodSchema && outputSchemaToMCP(zodSchema);
   return {
     ...toolSchemaToMCP(tool.toJSON()),
     ...(tool.title !== undefined && { title: tool.title }),
@@ -329,20 +328,27 @@ export function cogitatorToMCP(tool: Tool): MCPToolDefinition {
 }
 
 /**
- * The output schema of a tool that MCP can carry: a `z.object()` schema (`z.strictObject`,
- * `z.looseObject` included). MCP output schemas must have an object root, and the MCP SDK takes
- * them only as zod object schemas, so a record, a union or a pipe is left out, even one whose
- * values are objects.
+ * The output schema of a tool as MCP carries it: any zod schema. Since protocol 2026-07-28 an
+ * output schema may have any root (an array, a union, a string), and the MCP SDK sends one with
+ * a root other than an object to clients of earlier revisions wrapped as `{ result }`
  */
-export function mcpOutputSchema(tool: Tool): ZodObject | undefined {
+export function mcpOutputSchema(tool: Tool): ZodTypeAny | undefined {
   const schema: unknown = tool.outputSchema;
-  return schema instanceof z.ZodObject ? schema : undefined;
+  return schema instanceof z.ZodType ? schema : undefined;
 }
 
-/** The JSON Schema of an object output schema for MCP. */
-function outputSchemaToMCP(schema: ZodTypeAny): MCPObjectSchema | undefined {
+/** The JSON Schema of an output schema for MCP. */
+function outputSchemaToMCP(schema: ZodTypeAny): MCPJsonSchema {
   const jsonSchema: Record<string, unknown> = zodToJsonSchema(schema);
-  return jsonSchema.type === 'object' ? toToolParameters(jsonSchema) : undefined;
+  return jsonSchema.type === 'object' ? toToolParameters(jsonSchema) : jsonSchema;
+}
+
+/** A zod schema for a JSON Schema of any shape, such as a tool's output schema */
+export function jsonSchemaValueToZod(schema: MCPJsonSchema): ZodTypeAny {
+  if (schema.type === 'object') {
+    return jsonSchemaToZod(schema as Parameters<typeof jsonSchemaToZod>[0]);
+  }
+  return jsonSchemaPropertyToZod(schema as JsonSchemaProperty, { root: schema, refs: new Map() });
 }
 
 /**
@@ -404,12 +410,7 @@ export function mcpToCogitator(
 
   const inputSchema = mcpTool.inputSchema as Parameters<typeof jsonSchemaToZod>[0];
   const parameters = jsonSchemaToZod({ ...inputSchema, type: 'object' });
-  const outputSchema =
-    mcpTool.outputSchema &&
-    jsonSchemaToZod({
-      ...(mcpTool.outputSchema as Parameters<typeof jsonSchemaToZod>[0]),
-      type: 'object',
-    });
+  const outputSchema = mcpTool.outputSchema && jsonSchemaValueToZod(mcpTool.outputSchema);
   const { title: annotationTitle, ...hints } = mcpTool.annotations ?? {};
   const title = mcpTool.title ?? annotationTitle;
   const annotations = Object.keys(hints).length > 0 ? hints : undefined;
@@ -431,6 +432,9 @@ export function mcpToCogitator(
       return client.callTool(mcpTool.name, (params ?? {}) as Record<string, unknown>, {
         signal: context?.signal,
         idempotent,
+        ...(context?.toolCallId !== undefined && { toolCallId: context.toolCallId }),
+        ...(context?.interrupt && { interrupt: context.interrupt }),
+        ...(context?.update && { update: context.update }),
       });
     },
 
@@ -438,6 +442,7 @@ export function mcpToCogitator(
       name,
       description,
       parameters: toToolParameters(mcpTool.inputSchema),
+      ...(mcpTool.outputSchema && { outputSchema: { ...mcpTool.outputSchema } }),
     }),
   };
 

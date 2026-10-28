@@ -146,7 +146,10 @@ describe('tool metadata', () => {
     expect(weather.title).toBe('Weather');
     expect(weather.outputSchema).toBe(outputSchema);
     expect(weather.annotations).toEqual({ readOnlyHint: true, openWorldHint: true });
-    expect(weather.toJSON()).not.toHaveProperty('outputSchema');
+    expect(weather.toJSON().outputSchema).toMatchObject({
+      type: 'object',
+      properties: { celsius: { type: 'number' } },
+    });
   });
 });
 

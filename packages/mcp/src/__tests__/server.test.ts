@@ -3,8 +3,10 @@ import { z } from 'zod';
 import { MCPServer, serveMCPTools } from '../server/mcp-server';
 import type { Tool, ToolSchema } from '@cogitator-ai/types';
 
-vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
+vi.mock('@modelcontextprotocol/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@modelcontextprotocol/server')>();
   class McpServer {
+    server = { setRequestHandler: vi.fn(), getClientCapabilities: vi.fn() };
     registerTool = vi.fn();
     registerResource = vi.fn();
     registerPrompt = vi.fn();
@@ -19,13 +21,15 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
     }
   }
 
-  return { McpServer, ResourceTemplate };
+  return { ...actual, McpServer, ResourceTemplate };
 });
 
-vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => {
-  class StdioServerTransport {}
-  return { StdioServerTransport };
-});
+vi.mock('@modelcontextprotocol/server/stdio', () => ({
+  serveStdio: vi.fn((factory: (ctx: { era: 'modern' }) => unknown) => {
+    factory({ era: 'modern' });
+    return { close: vi.fn().mockResolvedValue(undefined) };
+  }),
+}));
 
 const mockTool: Tool = {
   name: 'test_tool',

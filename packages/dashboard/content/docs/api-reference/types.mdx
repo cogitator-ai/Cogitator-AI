@@ -478,6 +478,7 @@ interface ToolSchema {
     required?: string[];
   };
   providerTypes?: ProviderToolTypes; // sent to that provider instead of parameters
+  outputSchema?: Record<string, unknown>; // JSON Schema of the result, Gemini's responseJsonSchema
 }
 ```
 
@@ -769,6 +770,7 @@ interface CogitatorConfig {
     plugins?: Record<string, unknown>; // config for registerLLMBackend plugins, by provider
     retry?: LLMRetryConfig | false; // on by default
     promptCache?: PromptCacheConfig | false; // on by default
+    toolOutputSchemas?: 'native' | 'description'; // default 'native'
     modelCircuitBreaker?: ModelCircuitBreakerConfig; // when a failing fallbackModels model is skipped
     pricing?: Record<string, ModelPriceConfig>; // USD per million tokens, by model string or its tail after any '/'
   };

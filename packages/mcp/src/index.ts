@@ -2,7 +2,7 @@
  * @cogitator-ai/mcp - MCP (Model Context Protocol) Integration
  *
  * This package provides full MCP support for Cogitator:
- * - MCPClient: Connect to external MCP servers and use their tools
+ * - MCPClient: Connect to external MCP servers and use their tools (protocol 2026-07-28 and 2025-11-25)
  * - MCPServer: Expose Cogitator tools as an MCP server
  * - Tool Adapter: Convert between Cogitator and MCP tool formats
  */
@@ -13,6 +13,12 @@ export {
   MCPToolInterruptedError,
   connectMCPServer,
 } from './client/mcp-client';
+export { MCPTaskEndedError, InMemoryMCPClientTaskStore } from './client/tasks';
+export {
+  createMCPOAuthProvider,
+  InMemoryMCPOAuthStore,
+  type MCPOAuthProvider,
+} from './client/oauth';
 export { createStdioTransport, createHttpTransport, createSseTransport } from './client/transports';
 export {
   experimental_mcpConnector,
@@ -22,6 +28,7 @@ export {
 export type { StdioTransportConfig, HttpTransportConfig } from './client/transports';
 
 export { MCPServer, serveMCPTools } from './server/mcp-server';
+export { InMemoryMCPTaskStore } from './server/tasks';
 export { serveAgents, agentTools } from './server/serve-agents';
 export type {
   AgentHost,
@@ -39,6 +46,7 @@ export {
   isDestructiveMCPTool,
   zodToJsonSchema,
   jsonSchemaToZod,
+  jsonSchemaValueToZod,
   resultToMCPContent,
   mcpContentToResult,
 } from './adapter/tool-adapter';
@@ -74,5 +82,29 @@ export type {
   MCPToolAnnotations,
   MCPToolCallResult,
   MCPToolContent,
+  MCPJsonSchema,
+  MCPProtocolMode,
+  MCPProtocolEra,
+  MCPElicitUrlRequest,
+  MCPElicitationHandler,
+  MCPElicitationSource,
+  MCPClientTaskOptions,
+  MCPClientTaskRecord,
+  MCPClientTaskStore,
+  MCPAskedInput,
+  MCPOAuthConfig,
+  MCPOAuthStore,
+  MCPSubscription,
+  MCPSubscriptionFilter,
+  MCPSubscriptionHandlers,
+  MCPServerDiscovery,
+  MCPToolInput,
+  MCPInputPending,
+  MCPServerTaskOptions,
+  MCPProtectedResourceConfig,
+  MCPTaskStatus,
+  MCPTaskRecord,
+  MCPTaskInputRequest,
+  MCPTaskStore,
   ToolAdapterOptions,
 } from './types';

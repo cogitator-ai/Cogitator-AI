@@ -61,6 +61,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@types/bun": "^1.4.2",
     "@types/express": "^5.0.6",
     "@types/koa": "^3.0.3",
