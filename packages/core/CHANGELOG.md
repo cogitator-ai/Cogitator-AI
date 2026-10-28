@@ -1,5 +1,57 @@
 # @cogitator-ai/core
 
+## 0.78.0
+
+### Minor Changes
+
+- [#319](https://github.com/cogitator-ai/Cogitator-AI/pull/319) [`25087c3`](https://github.com/cogitator-ai/Cogitator-AI/commit/25087c3b0cac1340a9a3a9d9823045ed0c5a580c) - AG-UI 1.0 on every server adapter, and three new kinds of stream events: data parts, run state and step resets.
+
+  AG-UI:
+
+  - Every adapter serves `POST /agents/:name/agui`: it takes an AG-UI `RunAgentInput` and streams the run as AG-UI events, so CopilotKit or an `@ag-ui/client` `HttpAgent` runs a Cogitator agent as it is. Next.js gets the same as `createAGUIHandler(cogitator, agent)`. The AG-UI thread is the run's memory thread, the last message (the user's) is the new turn, `state` is the run's state and `context` its brief. Auth, `authorizeThread`, `anonymous` and `deps` apply as on the other routes.
+  - Text, reasoning, tool calls and results map one to one. Tool progress and data parts become activities (`ACTIVITY_SNAPSHOT`, then `ACTIVITY_DELTA` patches), state changes `STATE_DELTA`, foreground subagents and agents used as tools AG-UI subagents, workflow nodes steps.
+  - A paused run ends with `RUN_FINISHED` and outcome `interrupt`, one `Interrupt` per approval or question, and the next request answers them all at once with `resume` entries. A cancelled question ends the paused run with outcome `cancelled`, as does a run a hook or middleware stopped (`stopped`, kept in the metadata).
+  - `@cogitator-ai/server-shared/agui` holds it: `toAGUI()` and `AGUITranslator` turn our stream events into AG-UI events, `streamAGUIRun()` runs or resumes an agent for a request, `runAGUIConformance()` checks an adapter's route. The translation is tested with the AG-UI client's own event verifier, and `HttpAgent` against the routes. `@ag-ui/core` 1.0.3 is a new dependency of `@cogitator-ai/server-shared`.
+  - Not yet: frontend tools, `MESSAGES_SNAPSHOT`, encrypted reasoning and the binary transport.
+
+  Stream events:
+
+  - `data`: a tool sends its client structured data with `context.data({ name, data, id?, transient? })`, which returns the part's id. A later part with the same id replaces it in place, a transient one is never kept with the message. The run reports them to `onData`, and a delegated run passes them to its stream.
+  - `state-snapshot` and `state-delta`: `RunOptions.state` is the state a run starts from, a tool reads and replaces it with `context.state`, the run reports each change to `onState`, and the stream sends a snapshot first and JSON Patches (RFC 6902) after. `createJsonPatch` and `applyJsonPatch` come from `@cogitator-ai/server-shared/json-patch`, a subpath a browser bundle can import.
+  - `reset-step`: with `onStepReset` on a run, a model that fails mid-answer now moves to the next of the agent's `fallbackModels` instead of failing the run, and a streamed answer that came out empty is asked again, both telling the callback to take back what the step streamed. `AgentStreamSession` sets it with `resetSteps: true` and sends `reset-step` with the step's parts and tool calls. It is off by default, since a client that does not know `reset-step` would show the failed step's text before the new one: the handlers of `@cogitator-ai/next` (for `useCogitatorChat`) and the app-server turn it on, the `/stream` routes of the HTTP adapters keep failing such a run as before.
+  - `useCogitatorChat` keeps data parts in `message.data` (transient ones only reach `onData`), the state in `state` (and `onStateChange`), and takes a reset step out of the message.
+
+  All of it is additive: a stream only carries the new events when a tool sends data or state, or a fallback model takes over mid-answer. A client that validates events with an older `StreamEventSchema` refuses the new types, so update it along with the server. The app-server's generated client knows the new events.
+
+- [#319](https://github.com/cogitator-ai/Cogitator-AI/pull/319) [`25087c3`](https://github.com/cogitator-ai/Cogitator-AI/commit/25087c3b0cac1340a9a3a9d9823045ed0c5a580c) - MCP Apps (extension `io.modelcontextprotocol/ui`): tools come with interactive `ui://` pages, our MCP server serves them, the client reads them, and Studio renders them.
+
+  Server:
+
+  - A tool's new `app` field names its MCP App. `mcpApp({ uri, html, csp?, permissions?, domain?, prefersBorder?, visibility? })` builds one for a tool this process serves, and an `MCPServer` that serves the tool lists it with `_meta.ui.resourceUri` (and the older flat `_meta['ui/resourceUri']`), serves the page as a resource of type `text/html;profile=mcp-app` with `_meta.ui` on the listing and the content, and declares the extension in its capabilities.
+  - `server.registerApp(config)` serves an app on its own and `server.getRegisteredApps()` lists the URIs served. `serveAgents` takes `apps`, an app per agent, for the agent's tool.
+  - A tool with `visibility: ['app']` is for its page only.
+
+  Client:
+
+  - `MCPClient` tells servers it takes apps (`apps: false` turns it off). A wrapped tool of a server that points at an app carries it as `tool.app`: `read()` gives the page with its CSP, permissions, domain and border preference, `callTool(name, args)` calls a tool of the same server for the page (only a tool open to apps, a structured result that is no object coming as `{ result: value }`), `requiresApproval(name)` says whether that tool needs approval, under the `requiresApproval` setting of `getTools()` (destructive tools by default).
+  - A wrapped tool whose server answers with images, audio or binary resources next to `structuredContent` keeps the structured result in the call's `details` (`ToolStructuredDetails`), out of what the model reads, so the tool's app gets both. `callTool(name, args, { structuredDetails: true })` does the same by hand, `callTool` without it returns what it did.
+  - `getTools()` leaves out the tools a server opens to apps only, as MCP Apps asks of a host. `getToolApp(name)`, `readApp(uri)` and `callToolForApp(name, args)` do the same by hand.
+  - `@modelcontextprotocol/ext-apps` 2.0.4 is a new dependency of `@cogitator-ai/mcp`.
+
+  Studio:
+
+  - A tool call whose tool has an app shows the app under it, in the chat and on the run page. The studio serves the page from its own address, sandboxed with `allow-scripts` only so it runs with an opaque origin, and with a Content-Security-Policy built from the origins the app declares and a Permissions-Policy that grants the features it asked for and nothing else.
+  - The studio is the app's host through the ext-apps `AppBridge`: it sends the call's arguments and result (or that it failed), sizes the frame and opens web links in a new tab. Tool calls the app makes go to its server, held to the agent's permission rules, hooks and guardrails like a call of the agent: a denied one answers the app with an error, and one a rule asks for or that needs approval (destructive, or as the adapter's `requiresApproval` says) waits for the person to press **Allow** in the card.
+  - New routes: `GET /api/agents/:agent/tools/:tool/app`, `GET .../app/view` and `POST .../app/call`.
+  - A web host is asked to put a sandbox proxy on an origin of its own between itself and the app. Studio gets the same isolation from the app's frame with an opaque origin and a header policy the page cannot change. A dedicated `domain` an app asks for is not honored.
+
+### Patch Changes
+
+- Updated dependencies [[`25087c3`](https://github.com/cogitator-ai/Cogitator-AI/commit/25087c3b0cac1340a9a3a9d9823045ed0c5a580c), [`25087c3`](https://github.com/cogitator-ai/Cogitator-AI/commit/25087c3b0cac1340a9a3a9d9823045ed0c5a580c)]:
+  - @cogitator-ai/types@0.89.0
+  - @cogitator-ai/memory@0.29.7
+  - @cogitator-ai/sandbox@0.10.4
+
 ## 0.77.0
 
 ### Minor Changes
