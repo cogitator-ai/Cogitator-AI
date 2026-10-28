@@ -229,6 +229,7 @@ export class PluginPermissions {
       mode: 'dontAsk',
       rules: this.rules,
       needsApproval: true,
+      removalChecks: false,
       cwd: this.projectRoot,
       projectRoot: this.projectRoot,
     });

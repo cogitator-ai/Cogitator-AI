@@ -402,7 +402,43 @@ export const MemoryConfigSchema = z.object({
   consolidation: MemoryConsolidationConfigSchema.optional(),
 });
 
-export const SandboxTypeSchema = z.enum(['docker', 'native', 'wasm']);
+export const SandboxTypeSchema = z.enum(['docker', 'native', 'wasm', 'os']);
+
+export const OsSandboxPolicySchema = z.object({
+  enabled: z.boolean().optional(),
+  failIfUnavailable: z.boolean().optional(),
+  autoAllow: z.boolean().optional(),
+  allowUnsandboxed: z.boolean().optional(),
+  excludedCommands: z.array(z.string()).optional(),
+  ignoreViolations: z.record(z.string(), z.array(z.string())).optional(),
+  filesystem: z
+    .object({
+      allowWrite: z.array(z.string()).optional(),
+      denyWrite: z.array(z.string()).optional(),
+      denyRead: z.array(z.string()).optional(),
+      allowRead: z.array(z.string()).optional(),
+      disabled: z.boolean().optional(),
+    })
+    .optional(),
+  network: z
+    .object({
+      allowedDomains: z.array(z.string()).optional(),
+      deniedDomains: z.array(z.string()).optional(),
+      strictAllowlist: z.boolean().optional(),
+      allowLocalBinding: z.boolean().optional(),
+      allowUnixSockets: z.array(z.string()).optional(),
+      allowAllUnixSockets: z.boolean().optional(),
+    })
+    .optional(),
+  credentials: z
+    .object({
+      envVars: z.array(z.string()).optional(),
+      files: z.array(z.string()).optional(),
+    })
+    .optional(),
+  bwrapPath: z.string().optional(),
+  socatPath: z.string().optional(),
+});
 
 export const SandboxResourcesSchema = z.object({
   memory: z.string().optional(),
@@ -436,6 +472,7 @@ export const SandboxDefaultsSchema = z.object({
   wasmModule: z.string().optional(),
   wasmFunction: z.string().optional(),
   wasi: z.boolean().optional(),
+  os: OsSandboxPolicySchema.optional(),
 });
 
 export const SandboxPoolSchema = z.object({

@@ -13,7 +13,7 @@ These implementations ship:
 - `DockerWorkspace` from `@cogitator-ai/sandbox`: the same files, commands run in one long-lived container.
 - `E2BWorkspace`, `DaytonaWorkspace` and `VercelSandboxWorkspace` from `@cogitator-ai/sandbox`: files and commands in a cloud sandbox, see [Remote Workspaces](/docs/tools/remote-workspaces).
 
-Hand a workspace to an agent (or to one run) and the tools get it as `context.workspace`. `workspaceTools()` gives the agent `read_file`, `write_file`, `edit_file`, `list_files`, `glob`, `grep` and `run_command` on top of it.
+Hand a workspace to an agent (or to one run) and the tools get it as `context.workspace`. `workspaceTools()` gives the agent `read_file`, `write_file`, `edit_file`, `list_files`, `glob`, `grep`, `run_command` and `delete_file` on top of it. A `LocalWorkspace` can run its commands inside the operating system's sandbox, see [OS Sandbox](/docs/tools/os-sandbox).
 
 ```typescript
 import { Agent, Cogitator, LocalWorkspace, workspaceTools } from '@cogitator-ai/core';
@@ -60,10 +60,12 @@ After a handoff, the agent the run went on as brings its own workspace, unless t
 | `list(path, { recursive, glob, ... })`                                   | Entries with type, size and modification time, symlinked directories listed but not entered         |
 | `stat`, `exists`, `mkdir`, `rename`                                      | What their names say, `rename` refuses to replace an entry unless `overwrite` is set                |
 | `remove(path, { recursive, trash })`                                     | Deletes, or with `trash: true` moves the entry to `.cogitator/trash/<time>/` inside the root        |
+| `listTrash`, `restoreFromTrash`, `emptyTrash`                            | Optional: what the trash holds, putting an entry back, deleting for good, see [Trash](#trash)       |
+| `sandbox`                                                                | Optional: the OS sandbox commands run in, see [OS Sandbox](/docs/tools/os-sandbox)                  |
 | `exec(command, options)`                                                 | A shell command in `cwd` or `options.cwd`, streaming `onStdout`/`onStderr`, `timeout`, `signal`     |
 | `snapshot`, `restore`, `listSnapshots`, `deleteSnapshot`, `copySnapshot` | Optional: record the files and go back to them, see [File Checkpoints](/docs/core/file-checkpoints) |
 
-`exec` resolves with `{ stdout, stderr, exitCode, timedOut, truncated, durationMs }`, also for a non-zero exit or a timeout (exit code 124), and rejects with code `ABORTED` when its signal aborts. A timeout or an abort sends SIGTERM to the command's process group, then SIGKILL. The call returns when the command itself exits, even when a process it started in the background (`server &`) still holds its output open: with `background: 'kill'` (the default) the rest of the group is stopped then, with `background: 'keep'` it runs on until `dispose()`, its output no longer read, so redirect it (`server > server.log 2>&1 &`).
+`exec` resolves with `{ stdout, stderr, exitCode, timedOut, truncated, durationMs }` (and `sandbox` in a sandboxed workspace), also for a non-zero exit or a timeout (exit code 124), and rejects with code `ABORTED` when its signal aborts. A timeout or an abort sends SIGTERM to the command's process group, then SIGKILL. The call returns when the command itself exits, even when a process it started in the background (`server &`) still holds its output open: with `background: 'kill'` (the default) the rest of the group is stopped then, with `background: 'keep'` it runs on until `dispose()`, its output no longer read, so redirect it (`server > server.log 2>&1 &`).
 
 Every failure is a `WorkspaceError` with a `code`: `OUTSIDE_ROOT`, `NOT_FOUND`, `NOT_A_FILE`, `NOT_A_DIRECTORY`, `EXISTS`, `NOT_EMPTY`, `TOO_LARGE`, `INVALID_PATH`, `NOT_STARTED`, `DISPOSED`, `UNAVAILABLE`, `ABORTED`, `DENIED` (the system or a policy refused it, such as missing permissions), `BUSY` (a `LocalWorkspace` refuses `remove` and `rename` while a command it started is still running or left processes in the background), `UNSUPPORTED` or `IO`.
 
@@ -95,22 +97,39 @@ const workspace = new LocalWorkspace({
 });
 ```
 
-| Option                | Default                   | What it does                                                                           |
-| --------------------- | ------------------------- | -------------------------------------------------------------------------------------- |
-| `root`                | required                  | The directory the workspace is confined to                                             |
-| `cwd`                 | `.`                       | Current directory, relative to the root                                                |
-| `create`              | `true`                    | Create the root when missing                                                           |
-| `maxFileBytes`        | 10 MiB                    | Largest file `read` and `write` accept                                                 |
-| `refuseHardLinks`     | `false`                   | Refuse to read files with more than one hard link (code `DENIED`), snapshots skip them |
-| `exec.shell`          | `/bin/sh`                 | The shell commands run with (`cmd.exe /d /s /c` on Windows without one)                |
-| `exec.timeout`        | 120000                    | Milliseconds before a command is stopped                                               |
-| `exec.killGrace`      | 2000                      | Milliseconds between SIGTERM and SIGKILL                                               |
-| `exec.maxOutputBytes` | 1 MiB                     | Bytes of stdout and of stderr a result keeps                                           |
-| `exec.env`            | none                      | Variables every command gets                                                           |
-| `exec.inheritEnv`     | `WORKSPACE_INHERITED_ENV` | What commands inherit from your environment, `true` for all of it                      |
-| `exec.launch`         | none                      | Changes what is spawned, e.g. to run commands under `sandbox-exec` or `bwrap`          |
+| Option                | Default                   | What it does                                                                                  |
+| --------------------- | ------------------------- | --------------------------------------------------------------------------------------------- |
+| `root`                | required                  | The directory the workspace is confined to                                                    |
+| `cwd`                 | `.`                       | Current directory, relative to the root                                                       |
+| `create`              | `true`                    | Create the root when missing                                                                  |
+| `maxFileBytes`        | 10 MiB                    | Largest file `read` and `write` accept                                                        |
+| `refuseHardLinks`     | `false`                   | Refuse to read files with more than one hard link (code `DENIED`), snapshots skip them        |
+| `exec.shell`          | `/bin/sh`                 | The shell commands run with (`cmd.exe /d /s /c` on Windows without one)                       |
+| `exec.timeout`        | 120000                    | Milliseconds before a command is stopped                                                      |
+| `exec.killGrace`      | 2000                      | Milliseconds between SIGTERM and SIGKILL                                                      |
+| `exec.maxOutputBytes` | 1 MiB                     | Bytes of stdout and of stderr a result keeps                                                  |
+| `exec.env`            | none                      | Variables every command gets                                                                  |
+| `exec.inheritEnv`     | `WORKSPACE_INHERITED_ENV` | What commands inherit from your environment, `true` for all of it                             |
+| `exec.sandbox`        | none                      | The OS sandbox commands run in, such as `OsSandbox`, see [OS Sandbox](/docs/tools/os-sandbox) |
+| `exec.launch`         | none                      | Changes what is spawned, now or in a promise, see below (not with `exec.sandbox`)             |
 
-By default a command inherits only what a shell needs (`PATH`, `HOME`, the locale and a few more, see `WORKSPACE_INHERITED_ENV`), so the API keys in your environment do not reach commands the model writes. `HOME` is passed, so a command can still read what your home directory holds, such as `~/.ssh` and `~/.aws`: run untrusted commands in a `DockerWorkspace`.
+By default a command inherits only what a shell needs (`PATH`, `HOME`, the locale and a few more, see `WORKSPACE_INHERITED_ENV`), so the API keys in your environment do not reach commands the model writes. `HOME` is passed, so a command can still read what your home directory holds, such as `~/.ssh` and `~/.aws`: run untrusted commands under an [OS sandbox](/docs/tools/os-sandbox) or in a `DockerWorkspace`.
+
+`exec.launch` gets what the workspace would spawn (`file`, `args`, `cwd`, `env`), the `root`, the `command` line and what the call asked of a sandbox (`request`: `dangerouslyDisableSandbox`, `allowedDomains`, `onUnknownHost`), and returns the program and arguments to spawn instead, at once or in a promise. It may also return the whole `env` to use and a `cleanup(result)` that runs once the command is over (with no result after a failed spawn or an abort), whose report sets the result's `sandbox` and appends a `notice` to its stderr:
+
+```typescript
+const workspace = new LocalWorkspace({
+  root: './project',
+  exec: {
+    launch: async (launch) => ({
+      file: '/usr/bin/nice',
+      args: ['-n', '10', launch.file, ...launch.args],
+      env: { ...launch.env, CI: 'true' },
+      cleanup: (result) => (result ? { notice: `took ${result.durationMs}ms` } : undefined),
+    }),
+  },
+});
+```
 
 Each command runs in a process group of its own. A timeout or an abort stops the whole group, also background processes the shell already left behind, and `dispose()` kills every group the workspace started that still has processes. A process that starts a new session (`setsid`) leaves the group. On Windows there are no process groups: only the command itself is killed.
 
@@ -178,6 +197,12 @@ One container serves the whole workspace: created on first use (or in `start()`)
 | `killGrace`      | 2000                        | Milliseconds between SIGTERM and SIGKILL     |
 | `maxOutputBytes` | 1 MiB                       | Bytes of stdout and of stderr a result keeps |
 
+### Trash
+
+`remove(path, { trash: true })` (and the `delete_file` tool, which always trashes) moves an entry to `.cogitator/trash/<id>/<path>` and writes a record of it next to the folder. `listTrash()` returns the entries still there, oldest first, as `{ id, path, trashedTo, trashedAt, type, size }`. `restoreFromTrash(id, { to, overwrite })` moves one back where it was (or to `to`) through the same safe placement as `rename`, failing with `EXISTS` when something is there unless `overwrite` replaces it, and `NOT_FOUND` for an id the trash does not hold. `emptyTrash({ olderThan })` deletes the entries trashed at least `olderThan` milliseconds ago, or all of them, through the safe removal of `remove`, and with them the leftovers no entry lists (a folder whose entry was deleted by hand, a record without its folder). Trashing the trash itself, or anything in it, is refused with `INVALID_PATH`, and an entry reached through a symlink inside its folder is never listed or restored. Both refuse with `BUSY` while a command the workspace started still runs. An entry trashed without a record (by an older version) is listed by the path under its folder. `DockerWorkspace` lists the trash through its host and restores and deletes in its container.
+
+The trash is the workspace's, not the shell's: an `rm` in `run_command` deletes for good. Removing a critical path (the root, `~`, `/`, `.git`) with `rm` or `rmdir` always asks, see [OS Sandbox](/docs/tools/os-sandbox#permissions).
+
 ## workspaceTools
 
 `workspaceTools(workspace?, options?)` returns the tools. Each call uses the workspace passed here, else the run's (`context.workspace`), and fails with a clear error when there is none, so one tool set serves every workspace. Their names differ from the global `file_read`, `file_write` and `exec` [built-in tools](/docs/tools/built-in), which reach the whole file system, so both sets can be registered side by side.
@@ -190,7 +215,8 @@ One container serves the whole workspace: created on first use (or in `start()`)
 | `list_files`  | A directory's entries, optionally recursive, at most 1000                                                                                                                                                                                                                                                                           |
 | `glob`        | Files matching a pattern such as `**/*.ts`, at most 1000                                                                                                                                                                                                                                                                            |
 | `grep`        | Lines matching a regular expression, at most `maxMatches`. Binary files, files over 1 MiB and hidden files (unless `includeHidden`) are skipped. Each line is matched whole, in a worker thread with `grepTimeout` per file, so a pattern that backtracks catastrophically, such as `(a+)+$`, fails instead of blocking the process |
-| `run_command` | A shell command through `workspace.exec`, stopped when the run is cancelled. `background: true` keeps what it starts with `&` running                                                                                                                                                                                               |
+| `run_command` | A shell command through `workspace.exec`, stopped when the run is cancelled. `background: true` keeps what it starts with `&` running. In a sandboxed workspace `allowedDomains` opens hosts for that command and `dangerouslyDisableSandbox` asks to run it outside, see [OS Sandbox](/docs/tools/os-sandbox)                      |
+| `delete_file` | Moves a file, or a directory with `recursive`, to the workspace trash, from where `restoreFromTrash` brings it back                                                                                                                                                                                                                 |
 
 | Option            | Default                | What it does                                              |
 | ----------------- | ---------------------- | --------------------------------------------------------- |

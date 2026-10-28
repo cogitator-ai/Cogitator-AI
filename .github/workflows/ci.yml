@@ -135,6 +135,21 @@ jobs:
             pnpm exec playwright install-deps chromium
           fi
 
+      # The OS sandbox runs commands under bubblewrap on Linux, with socat bridging its proxy.
+      # Ubuntu 24.04 keeps unprivileged user namespaces behind AppArmor, which bwrap needs.
+      - name: Install bubblewrap and socat for the OS sandbox
+        timeout-minutes: 5
+        run: |
+          printf 'Acquire::http::Timeout "15";\nAcquire::Retries "2";\n' | sudo tee /etc/apt/apt.conf.d/99-ci-timeouts
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap socat
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-net --unshare-pid /bin/true \
+            || echo "::warning::bwrap cannot create its namespaces on this runner, the live OS sandbox tests skip"
+
+      - name: OS sandbox tests under bubblewrap
+        run: pnpm --filter @cogitator-ai/sandbox exec vitest run src/__tests__/os-
+
       - run: pnpm --filter @cogitator-ai/e2e exec vitest run --exclude 'src/__tests__/create-cogitator-app/matrix.e2e.ts'
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'

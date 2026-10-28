@@ -87,6 +87,48 @@ export interface PermissionSettingsFile extends PermissionRules {
   additionalDirectories?: readonly string[];
 }
 
+/**
+ * The `sandbox` section of a settings file, as Claude Code writes it (see `OsSandboxPolicy` for
+ * what each key does). Keys Cogitator does not support are kept out with a warning
+ */
+export interface SandboxSettingsFile {
+  enabled?: boolean;
+  failIfUnavailable?: boolean;
+  autoAllowBashIfSandboxed?: boolean;
+  allowUnsandboxedCommands?: boolean;
+  excludedCommands?: readonly string[];
+  ignoreViolations?: Readonly<Record<string, readonly string[]>>;
+  /** Read from managed settings only */
+  bwrapPath?: string;
+  /** Read from managed settings only */
+  socatPath?: string;
+  filesystem?: {
+    allowWrite?: readonly string[];
+    denyWrite?: readonly string[];
+    denyRead?: readonly string[];
+    allowRead?: readonly string[];
+    /** In managed settings: only the managed `allowRead` entries count */
+    allowManagedReadPathsOnly?: boolean;
+    /** Read from user and managed settings only */
+    disabled?: boolean;
+  };
+  network?: {
+    allowedDomains?: readonly string[];
+    deniedDomains?: readonly string[];
+    /** Read from user and managed settings only */
+    strictAllowlist?: boolean;
+    /** In managed settings: only the managed `allowedDomains` count, unknown hosts are refused */
+    allowManagedDomainsOnly?: boolean;
+    allowLocalBinding?: boolean;
+    allowUnixSockets?: readonly string[];
+    allowAllUnixSockets?: boolean;
+  };
+  credentials?: {
+    files?: readonly { path: string; mode: 'deny' | 'mask' }[];
+    envVars?: readonly { name: string; mode: 'deny' | 'mask' }[];
+  };
+}
+
 /** The rules and settings of one file (or of the code, for `session`) */
 export interface PermissionLayerSettings extends PermissionSettingsFile {
   layer: PermissionLayer;
@@ -102,6 +144,8 @@ export interface PermissionLayerSettings extends PermissionSettingsFile {
    * the working directory of the call: for rules a run passed on to the delegated run it started
    */
   cwd?: string;
+  /** The `sandbox` section of the file, see `loadSandboxPolicy` of `@cogitator-ai/core` */
+  sandbox?: SandboxSettingsFile;
 }
 
 /** A rule a decision applied */
@@ -117,10 +161,11 @@ export interface PermissionRuleRef {
 /**
  * What made a decision: a rule, the run's mode, the tool's own approval setting (or the
  * guardrails), the `auto` classifier, a person answering the approval, a hook or middleware
- * (`beforeToolCall`, `decideApproval`), or nothing at all (a call that needs no approval runs)
+ * (`beforeToolCall`, `decideApproval`), the OS sandbox the command runs in (`sandbox`, see
+ * `OsSandboxPolicy.autoAllow`), or nothing at all (a call that needs no approval runs)
  */
 export type PermissionDecider =
-  'rule' | 'mode' | 'tool' | 'classifier' | 'user' | 'hook' | 'default';
+  'rule' | 'mode' | 'tool' | 'classifier' | 'user' | 'hook' | 'sandbox' | 'default';
 
 /** What `resolvePermission` decided for a call */
 export interface PermissionDecision {
@@ -257,6 +302,15 @@ export interface ToolPermissionsView {
    * what a rule refuses or asks for, and say how many files they left out
    */
   canRead(path: string): Promise<boolean>;
+  /**
+   * How the run decides a host a sandboxed command connects to that no sandbox list decides, as
+   * a `WebFetch(domain:...)` call: a deny rule refuses, an allow rule lets it through, else the
+   * mode decides (`bypassPermissions` allows, `auto` and `dontAsk` refuse, the others `ask` a
+   * person). A host a person allowed is remembered for the session with {@link allowHost}
+   */
+  decideHost?(host: string, port: number): Promise<PermissionBehavior>;
+  /** Allows `host` for the rest of the session (a `WebFetch(domain:...)` rule of the `session` layer) */
+  allowHost?(host: string): void;
 }
 
 /** A limit of money, tokens or tool calls */

@@ -350,6 +350,29 @@ describe('CogitatorConfigSchema', () => {
     expect(CogitatorConfigSchema.parse({ sandbox }).sandbox).toEqual(sandbox);
   });
 
+  it('keeps the os sandbox type and its policy', () => {
+    const sandbox = {
+      defaults: {
+        type: 'os',
+        workdir: '/srv/project',
+        os: {
+          failIfUnavailable: true,
+          filesystem: { denyRead: ['~/.ssh'], allowRead: ['~/.ssh/known_hosts'] },
+          network: { allowedDomains: ['registry.npmjs.org'], allowAllUnixSockets: false },
+          credentials: { envVars: ['NPM_TOKEN'], files: ['~/.npmrc'] },
+          ignoreViolations: { '*': ['/tmp'] },
+        },
+      },
+    };
+
+    expect(CogitatorConfigSchema.parse({ sandbox }).sandbox).toEqual(sandbox);
+    expect(() =>
+      CogitatorConfigSchema.parse({
+        sandbox: { defaults: { type: 'os', os: { network: { allowedDomains: 'x' } } } },
+      })
+    ).toThrow();
+  });
+
   it('keeps embedding dimensions for every provider and the Google base URL', () => {
     const embeddings = [
       { provider: 'openai', apiKey: 'sk-xxx', model: 'text-embedding-3-large', dimensions: 1024 },

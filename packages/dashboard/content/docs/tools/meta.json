@@ -4,6 +4,7 @@
     "built-in",
     "workspace",
     "remote-workspaces",
+    "os-sandbox",
     "wasm-tools",
     "custom-tools",
     "results",

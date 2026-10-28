@@ -989,7 +989,7 @@ When Docker is unavailable (or `@cogitator-ai/sandbox` is missing), a Docker-san
 
 ### Workspace
 
-A `Workspace` is the directory an agent works in: file access and commands that cannot leave its root (`..`, absolute paths elsewhere and symlinks out are refused with a `WorkspaceError` of code `OUTSIDE_ROOT`). `LocalWorkspace` is a directory of this machine, `DockerWorkspace` from `@cogitator-ai/sandbox` runs the commands in a container. `workspaceTools()` gives the agent `read_file` (by line range), `write_file`, `edit_file` (exact, unique replacement), `list_files`, `glob`, `grep` (in a worker thread, so a runaway pattern cannot block the process) and `run_command`, named apart from the global `file_*` and `exec` built-in tools.
+A `Workspace` is the directory an agent works in: file access and commands that cannot leave its root (`..`, absolute paths elsewhere and symlinks out are refused with a `WorkspaceError` of code `OUTSIDE_ROOT`). `LocalWorkspace` is a directory of this machine, `DockerWorkspace` from `@cogitator-ai/sandbox` runs the commands in a container. `workspaceTools()` gives the agent `read_file` (by line range), `write_file`, `edit_file` (exact, unique replacement), `list_files`, `glob`, `grep` (in a worker thread, so a runaway pattern cannot block the process), `run_command` and `delete_file` (which moves what it deletes to the workspace trash), named apart from the global `file_*` and `exec` built-in tools.
 
 ```typescript
 import { Agent, LocalWorkspace, workspaceTools } from '@cogitator-ai/core';
@@ -1008,7 +1008,24 @@ await cog.run(coder, { input: 'Same for this project', workspace: otherWorkspace
 await workspace.dispose();
 ```
 
-Tools and middleware get the run's workspace as `context.workspace` (`RunOptions.workspace`, else the agent's). A workspace starts itself on first use, the runtime only uses it, and whoever creates it disposes it. Only regular files are read and written, writes are atomic (a temporary file renamed over the target), and `remove` and `rename` check what they move and never replace an entry they did not check, so a symlink swapped in at the wrong moment cannot reach outside the root. `remove` and `rename` refuse with code `BUSY` while a command the workspace started still runs. Commands run in their own process group with a trimmed environment, a call returns when the command exits, its background processes stopped then unless `background: 'keep'`, and a timeout, an abort or `dispose()` kills the group. When a tool result is longer than the model may read and the agent has the `read_file` of `workspaceTools()`, the full text is saved in the workspace that `read_file` reads to `.cogitator/tool-results/<runId>/<toolCallId>.txt` (ignored by git, removed after `limits.toolResultRetention`, 7 days by default) and the model gets a preview with the path, to page through with `read_file`. `remove(path, { trash: true })` moves entries to `.cogitator/trash/`. See [Workspace](https://cogitator.app/docs/tools/workspace).
+Tools and middleware get the run's workspace as `context.workspace` (`RunOptions.workspace`, else the agent's). A workspace starts itself on first use, the runtime only uses it, and whoever creates it disposes it. Only regular files are read and written, writes are atomic (a temporary file renamed over the target), and `remove` and `rename` check what they move and never replace an entry they did not check, so a symlink swapped in at the wrong moment cannot reach outside the root. `remove` and `rename` refuse with code `BUSY` while a command the workspace started still runs. Commands run in their own process group with a trimmed environment, a call returns when the command exits, its background processes stopped then unless `background: 'keep'`, and a timeout, an abort or `dispose()` kills the group. When a tool result is longer than the model may read and the agent has the `read_file` of `workspaceTools()`, the full text is saved in the workspace that `read_file` reads to `.cogitator/tool-results/<runId>/<toolCallId>.txt` (ignored by git, removed after `limits.toolResultRetention`, 7 days by default) and the model gets a preview with the path, to page through with `read_file`. `remove(path, { trash: true })` moves entries to `.cogitator/trash/`, `listTrash()` lists them with where they came from, `restoreFromTrash(id, { to, overwrite })` puts one back and `emptyTrash({ olderThan })` deletes them for good. A `rm` in `run_command` deletes for good, the trash is `delete_file`'s. See [Workspace](https://cogitator.app/docs/tools/workspace).
+
+#### OS Sandbox
+
+`exec.sandbox` runs every command of a `LocalWorkspace` inside the operating system's sandbox: `OsSandbox` of `@cogitator-ai/sandbox`, Seatbelt on macOS and bubblewrap on Linux. `loadSandboxPolicy(root)` reads the `sandbox` section of Claude Code's settings files as they are (arrays merged across the layers, booleans from the highest, the managed locks applied), together with the paths and hosts of `Edit`, `Read` and `WebFetch(domain:...)` rules:
+
+```typescript
+import { LocalWorkspace, loadSandboxPolicy, workspaceTools } from '@cogitator-ai/core';
+import { OsSandbox } from '@cogitator-ai/sandbox';
+
+const { policy } = await loadSandboxPolicy('./project');
+const workspace = new LocalWorkspace({
+  root: './project',
+  exec: { sandbox: new OsSandbox({ policy }) },
+});
+```
+
+A command that runs inside skips the approval `run_command` asks for, and a bare `Bash` ask rule: the decision is logged as decided by `sandbox`. Deny rules, ask rules with a pattern, plan mode and the guardrails still apply, and a command with a variable in front (`FOO=bar npm test`), `eval` or `make CC=clang`, one that names hosts of its own (`allowedDomains`), one `excludedCommands` takes out of the sandbox, and one run with an honored `dangerouslyDisableSandbox` go through the normal flow. `rm` and `rmdir` of a critical path (the workspace root or a directory above it, `~`, `/`, `.git`, or a path the shell expands) ask in every mode, and a removal outside the workspace by a command without the sandbox asks in every mode but `bypassPermissions`. A host a sandboxed command connects to that no sandbox list decides is decided as a `WebFetch(domain:...)` call: a deny rule refuses it, an allow rule lets it through, `bypassPermissions` allows, `auto` and `dontAsk` refuse, the other modes ask a person through the run's `onApproval`, and an allowed host stays allowed for the session. A workspace whose sandbox cannot run fails to start with code `UNAVAILABLE`, caused by a `SANDBOX_UNAVAILABLE` error. `exec.launch` is the lower-level hook: it may now return a promise, a whole environment and a `cleanup` that reports into the result. See [OS Sandbox](https://cogitator.app/docs/tools/os-sandbox).
 
 #### File Checkpoints and Rewind
 
