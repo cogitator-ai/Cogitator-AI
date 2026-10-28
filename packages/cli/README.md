@@ -264,7 +264,7 @@ cogitator run -p --input-format stream-json --output-format stream-json < turns.
 | `--fork`                   | -       | With `--resume`: continue in a new session forked from it                      |
 | `--session-id <id>`        | new     | The id of the new session (with `--resume`, only together with `--fork`)       |
 | `--json-schema <schema>`   | -       | JSON Schema, inline or a file, the answer must match: printed as that JSON     |
-| `--no-session-persistence` | -       | Keep the session in this process only                                          |
+| `--no-session-persistence` | -       | Keep the session in this process only, over `memory.adapter` too               |
 
 A stream-json line is a `StreamEvent` of the stream protocol (`start`, `text-delta`, `tool-call-start`, `tool-result`, `finish` and the others) with `session_id` and `parent_tool_use_id`, which names the tool call of a subagent's run and is `null` at the top. Each turn ends with a `result` line: `subtype` `success`, `paused`, `interrupted` or `error`, `is_error`, `session_id`, `result`, `structured_output`, `usage`, `total_cost_usd`, `duration_ms`, and `pending_approvals` with `interrupts` for a paused turn. `--output-format json` prints that result line alone.
 
@@ -281,7 +281,7 @@ A `user` line without `delivery` is a turn of its own, run after the turns befor
 
 Exit codes: `0` when the last turn completed, `1` when it failed, was interrupted or missed `--json-schema`, `2` for a wrong command line, `3` when it was left paused (approve with a `resume` line).
 
-Without `memory.adapter` in the config, sessions are kept in SQLite at `~/.cogitator/sessions.db` (`COGITATOR_SESSIONS_DB` names another file), so `--resume` works across runs. A config with `memory.adapter` keeps them there.
+Without `memory.adapter` in the config, sessions are kept in SQLite at `~/.cogitator/sessions.db` (`COGITATOR_SESSIONS_DB` names another file), so `--resume` works across runs. A config with `memory.adapter` keeps them there. `--no-session-persistence` keeps the session in the process alone, also over a configured `memory.adapter`, and does not go with `--resume`.
 
 ---
 

@@ -511,6 +511,7 @@ export class SessionHost {
     }
     this.refuseCancelled(options);
     const agent = this.reviewAgent(source, params.model);
+    const mode = modeOf(source);
     const reviewThreadId = `review_${randomUUID()}`;
     const thread = this.unwrap(
       await memory.createThread(
@@ -520,6 +521,7 @@ export class SessionHost {
           [THREAD_KEYS.agent]: this.agentNameOf(source),
           [THREAD_KEYS.reviewOf]: params.threadId,
           ...(params.model !== undefined && { [THREAD_KEYS.reviewModel]: params.model }),
+          ...(mode !== undefined && { [THREAD_KEYS.permissionMode]: mode }),
         },
         reviewThreadId
       )
@@ -530,7 +532,12 @@ export class SessionHost {
     const turn = this.reserve(reviewThreadId, options.owner);
     this.launch(
       turn,
-      { agent, input: { input: reviewPrompt(params.target, changes) }, review: true },
+      {
+        agent,
+        input: { input: reviewPrompt(params.target, changes) },
+        review: true,
+        ...(mode !== undefined && { mode }),
+      },
       options
     );
     return { turn: copyTurn(turn.info), reviewThreadId };

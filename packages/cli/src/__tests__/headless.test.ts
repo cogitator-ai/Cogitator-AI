@@ -143,6 +143,9 @@ describe('headlessPlan', () => {
       /needs --output-format stream-json/
     );
     expect(() => headlessPlan({ print: true, fork: true })).toThrow(/--resume/);
+    expect(() => headlessPlan({ print: true, resume: 'a', sessionPersistence: false })).toThrow(
+      /--no-session-persistence/
+    );
     expect(() => headlessPlan({ print: true, resume: 'a', sessionId: 'b' })).toThrow(/--fork/);
     expect(headlessPlan({ print: true, resume: 'a', sessionId: 'b', fork: true })).toMatchObject({
       resume: 'a',
@@ -285,6 +288,7 @@ describe('headless helpers', () => {
     expect(withSessionStore({}, false).memory).toEqual({ adapter: 'memory' });
     const configured = { memory: { adapter: 'redis' as const } };
     expect(withSessionStore(configured, true)).toBe(configured);
+    expect(withSessionStore(configured, false).memory).toEqual({ adapter: 'memory' });
   });
 
   it('sends console output to stderr while stdout is claimed', async () => {

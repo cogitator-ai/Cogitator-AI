@@ -91,6 +91,9 @@ export function headlessPlan(flags: HeadlessFlags, cwd = process.cwd()): Headles
   if (flags.sessionId !== undefined && flags.resume !== undefined && !flags.fork) {
     throw new UsageError('--session-id names a new session: with --resume it needs --fork');
   }
+  if (flags.sessionPersistence === false && flags.resume !== undefined) {
+    throw new UsageError('--resume reads a kept session: drop --no-session-persistence');
+  }
   if (flags.sessionId?.trim() === '') {
     throw new UsageError('--session-id must not be empty');
   }
@@ -148,16 +151,17 @@ export function sessionsDbPath(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
- * The config with a session store: as it is with `memory.adapter`, else SQLite at
- * {@link sessionsDbPath}, or memory of the process alone when sessions are not kept
+ * The config with a session store: memory of the process alone when sessions are not kept,
+ * even over a configured `memory.adapter`, else the config as it is with `memory.adapter`, else
+ * SQLite at {@link sessionsDbPath}
  */
 export function withSessionStore(
   config: CogitatorConfig,
   persist: boolean,
   env: NodeJS.ProcessEnv = process.env
 ): CogitatorConfig {
-  if (config.memory?.adapter) return config;
   if (!persist) return { ...config, memory: { ...config.memory, adapter: 'memory' } };
+  if (config.memory?.adapter) return config;
   return {
     ...config,
     memory: { ...config.memory, adapter: 'sqlite', sqlite: { path: sessionsDbPath(env) } },

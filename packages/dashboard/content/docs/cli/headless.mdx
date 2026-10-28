@@ -26,7 +26,7 @@ The model, the config file and the `.env` are found the same way as for `cogitat
 | `--fork`                   | -       | With `--resume`: continue in a new session forked from it                      |
 | `--session-id <id>`        | new     | The id of the new session (with `--resume` only together with `--fork`)        |
 | `--json-schema <schema>`   | -       | A JSON Schema, inline or a file, the answer must match                         |
-| `--no-session-persistence` | -       | Keep the session in this process only                                          |
+| `--no-session-persistence` | -       | Keep the session in this process only, over `memory.adapter` too               |
 
 Flags that do not go together (a headless flag without `-p`, `--fork` without `--resume`, `-p` with `-i`, a schema that cannot be read) exit with `2` before anything runs.
 
@@ -90,7 +90,7 @@ cogitator run -p --resume plan "Shorten it to three steps"
 cogitator run -p --resume plan --fork --session-id plan-b "Make it five steps instead"
 ```
 
-`--fork` copies the session up to its last entry into a new one, so the original stays as it was. A config with `memory.adapter` keeps sessions in its own store. `--no-session-persistence` keeps the session in the process alone.
+`--fork` copies the session up to its last entry into a new one, so the original stays as it was. A config with `memory.adapter` keeps sessions in its own store. `--no-session-persistence` keeps the session in the process alone, also when the config names a `memory.adapter`, and refuses `--resume` (exit `2`).
 
 ## Approvals
 

@@ -716,6 +716,32 @@ describe('SessionHost', () => {
     await cogitator.close();
   });
 
+  it('reviews in the permission mode of the thread it reviews, resumed too', async () => {
+    const scripted = scriptedBackend([
+      answer('{"findings":[],"overallCorrectness":"correct","overallExplanation":"ok"}'),
+    ]);
+    const { host, cogitator, notifications } = createTestHost({
+      backend: scripted.backend,
+      review: { context: async () => 'diff' },
+    });
+    const modes: Array<string | undefined> = [];
+    const start = cogitator.start.bind(cogitator);
+    vi.spyOn(cogitator, 'start').mockImplementation((agent, options) => {
+      modes.push(options.permissions?.mode);
+      return start(agent, options);
+    });
+    const thread = await host.startThread({ permissionMode: 'plan' });
+    const review = await host.startReview({
+      threadId: thread.id,
+      target: { type: 'custom', instructions: 'x' },
+    });
+    await completed(notifications, review.turn.id);
+    expect(modes).toEqual(['plan']);
+    const reviewThread = (await host.resumeThread(review.reviewThreadId)).thread;
+    expect(reviewThread.permissionMode).toBe('plan');
+    await host.close();
+  });
+
   it('starts a turn in the permission mode set before its run began', async () => {
     const { host, cogitator, notifications } = createTestHost({
       backend: scriptedBackend([answer('x')]).backend,

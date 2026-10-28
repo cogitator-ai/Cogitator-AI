@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import chalk from 'chalk';
 import { log, printBanner } from '../utils/logger.js';
-import { CommandError, UsageError, examplesHelp } from '../utils/cli.js';
+import { CommandError, examplesHelp } from '../utils/cli.js';
 import { Cogitator, Agent } from '@cogitator-ai/core';
 import { experimental_mcpConnector } from '@cogitator-ai/mcp';
 import type { CogitatorConfig } from '@cogitator-ai/types';
@@ -276,9 +276,6 @@ async function runPrint(
   const stdout = claimStdout();
   try {
     const { config, model } = await resolveRunRuntime(options);
-    if (plan.resume !== undefined && !plan.persistSessions && !config.memory?.adapter) {
-      throw new UsageError('--resume reads a kept session: drop --no-session-persistence');
-    }
     const stored = withSessionStore(config, plan.persistSessions);
     if (
       stored.memory?.adapter === 'sqlite' &&
