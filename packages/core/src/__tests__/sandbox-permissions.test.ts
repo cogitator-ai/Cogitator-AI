@@ -474,6 +474,9 @@ describe('the command checks', () => {
     expect(at('rsync -a --delete empty/ ~/')).toBe(`${home}/`);
     expect(at('rsync -a --delete dist/ /tmp/site/')).toBeUndefined();
     expect(at('rsync -a dist/ ~/')).toBeUndefined();
+    expect(at(`rsync -a --delete src/ ${root}/ --exclude ignored`)).toBe(`${root}/`);
+    expect(at(`rsync -a --delete -e ssh src/ ${root}/ --filter '- x'`)).toBe(`${root}/`);
+    expect(at('rsync -a --delete --exclude=x src/ /tmp/site/')).toBeUndefined();
   });
 
   it('tells plain commands from those that can change the program they run', () => {

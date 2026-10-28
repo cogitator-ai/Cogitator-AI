@@ -236,13 +236,89 @@ function movedOperands(command: ShellCommand): string[] {
  */
 function rsyncDeletes(command: ShellCommand): string[] {
   const args = command.argv.slice(1);
-  const operands = operandsOf(command);
+  const operands = rsyncOperands(args);
   const removed: string[] = [];
   if (args.includes('--remove-source-files')) removed.push(...operands.slice(0, -1));
   if (args.some((word) => word.startsWith('--delete')) && operands.length > 1) {
     removed.push(operands[operands.length - 1]);
   }
   return removed;
+}
+
+/** The options of `rsync` whose value is the next word when it is not joined with `=` */
+const RSYNC_VALUE_OPTIONS = new Set([
+  '-e',
+  '-f',
+  '-T',
+  '-B',
+  '-M',
+  '--rsh',
+  '--rsync-path',
+  '--filter',
+  '--exclude',
+  '--include',
+  '--exclude-from',
+  '--include-from',
+  '--files-from',
+  '--partial-dir',
+  '--temp-dir',
+  '--compare-dest',
+  '--copy-dest',
+  '--link-dest',
+  '--backup-dir',
+  '--suffix',
+  '--chmod',
+  '--chown',
+  '--usermap',
+  '--groupmap',
+  '--timeout',
+  '--contimeout',
+  '--port',
+  '--address',
+  '--password-file',
+  '--bwlimit',
+  '--max-size',
+  '--min-size',
+  '--max-delete',
+  '--modify-window',
+  '--block-size',
+  '--checksum-choice',
+  '--compress-choice',
+  '--compress-level',
+  '--skip-compress',
+  '--out-format',
+  '--log-file',
+  '--log-file-format',
+  '--sockopts',
+  '--iconv',
+  '--protocol',
+  '--info',
+  '--debug',
+  '--stop-after',
+  '--stop-at',
+  '--write-batch',
+  '--only-write-batch',
+  '--read-batch',
+  '--remote-option',
+]);
+
+/** The operands of an `rsync` command line, the values of its options left out */
+function rsyncOperands(args: readonly string[]): string[] {
+  const operands: string[] = [];
+  let options = true;
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i];
+    if (options && word === '--') {
+      options = false;
+      continue;
+    }
+    if (options && word.startsWith('-') && word !== '-') {
+      if (RSYNC_VALUE_OPTIONS.has(word)) i++;
+      continue;
+    }
+    operands.push(word);
+  }
+  return operands;
 }
 
 function operandsOf(command: ShellCommand): string[] {
