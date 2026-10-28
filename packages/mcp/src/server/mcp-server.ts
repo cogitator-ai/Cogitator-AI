@@ -336,7 +336,7 @@ export class MCPServer {
    * HTTP requests never share a single server/transport binding.
    */
   private buildServer(scope: ServeScope): McpServer {
-    const codec = callStateCodec(this.stateKey, scope.owner, this.elicitationTimeout());
+    const codec = callStateCodec(this.stateKey, scope.owner, 2 * this.elicitationTimeout());
     const server = new McpServer(
       { name: this.config.name, version: this.config.version },
       {
@@ -450,10 +450,11 @@ export class MCPServer {
           'The question of this call expired or was answered already: call the tool again'
         ) as CallToolResult;
       }
-      const answer = responses[question.key];
-      if (!answer) return this.askInRound(execution, question, ctx, mint);
+      const answered = Object.entries(responses).filter(([key, answer]) =>
+        execution.respond(key, answer)
+      );
+      if (answered.length === 0) return this.askInRound(execution, question, ctx, mint);
       this.parked.delete(execution.id);
-      execution.respond(answer);
       return this.drive(execution, ctx, scope, tool, args, mint, outputSchema, takesTasks, 'task');
     }
 

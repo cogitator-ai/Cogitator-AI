@@ -20,6 +20,7 @@ import { pendingQuestions } from '@cogitator-ai/core';
 import { z } from 'zod';
 import type {
   MCPElicitRequest,
+  MCPElicitResult,
   MCPInputPending,
   MCPServerConfig,
   MCPToolContext,
@@ -103,6 +104,16 @@ const RoundStateSchema = z.object({
     z.object({ message: z.string(), schema: z.record(z.string(), z.unknown()) })
   ),
   attempts: z.record(z.string(), z.number()),
+  /** The answers the client gave so far, by request key, kept until every request has one */
+  answered: z
+    .record(
+      z.string(),
+      z.union([
+        z.object({ action: z.literal('accept'), content: z.record(z.string(), z.unknown()) }),
+        z.object({ action: z.enum(['decline', 'cancel']) }),
+      ])
+    )
+    .optional(),
 });
 
 type RoundState = z.output<typeof RoundStateSchema>;
@@ -311,23 +322,27 @@ async function resumeRound(
     return undefined;
   }
   const state = parsed.data;
-  const missing = Object.keys(state.requests).filter((key) => input.responses[key] === undefined);
+  const answered: Record<string, MCPElicitResult> = {};
+  for (const [key, reply] of Object.entries({ ...state.answered, ...input.responses })) {
+    if (key in state.requests) answered[key] = reply;
+  }
+  const missing = Object.keys(state.requests).filter((key) => answered[key] === undefined);
   if (missing.length > 0) {
     const requests = Object.fromEntries(
       missing.map((key) => [key, state.requests[key] as MCPElicitRequest])
     );
-    return input.ask(requests, state);
+    return input.ask(requests, { ...state, answered });
   }
 
   const decisions: Record<string, ToolApprovalDecision> = {};
   for (const { toolCallId, offersAlways } of state.approvals) {
-    const reply = input.responses[`approval:${toolCallId}`];
+    const reply = answered[`approval:${toolCallId}`];
     if (reply) decisions[toolCallId] = approvalDecision(reply, offersAlways);
   }
   const paused = pendingAt(state);
   const responses: Record<string, unknown> = {};
   for (const { single, ...question } of state.questions) {
-    const reply = input.responses[`question:${question.id}`];
+    const reply = answered[`question:${question.id}`];
     if (reply) responses[question.id] = answerOfReply(question, agent.name, reply, single);
   }
 
@@ -355,14 +370,20 @@ async function resumeRound(
     }
     const asked = questionRequest(question, agent.name, `That answer was refused: ${problem}`);
     const key = `question:${question.id}`;
+    const { [key]: _refused, ...kept } = answered;
     return input.ask(
       { [key]: asked.request },
       {
         ...state,
-        approvals: [],
-        questions: [questionState(question, asked.single)],
-        requests: { [key]: { message: asked.request.message, schema: asked.request.schema } },
+        questions: state.questions.map((entry) =>
+          entry.id === question.id ? questionState(question, asked.single) : entry
+        ),
+        requests: {
+          ...state.requests,
+          [key]: { message: asked.request.message, schema: asked.request.schema },
+        },
         attempts: { ...state.attempts, [question.id]: attempts },
+        answered: kept,
       }
     );
   }

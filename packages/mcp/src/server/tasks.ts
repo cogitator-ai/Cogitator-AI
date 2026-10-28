@@ -223,7 +223,7 @@ export class ServerTasks {
           const key = `${generation}:${step.key}`;
           const [answer] = await this.waitFor(taskId, runner, { [key]: step.request });
           if (runner.cancelled || answer === undefined) return;
-          runner.execution.respond(answer.answer);
+          runner.execution.respond(step.key, answer.answer);
           await this.patch(taskId, {
             status: 'working',
             inputRequests: undefined,

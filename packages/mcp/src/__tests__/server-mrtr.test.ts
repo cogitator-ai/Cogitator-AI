@@ -149,7 +149,7 @@ describe('MCPServer approvals as multi round-trip requests', () => {
     const { deleteFile, execute } = deleteTool();
     const url = await serve([deleteFile], { elicitationTimeoutMs: 1000 });
     const first = await call(url, { path: '/a' });
-    await new Promise((resolve) => setTimeout(resolve, 2100));
+    await new Promise((resolve) => setTimeout(resolve, 3200));
     const late = await call(
       url,
       { path: '/a' },
@@ -519,5 +519,70 @@ describe('a run waiting in the server between rounds', () => {
     });
     expect(JSON.stringify(late.result)).toMatch(/expired/);
     expect(runs).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('questions a tool asks at once', () => {
+  function pairTool() {
+    const both = tool({
+      name: 'both',
+      description: 'Asks two questions at once',
+      parameters: z.object({}),
+      execute: async (_params, context) => {
+        const elicit = (context as MCPToolContext).elicit!;
+        const schema = { type: 'object' as const, properties: { v: { type: 'string' as const } } };
+        const [first, second] = await Promise.all([
+          elicit({ message: 'First?', schema }),
+          elicit({ message: 'Second?', schema }),
+        ]);
+        return { first, second };
+      },
+    }) as Tool;
+    return both;
+  }
+
+  it('delivers each answer to its own question, round by round', async () => {
+    const url = await serve([pairTool()]);
+    const send = (extra: Record<string, unknown> = {}) =>
+      rawRequest(url, 'tools/call', {
+        capabilities: ELICITATION,
+        params: { name: 'both', arguments: {}, ...extra },
+      });
+    const one = await send();
+    expect(Object.keys(one.result?.inputRequests as object)).toEqual(['elicit:1']);
+    const two = await send({
+      requestState: one.result?.requestState,
+      inputResponses: { 'elicit:1': { action: 'accept', content: { v: 'a' } } },
+    });
+    expect(Object.keys(two.result?.inputRequests as object)).toEqual(['elicit:2']);
+    const three = await send({
+      requestState: two.result?.requestState,
+      inputResponses: { 'elicit:2': { action: 'accept', content: { v: 'b' } } },
+    });
+    expect(JSON.parse(String((three.result?.content as { text: string }[])[0]?.text))).toEqual({
+      first: { action: 'accept', content: { v: 'a' } },
+      second: { action: 'accept', content: { v: 'b' } },
+    });
+  });
+
+  it('dismisses every question it waits on once nobody answers in time', async () => {
+    const both = pairTool();
+    const results: unknown[] = [];
+    const watched = {
+      ...both,
+      execute: async (params: unknown, context: unknown) => {
+        const value = await both.execute(params, context as Parameters<Tool['execute']>[1]);
+        results.push(value);
+        return value;
+      },
+    } as Tool;
+    const url = await serve([watched], { elicitationTimeoutMs: 50 });
+    await rawRequest(url, 'tools/call', {
+      capabilities: ELICITATION,
+      params: { name: 'both', arguments: {} },
+    });
+    await vi.waitFor(() =>
+      expect(results).toEqual([{ first: { action: 'cancel' }, second: { action: 'cancel' } }])
+    );
   });
 });

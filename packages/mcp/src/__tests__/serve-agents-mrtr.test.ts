@@ -246,3 +246,106 @@ describe('serveAgents on protocol 2026-07-28', () => {
     expect(reply).toMatchObject({ status: 'paused', threadId: 't1' });
   });
 });
+
+describe('serveAgents rounds with several requests', () => {
+  const second: RunInterrupt = {
+    ...question,
+    id: 'q2#0',
+    reason: 'pick_day',
+    message: 'Which day?',
+    responseSchema: {
+      type: 'object',
+      properties: { day: { type: 'string', title: 'Day' } },
+      required: ['day'],
+    },
+    toolCallId: 'q2',
+  };
+
+  function twoQuestionsAndApproval(refusals: number) {
+    let left = refusals;
+    const run = vi.fn(async (_agent: Agent, options: RunOptions) => {
+      await options.onApproval?.(pending);
+      return result({
+        status: 'paused',
+        pendingApprovals: [pending],
+        interrupts: [question, second],
+        checkpoint,
+      });
+    });
+    const resume = vi.fn(
+      async (_agent: Agent, _target: RunCheckpoint | string, options?: ResumeOptions) => {
+        if (left > 0) {
+          left--;
+          throw new CogitatorError({
+            message: 'The answer does not match its schema: not ok',
+            code: ErrorCode.INTERRUPT_ANSWER_INVALID,
+            details: { interruptId: question.id },
+          });
+        }
+        return result({
+          output: `resumed ${JSON.stringify({ d: options?.decisions, r: options?.responses })}`,
+        });
+      }
+    );
+    return { run, resume };
+  }
+
+  it('resubmits every accepted answer and decision with the corrected one', async () => {
+    const { run, resume } = twoQuestionsAndApproval(1);
+    const url = await serveHttp({ run, resume });
+    let okAnswers = 0;
+    const { client } = await modernClient(url, (request) => {
+      if (request.message.includes('Which day'))
+        return { action: 'accept', content: { day: 'mon' } };
+      if (request.message.includes('Go ahead')) {
+        okAnswers++;
+        return { action: 'accept', content: { ok: okAnswers > 1 } };
+      }
+      return { action: 'accept', content: { approve: true } };
+    });
+
+    const reply = (await client.callTool('support', { task: 'plan' })) as { output: string };
+
+    expect(resume).toHaveBeenCalledTimes(2);
+    const last = resume.mock.calls[1]?.[2];
+    expect(last?.decisions).toEqual({ c1: { approved: true } });
+    expect(last?.responses).toEqual({ 'q1#0': { ok: true }, 'q2#0': { day: 'mon' } });
+    expect(reply.output).toContain('"q2#0":{"day":"mon"}');
+  });
+
+  it('keeps the answers of a partial round and asks only for the missing ones', async () => {
+    const { run, resume } = twoQuestionsAndApproval(0);
+    const url = await serveHttp({ run, resume });
+    const send = (extra: Record<string, unknown>) =>
+      rawRequest(url, 'tools/call', {
+        capabilities: ELICITATION,
+        params: { name: 'support', arguments: { task: 'plan' }, ...extra },
+      });
+
+    const first = await send({});
+    expect(Object.keys(first.result?.inputRequests as object).sort()).toEqual([
+      'approval:c1',
+      'question:q1#0',
+      'question:q2#0',
+    ]);
+    const partial = await send({
+      requestState: first.result?.requestState,
+      inputResponses: {
+        'approval:c1': { action: 'accept', content: { approve: true } },
+        'question:q1#0': { action: 'accept', content: { ok: true } },
+      },
+    });
+    expect(Object.keys(partial.result?.inputRequests as object)).toEqual(['question:q2#0']);
+    const done = await send({
+      requestState: partial.result?.requestState,
+      inputResponses: { 'question:q2#0': { action: 'accept', content: { day: 'tue' } } },
+    });
+
+    expect(done.result?.isError).toBeFalsy();
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(resume.mock.calls[0]?.[2]).toMatchObject({
+      decisions: { c1: { approved: true } },
+      responses: { 'q1#0': { ok: true }, 'q2#0': { day: 'tue' } },
+    });
+  });
+});

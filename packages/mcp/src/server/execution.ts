@@ -63,9 +63,11 @@ export class CallExecution {
   readonly controller = new AbortController();
   private readonly queue: ExecutionStep[] = [];
   private waiter: ((step: ExecutionStep) => void) | undefined;
-  private waiting:
-    | { key: string; request: MCPElicitRequest; resolve: (answer: MCPElicitResult) => void }
-    | undefined;
+  /** The questions the run waits on, by key, in the order it asked them */
+  private readonly waiting = new Map<
+    string,
+    { request: MCPElicitRequest; resolve: (answer: MCPElicitResult) => void }
+  >();
   private askedCount = 0;
   private expiry: ReturnType<typeof setTimeout> | undefined;
   private done = false;
@@ -116,7 +118,7 @@ export class CallExecution {
    * or when another round already waits on it
    */
   next(): Promise<ExecutionStep> {
-    const step = this.queue.shift();
+    const step = this.shift();
     if (step) return Promise.resolve(step);
     const refused = this.refusal();
     if (refused) return Promise.reject(refused);
@@ -127,7 +129,7 @@ export class CallExecution {
 
   /** What the run came to next within `ms`, undefined when it is still on its way */
   nextWithin(ms: number): Promise<ExecutionStep | undefined> {
-    const step = this.queue.shift();
+    const step = this.shift();
     if (step) return Promise.resolve(step);
     const refused = this.refusal();
     if (refused) return Promise.reject(refused);
@@ -150,23 +152,29 @@ export class CallExecution {
     return undefined;
   }
 
-  /** The question the run waits on, if it waits on one */
+  /** The first question the run waits on, if it waits on one */
   get question(): { key: string; request: MCPElicitRequest } | undefined {
-    return this.waiting && { key: this.waiting.key, request: this.waiting.request };
+    const first = this.waiting.entries().next();
+    return first.done ? undefined : { key: first.value[0], request: first.value[1].request };
   }
 
   get finished(): boolean {
     return this.done;
   }
 
-  /** Answers the question the run waits on; false when it waits on none */
-  respond(answer: MCPElicitResult): boolean {
-    const waiting = this.waiting;
+  /** Answers the question of `key`; false when the run does not wait on it */
+  respond(key: string, answer: MCPElicitResult): boolean {
+    const waiting = this.waiting.get(key);
     if (!waiting) return false;
-    this.waiting = undefined;
-    this.clearExpiry();
+    this.waiting.delete(key);
+    if (this.waiting.size === 0) this.clearExpiry();
     waiting.resolve(answer);
     return true;
+  }
+
+  /** Answers every question the run waits on with `answer`, such as a dismissal */
+  respondAll(answer: MCPElicitResult): void {
+    for (const key of [...this.waiting.keys()]) this.respond(key, answer);
   }
 
   /**
@@ -177,7 +185,7 @@ export class CallExecution {
     this.clearExpiry();
     this.expiry = setTimeout(() => {
       this.expiry = undefined;
-      this.respond({ action: 'cancel' });
+      this.respondAll({ action: 'cancel' });
       onExpire();
     }, ttlMs);
     this.expiry.unref?.();
@@ -187,16 +195,24 @@ export class CallExecution {
   cancel(reason?: unknown): void {
     this.clearExpiry();
     this.controller.abort(reason);
-    this.respond({ action: 'cancel' });
+    this.respondAll({ action: 'cancel' });
   }
 
   private ask(request: MCPElicitRequest): Promise<MCPElicitResult> {
     if (this.controller.signal.aborted) return Promise.resolve({ action: 'cancel' });
     return new Promise((resolve) => {
       const key = `elicit:${++this.askedCount}`;
-      this.waiting = { key, request, resolve };
+      this.waiting.set(key, { request, resolve });
       this.push({ kind: 'ask', key, request });
     });
+  }
+
+  /** The next step in the queue, past questions answered while they waited in it */
+  private shift(): ExecutionStep | undefined {
+    for (;;) {
+      const step = this.queue.shift();
+      if (step?.kind !== 'ask' || this.waiting.has(step.key)) return step;
+    }
   }
 
   private finish(step: ExecutionStep): void {
