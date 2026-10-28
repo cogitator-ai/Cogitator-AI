@@ -109,6 +109,36 @@ describe('a call whose run pauses on a server question', () => {
     ]);
   });
 
+  it('lets the run interrupt through unchanged, even when its question mentions a connection', async () => {
+    const { survey } = surveyTool();
+    const url = await serveTools([survey]);
+    const client = await connect(url);
+    class ToolInterruptSignal extends Error {
+      constructor(readonly interrupt: { message: string }) {
+        super(`Tool "survey" waits for an answer: ${interrupt.message}`);
+        this.name = 'ToolInterruptSignal';
+      }
+    }
+    const signal = new ToolInterruptSignal({
+      message: 'Should the closed connection be reopened?',
+    });
+    const reconnect = vi.spyOn(client, 'reconnect');
+    await expect(
+      client.callTool(
+        'survey',
+        { room: 'blue' },
+        {
+          toolCallId: 'tc-signal',
+          interrupt: async () => {
+            throw signal;
+          },
+        }
+      )
+    ).rejects.toBe(signal);
+    expect(reconnect).not.toHaveBeenCalled();
+    expect(client.isConnected()).toBe(true);
+  });
+
   it('calls anew for other arguments, and once the kept round expired', async () => {
     const { survey, runs } = surveyTool();
     const url = await serveTools([survey]);

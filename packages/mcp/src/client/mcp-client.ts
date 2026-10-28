@@ -145,7 +145,17 @@ function isRequestTimeout(error: unknown): boolean {
   return error instanceof SdkError && error.code === SdkErrorCode.RequestTimeout;
 }
 
+/**
+ * Whether `error` is the signal `context.interrupt()` throws to pause the calling run (core's
+ * `ToolInterruptSignal`, recognized by shape so the client does not load core). It must reach the
+ * run unchanged: its message is the question, which may well say "connection" or "closed"
+ */
+function isRunInterrupt(error: unknown): boolean {
+  return error instanceof Error && error.name === 'ToolInterruptSignal' && 'interrupt' in error;
+}
+
 function isConnectionError(error: unknown): boolean {
+  if (isRunInterrupt(error)) return false;
   if (error instanceof SdkError) {
     return (
       error.code === SdkErrorCode.ConnectionClosed ||
@@ -169,6 +179,7 @@ function isConnectionError(error: unknown): boolean {
 }
 
 function isRetryableError(error: unknown): boolean {
+  if (isRunInterrupt(error)) return false;
   if (error instanceof MCPToolError || error instanceof ProtocolError) return false;
   if (error instanceof SdkError) {
     return isConnectionError(error) || error.code === SdkErrorCode.RequestTimeout;
@@ -525,6 +536,7 @@ export class MCPClient {
         this.config.onReconnected?.();
         return;
       } catch (error) {
+        if (isRunInterrupt(error)) throw error;
         lastError = error instanceof Error ? error : new Error(String(error));
         this.prior = undefined;
 
@@ -965,7 +977,7 @@ export class MCPClient {
     try {
       return await operation();
     } catch (error) {
-      if (error instanceof MCPToolError) throw error;
+      if (error instanceof MCPToolError || isRunInterrupt(error)) throw error;
       if (isConnectionError(error)) {
         this.connected = false;
         throw new MCPToolInterruptedError(toolName, 'connection-lost', error);
