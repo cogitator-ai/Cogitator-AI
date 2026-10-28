@@ -407,6 +407,25 @@ describe('a server that sets visibility on tools without an app, and part of _me
     await expect(app?.callTool?.('archive_board', {})).rejects.toThrow('not open to apps');
   });
 
+  it('gives an app the content blocks the server sent, a resource link as one', async () => {
+    const app = await client.getToolApp('show_board');
+    await expect(app?.callTool?.('link_card', {})).resolves.toEqual({
+      content: [
+        {
+          type: 'resource_link',
+          uri: 'file:///cards/todo.md',
+          name: 'todo.md',
+          mimeType: 'text/markdown',
+          description: 'The card',
+          _meta: { board: 'main' },
+        },
+      ],
+    });
+    await expect(client.callTool('link_card', {})).resolves.toBe(
+      'Resource: file:///cards/todo.md (todo.md), text/markdown'
+    );
+  });
+
   it('keeps a structured result that is no object, in the { result } container', async () => {
     const app = await client.getToolApp('show_board');
     await expect(app?.callTool?.('list_cards', {})).resolves.toMatchObject({

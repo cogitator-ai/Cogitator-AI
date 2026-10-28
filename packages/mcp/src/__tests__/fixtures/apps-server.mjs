@@ -40,6 +40,26 @@ serveStdio(() => {
     async () => ({ content: [{ type: 'text', text: 'moved' }] })
   );
   server.registerTool(
+    'link_card',
+    {
+      description: 'Links the card file, for the board page only',
+      inputSchema: z.object({}),
+      _meta: { ui: { visibility: ['app'] } },
+    },
+    async () => ({
+      content: [
+        {
+          type: 'resource_link',
+          uri: 'file:///cards/todo.md',
+          name: 'todo.md',
+          mimeType: 'text/markdown',
+          description: 'The card',
+          _meta: { board: 'main' },
+        },
+      ],
+    })
+  );
+  server.registerTool(
     'list_cards',
     {
       description: 'Lists the cards, for the board page only',

@@ -1249,7 +1249,8 @@ export class MCPClient {
   /**
    * Calls the server's tool `name` for one of its apps, as MCP Apps allows: only a tool visible to
    * apps (`_meta.ui.visibility` with `app`, or none). The result comes back as the server sent it,
-   * an error of the tool as `isError`. A `structuredContent` that is no object (an array, a string,
+   * its content blocks too (a `resource_link` stays one, with its `_meta` and annotations), an
+   * error of the tool as `isError`. A `structuredContent` that is no object (an array, a string,
    * a number, `null`) comes as `{ result: value }`, the container the MCP SDK puts such a value in
    * for clients that read objects only, as apps built on older SDKs do
    *
@@ -1269,8 +1270,9 @@ export class MCPClient {
       () => this.callToolResult(name, args, options.signal ? { signal: options.signal } : {}),
       name
     );
+    const content = serverContent.get(result) ?? result.content;
     return {
-      content: result.content.map((block) => ({ ...block })),
+      content: content.map((block) => structuredClone(block)),
       ...(result.structuredContent !== undefined && {
         structuredContent: appStructuredContent(result.structuredContent),
       }),
@@ -1387,14 +1389,22 @@ function isMCPOAuthProvider(value: OAuthClientProvider | undefined): value is MC
 
 type SDKToolContent = CallToolResult['content'][number];
 
+/**
+ * The content blocks a tool result came with, as the server sent them, for its apps: the
+ * `content` of an `MCPToolCallResult` is what the model reads, a `resource_link` as a line of text
+ */
+const serverContent = new WeakMap<MCPToolCallResult, readonly SDKToolContent[]>();
+
 function toCallResult(result: CallToolResult): MCPToolCallResult & { toolResult?: unknown } {
-  const content = toToolContent(Array.isArray(result.content) ? result.content : []);
-  return {
-    content,
+  const blocks = Array.isArray(result.content) ? result.content : [];
+  const call = {
+    content: toToolContent(blocks),
     ...(result.structuredContent !== undefined && { structuredContent: result.structuredContent }),
     ...(result.isError === true && { isError: true }),
     ...('toolResult' in result && { toolResult: result.toolResult }),
   };
+  serverContent.set(call, blocks);
+  return call;
 }
 
 /** What `callTool` returns for a tool result */
