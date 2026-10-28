@@ -19,12 +19,14 @@ No need to run it manually — the example spawns it automatically via stdio tra
 
 ## Examples
 
-| #   | File                        | Description                                                                             |
-| --- | --------------------------- | --------------------------------------------------------------------------------------- |
-| 01  | `01-mcp-client.ts`          | Connect to MCP server, discover tools, use with an agent                                |
-| 02  | `02-mcp-server.ts`          | Expose Cogitator tools over HTTP, call them from an MCP client and an agent             |
-| 03  | `03-per-user-mcp.ts`        | An agent on your own MCP server: bearer tokens, tools acting per user, thread isolation |
-| 04  | `04-agent-as-mcp-server.ts` | Serve a Cogitator agent as an MCP tool in one line (Claude Desktop, Cursor, any client) |
+| #   | File                         | Description                                                                                                                 |
+| --- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 01  | `01-mcp-client.ts`           | Connect to MCP server, discover tools, use with an agent                                                                    |
+| 02  | `02-mcp-server.ts`           | Expose Cogitator tools over HTTP, call them from an MCP client and an agent                                                 |
+| 03  | `03-per-user-mcp.ts`         | An agent on your own MCP server: bearer tokens, tools acting per user, thread isolation                                     |
+| 04  | `04-agent-as-mcp-server.ts`  | Serve a Cogitator agent as an MCP tool in one line (Claude Desktop, Cursor, any client)                                     |
+| 05  | `05-mcp-rounds-and-tasks.ts` | MCP 2026-07-28: approvals as multi round-trip requests, a long call as a task, structured results of any shape (no API key) |
+| 06  | `06-mcp-oauth.ts`            | OAuth 2.1 against a local authorization server, the client registered by its Client ID Metadata Document (no API key)       |
 
 ## Running
 
@@ -33,4 +35,6 @@ npx tsx examples/mcp/01-mcp-client.ts
 npx tsx examples/mcp/02-mcp-server.ts
 npx tsx examples/mcp/03-per-user-mcp.ts
 npx tsx examples/mcp/04-agent-as-mcp-server.ts
+npx tsx examples/mcp/05-mcp-rounds-and-tasks.ts
+npx tsx examples/mcp/06-mcp-oauth.ts
 ```

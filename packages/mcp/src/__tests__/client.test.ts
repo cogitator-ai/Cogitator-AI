@@ -1,8 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MCPClient, connectMCPServer } from '../client/mcp-client';
 
-vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
+vi.mock('@modelcontextprotocol/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@modelcontextprotocol/client')>();
   class Client {
+    onclose?: () => void;
+    setRequestHandler = vi.fn();
+    setNotificationHandler = vi.fn();
+    getNegotiatedProtocolVersion = vi.fn().mockReturnValue('2025-11-25');
+    getDiscoverResult = vi.fn().mockReturnValue(undefined);
+    getInstructions = vi.fn().mockReturnValue(undefined);
     connect = vi.fn().mockResolvedValue(undefined);
     close = vi.fn().mockResolvedValue(undefined);
     getServerCapabilities = vi.fn().mockReturnValue({
@@ -53,7 +60,7 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
       messages: [{ role: 'user', content: { type: 'text', text: 'Hello' } }],
     });
   }
-  return { Client };
+  return { ...actual, Client };
 });
 
 vi.mock('../client/transports', () => ({

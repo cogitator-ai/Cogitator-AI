@@ -158,7 +158,7 @@ describe('cogitatorToMCP metadata', () => {
     });
   });
 
-  it('leaves out an output schema whose root is not an object', () => {
+  it('exports an output schema whose root is not an object (protocol 2026-07-28)', () => {
     const exported = cogitatorToMCP(
       tool({
         name: 'count',
@@ -168,13 +168,13 @@ describe('cogitatorToMCP metadata', () => {
         execute: async () => 3,
       })
     );
-    expect(exported.outputSchema).toBeUndefined();
+    expect(exported.outputSchema).toMatchObject({ type: 'number' });
     expect(exported.title).toBeUndefined();
     expect(exported.annotations).toBeUndefined();
   });
 });
 
-describe('output schemas MCP cannot carry', () => {
+describe('output schemas of any shape', () => {
   const scores = tool({
     name: 'scores',
     description: 'Scores by player',
@@ -183,28 +183,18 @@ describe('output schemas MCP cannot carry', () => {
     execute: async (): Promise<Record<string, number>> => ({ ann: 3 }),
   });
 
-  it('cogitatorToMCP leaves out a record output schema, as MCPServer does', () => {
-    expect(cogitatorToMCP(scores).outputSchema).toBeUndefined();
+  it('cogitatorToMCP keeps a record output schema', () => {
+    expect(cogitatorToMCP(scores).outputSchema).toMatchObject({
+      type: 'object',
+      additionalProperties: { type: 'number' },
+    });
   });
 
-  it('MCPServer says it does not advertise it', () => {
+  it('MCPServer registers it without a warning', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const server = new MCPServer({ name: 's', version: '1.0.0', transport: 'stdio' });
       server.registerTool(scores as Tool);
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('"scores" is not a z.object() schema')
-      );
-
-      warn.mockClear();
-      server.registerTool(
-        tool({
-          name: 'plain',
-          description: 'No output schema',
-          parameters: z.object({}),
-          execute: async () => 1,
-        }) as Tool
-      );
       expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
@@ -301,7 +291,16 @@ describe('MCPServer tool metadata over HTTP', () => {
     });
     expect(byName.get('drop_table')?.annotations).toEqual({ destructiveHint: true });
     expect(byName.get('drop_table')?.title).toBeUndefined();
-    expect(byName.get('count')?.outputSchema).toBeUndefined();
+    expect(byName.get('count')?.outputSchema).toMatchObject({ type: 'number' });
+  });
+
+  it('sends a structured result of any JSON value and reads it back', async () => {
+    await expect(client.callTool('count', {})).resolves.toBe(3);
+    const imported = new Map((await client.getTools()).map((t) => [t.name, t]));
+    expect(imported.get('count')?.outputSchema?.safeParse(4)).toEqual(
+      expect.objectContaining({ success: true })
+    );
+    expect(imported.get('count')?.toJSON().outputSchema).toMatchObject({ type: 'number' });
   });
 
   it('returns structured content with its JSON as text', async () => {

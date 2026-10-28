@@ -140,7 +140,7 @@ On resume the tool runs again from its start, and this time `interrupt()` return
 | `details`        | More to show: the plan of a `plan`, the usage of a `budget`, what a tool passed                                                                                                                                                       |
 | `response`       | The answer, once given, kept in the checkpoint                                                                                                                                                                                        |
 
-The shape maps one to one to AG-UI interrupts, ACP elicitation and MCP input requests.
+The shape maps one to one to AG-UI interrupts, ACP elicitation and MCP input requests. A tool imported from an MCP server of protocol 2026-07-28 asks this way when the server needs input: the interrupt carries the server's elicitation form (`reason: 'mcp_elicitation'`, or `mcp_elicitation_url` for a page to open, `details` naming the server and tool), and the resumed run sends the answer to the server.
 
 `resume()` checks each answer before the run goes on: an answer to an interrupt the run does not wait on, or one already answered fails with `VALIDATION_ERROR`, one that does not match its `responseSchema` with `INTERRUPT_ANSWER_INVALID` (HTTP 400, `details.interruptId`, the run still waits), an answer after `expiresAt` with `INTERRUPT_EXPIRED` (HTTP 410). Interrupts left out keep the run paused. A new message on the thread instead of an answer answers the waiting call with "The user moved on without answering", as it declines a waiting approval.
 
@@ -168,7 +168,7 @@ Code that decides approvals and resumes on its own stops at a pause on questions
 
 - A workflow `agentNode`, a swarm turn and a queued workflow job fail with `AgentRunPausedError`, the questions in `error.interrupts` and the `checkpoint` to resume. `JobQueue.resumeAgentJob(config, paused, { responses })` answers a paused agent job.
 - The [Gateway](/docs/channels/gateway) asks the question in the chat and takes the user's next message as the answer, the voice runner says it and takes the caller's next turn.
-- A2A tasks wait in `input-required` with an `interrupt-request` part, MCP servers ask through elicitation, and the OpenAI-compatible APIs, Cogitator Studio and delegated `agentAsTool` runs end with an error that names the questions.
+- A2A tasks wait in `input-required` with an `interrupt-request` part, MCP servers ask through elicitation (for 2026-07-28 clients with the answer of a round, the run resuming on the next one), and the OpenAI-compatible APIs, Cogitator Studio and delegated `agentAsTool` runs end with an error that names the questions.
 
 ### Over HTTP
 
