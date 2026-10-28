@@ -9,6 +9,8 @@ import type { Message } from './message';
 import type { PermissionMode } from './permissions';
 import type { Tool } from './tool';
 import type {
+  DelegatedRunStart,
+  DelegatedRunStream,
   RunCheckpoint,
   RunOptions,
   RunResult,
@@ -260,6 +262,15 @@ export interface ToolDelegationContext {
   resume?: DelegatedResume;
   /** How many runs delegated down to this one: 0 for a run nobody delegated to */
   depth: number;
+  /**
+   * Opens the stream of the run this call delegates to, when the run hears of delegated runs
+   * (`RunOptions.onDelegatedRun`): the callbacks to spread into the delegated run's options,
+   * `onDelegatedRun` among them so the runs it delegates in turn are heard of too. Call it once
+   * per delegated run, as it starts or resumes
+   */
+  stream?: (
+    run: Pick<DelegatedRunStart, 'agent' | 'taskId' | 'threadId' | 'background'>
+  ) => DelegatedRunStream | undefined;
 }
 
 /** A command, as the frontmatter and the body of its Markdown file define it */

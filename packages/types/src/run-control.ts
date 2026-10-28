@@ -5,7 +5,7 @@
 
 import type { ZodType } from 'zod';
 import type { MessageContent } from './message';
-import type { RunOptions, RunResult } from './runtime';
+import type { ResumeOptions, RunOptions, RunResult } from './runtime';
 import type { PermissionMode } from './permissions';
 
 /**
@@ -58,6 +58,10 @@ export type StartOptions<TDeps = unknown> = RunOptions<TDeps> & {
   /** Hears of each queued message the run's input checks refused, see {@link RunHandle.refused} */
   onRefusedMessage?: (refused: RefusedRunMessage) => void;
 };
+
+/** The options of `cogitator.startResume()`: those of `resume()` and the queue of `start()` */
+export type StartResumeOptions<TDeps = unknown> = ResumeOptions<TDeps> &
+  Pick<StartOptions<TDeps>, 'queue' | 'onRefusedMessage'>;
 
 /**
  * A run going on, as `cogitator.start()` returns it. Each message it delivers becomes a user
