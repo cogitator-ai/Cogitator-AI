@@ -146,6 +146,11 @@ export interface TurnStartOptions {
   after?: Promise<unknown>;
   /** Who started the turn, so {@link SessionHost.interruptOwned} stops only its turns */
   owner?: object;
+  /**
+   * Aborts when whoever asked for the turn went away: a review still reading its changes then
+   * never starts
+   */
+  signal?: AbortSignal;
 }
 
 export type SessionHostListener = (notification: AppServerNotification) => void;
@@ -202,6 +207,10 @@ export class SessionHost {
   private readonly listeners = new Set<SessionHostListener>();
   private readonly active = new Map<string, TurnRecord>();
   private readonly traces = new Map<string, TurnTrace>();
+  /** Thread ids `thread/start` is creating, so a second start of one is refused at once */
+  private readonly startingThreads = new Set<string>();
+  /** Starts still preparing (a review reading its changes), by who asked for them */
+  private readonly preparing = new Map<object | undefined, Set<Promise<unknown>>>();
   private readonly running = new Set<Promise<void>>();
   private readonly closing = new AbortController();
   private readonly reviewContext: ReviewContextReader;
@@ -296,10 +305,28 @@ export class SessionHost {
   async startThread(params: ThreadStartParams): Promise<ThreadInfo> {
     const name = params.agent ?? this.defaultAgentName;
     const agent = this.agentNamed(name);
-    const memory = await this.requireMemory();
-    if (params.threadId !== undefined && (await this.findThread(params.threadId))) {
-      throw invalidParams(`Thread ${params.threadId} exists already: resume it instead`);
+    const requested = params.threadId;
+    if (requested === undefined) return this.createThread(params, name, agent);
+    if (this.startingThreads.has(requested)) {
+      throw invalidParams(`Thread ${requested} exists already: resume it instead`);
     }
+    this.startingThreads.add(requested);
+    try {
+      if (await this.findThread(requested)) {
+        throw invalidParams(`Thread ${requested} exists already: resume it instead`);
+      }
+      return await this.createThread(params, name, agent);
+    } finally {
+      this.startingThreads.delete(requested);
+    }
+  }
+
+  private async createThread(
+    params: ThreadStartParams,
+    name: string,
+    agent: Agent
+  ): Promise<ThreadInfo> {
+    const memory = await this.requireMemory();
     const thread = this.unwrap(
       await memory.createThread(
         memoryAgentId(agent),
@@ -455,9 +482,16 @@ export class SessionHost {
    * Reviews changes in a review thread of their own, made for the review: returns the review
    * turn in progress, whose `turn/completed` carries the findings as `review`
    */
-  async startReview(
+  startReview(
     params: ReviewStartParams,
     options: TurnStartOptions = {}
+  ): Promise<{ turn: TurnInfo; reviewThreadId: string }> {
+    return this.prepared(options.owner, this.prepareReview(params, options));
+  }
+
+  private async prepareReview(
+    params: ReviewStartParams,
+    options: TurnStartOptions
   ): Promise<{ turn: TurnInfo; reviewThreadId: string }> {
     const source = await this.requireThread(params.threadId);
     const memory = await this.requireMemory();
@@ -471,6 +505,7 @@ export class SessionHost {
         error instanceof Error ? error.message : String(error)
       );
     }
+    this.refuseCancelled(options);
     const agent = this.reviewAgent(source, params.model);
     const reviewThreadId = `review_${randomUUID()}`;
     const thread = this.unwrap(
@@ -485,7 +520,9 @@ export class SessionHost {
         reviewThreadId
       )
     );
-    this.emit({ method: 'thread/started', params: { thread: await this.threadInfo(thread) } });
+    const info = await this.threadInfo(thread);
+    this.refuseCancelled(options);
+    this.emit({ method: 'thread/started', params: { thread: info } });
     const turn = this.reserve(reviewThreadId, options.owner);
     this.launch(
       turn,
@@ -517,6 +554,7 @@ export class SessionHost {
 
   /** Stops the turns `owner` started, such as a client that went away, and waits for them */
   async interruptOwned(owner: object): Promise<void> {
+    await Promise.allSettled([...(this.preparing.get(owner) ?? [])]);
     const owned = [...this.active.values()].filter((turn) => turn.owner === owner);
     for (const turn of owned) this.interrupt(turn);
     await Promise.all(owned.map((turn) => turn.done));
@@ -610,12 +648,37 @@ export class SessionHost {
   /** Stops every turn and waits for them, then stops reporting memory changes */
   async close(): Promise<void> {
     if (!this.closing.signal.aborted) this.closing.abort(new Error('The app-server host closed'));
+    await Promise.allSettled([...this.preparing.values()].flatMap((starts) => [...starts]));
     for (const turn of this.active.values()) this.interrupt(turn);
     await Promise.all([...this.running]);
     this.stopLog?.();
     this.stopLog = undefined;
     this.listeners.clear();
     this.traces.clear();
+  }
+
+  /** `start`, kept among the starts `owner` waits for until it settles */
+  private prepared<T>(owner: object | undefined, start: Promise<T>): Promise<T> {
+    let starts = this.preparing.get(owner);
+    if (!starts) {
+      starts = new Set();
+      this.preparing.set(owner, starts);
+    }
+    const kept = starts;
+    kept.add(start);
+    const forget = () => {
+      kept.delete(start);
+      if (kept.size === 0 && this.preparing.get(owner) === kept) this.preparing.delete(owner);
+    };
+    start.then(forget, forget);
+    return start;
+  }
+
+  /** Refuses a start whose client went away, or of a host that closed, while it prepared */
+  private refuseCancelled(options: TurnStartOptions): void {
+    if (this.closing.signal.aborted || options.signal?.aborted) {
+      throw runtimeError('CANCELLED', 'The turn was cancelled before it started');
+    }
   }
 
   /** A new trace for a turn, forgetting the oldest turn past {@link MAX_TRACED_TURNS} */

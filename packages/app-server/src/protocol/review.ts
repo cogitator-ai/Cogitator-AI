@@ -1,17 +1,20 @@
 import { z } from 'zod';
 
+/** A git revision a client names: never one that starts with `-`, which git reads as an option */
+const RevisionSchema = z.string().min(1).regex(/^[^-]/, 'A revision must not start with "-"');
+
 export const ReviewTargetSchema = z
   .discriminatedUnion('type', [
     z
       .object({ type: z.literal('uncommittedChanges') })
       .describe('The staged, unstaged and untracked changes of the working tree'),
     z
-      .object({ type: z.literal('baseBranch'), branch: z.string().min(1) })
+      .object({ type: z.literal('baseBranch'), branch: RevisionSchema })
       .describe('The changes of the current branch against `branch`'),
     z
       .object({
         type: z.literal('commit'),
-        sha: z.string().min(1),
+        sha: RevisionSchema,
         title: z.string().optional(),
       })
       .describe('The changes of one commit'),

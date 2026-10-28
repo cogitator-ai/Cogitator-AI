@@ -31,6 +31,7 @@ export {
   MAX_REVIEW_CHANGES_CHARS,
   REVIEW_INSTRUCTIONS,
   gitReviewContext,
+  resolveCommit,
   reviewPrompt,
   type ReviewContextReader,
 } from './host/review.js';

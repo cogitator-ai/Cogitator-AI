@@ -338,6 +338,40 @@ describe('app-server', () => {
     await host.close();
   });
 
+  it('drops a review whose connection closed while it read its changes', async () => {
+    const scripted = scriptedBackend([answer('{}')]);
+    let release = () => undefined as void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { host, notifications } = createTestHost({
+      backend: scripted.backend,
+      review: {
+        context: async () => {
+          await gate;
+          return 'diff';
+        },
+      },
+    });
+    const { client, connection } = connectClient(host);
+    await initialize(client);
+    const { thread } = await client.threadStart();
+    const review = client.reviewStart({
+      threadId: thread.id,
+      target: { type: 'custom', instructions: 'x' },
+    });
+    review.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const closing = connection.close();
+    release();
+    await closing;
+    expect(notifications.some((n) => n.method === 'turn/started')).toBe(false);
+    expect(scripted.requests).toHaveLength(0);
+    const threads = await host.listThreads({});
+    expect(threads.threads.map((t) => t.id)).toEqual([thread.id]);
+    await host.close();
+  });
+
   it('leaves out the notifications the client opted out of', async () => {
     const { host } = createTestHost({ backend: scriptedBackend([answer('x')]).backend });
     const { client, lines } = connectClient(host);

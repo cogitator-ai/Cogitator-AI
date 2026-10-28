@@ -58,9 +58,26 @@ async function untrackedFiles(cwd: string): Promise<string> {
 }
 
 /**
+ * The commit `revision` names in the repository at `cwd`, as its full object id. A revision that
+ * starts with `-` is refused before git sees it, so it can never be read as an option, and
+ * `--end-of-options` keeps git from reading it as one too
+ */
+export async function resolveCommit(cwd: string, revision: string): Promise<string> {
+  if (revision.trim() === '' || revision.startsWith('-')) {
+    throw new Error(`Not a revision: ${JSON.stringify(revision)}`);
+  }
+  const oid = (
+    await git(cwd, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${revision}^{commit}`])
+  ).trim();
+  if (!/^[0-9a-f]{40,64}$/.test(oid)) throw new Error(`Not a commit: ${JSON.stringify(revision)}`);
+  return oid;
+}
+
+/**
  * Reads the changes of a target from the git repository at `cwd`: the working tree against
- * HEAD with the untracked files, the branch since it left `branch`, or one commit. A custom
- * target reads nothing
+ * HEAD with the untracked files, the branch since it left `branch`, or one commit. The branch and
+ * the commit are resolved to object ids first (see {@link resolveCommit}), so what a client sends
+ * never reaches git as an option. A custom target reads nothing
  */
 export function gitReviewContext(cwd: string): ReviewContextReader {
   return async (target) => {
@@ -71,11 +88,14 @@ export function gitReviewContext(cwd: string): ReviewContextReader {
         return [diff.trim(), untracked].filter((part) => part !== '').join('\n\n');
       }
       case 'baseBranch': {
-        const base = (await git(cwd, ['merge-base', 'HEAD', target.branch])).trim();
-        return git(cwd, ['diff', base, '--no-color']);
+        const branch = await resolveCommit(cwd, target.branch);
+        const base = (await git(cwd, ['merge-base', 'HEAD', branch])).trim();
+        return git(cwd, ['diff', '--no-color', base, '--']);
       }
-      case 'commit':
-        return git(cwd, ['show', '--no-color', '--format=commit %H%n%n%B', target.sha]);
+      case 'commit': {
+        const oid = await resolveCommit(cwd, target.sha);
+        return git(cwd, ['show', '--no-color', '--format=commit %H%n%n%B', oid, '--']);
+      }
       case 'custom':
         return '';
     }

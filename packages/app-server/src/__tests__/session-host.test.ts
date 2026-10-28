@@ -623,6 +623,50 @@ describe('SessionHost', () => {
     await host.close();
   });
 
+  it('creates a thread once when two starts name the same id at once', async () => {
+    const { host } = createTestHost({ backend: scriptedBackend([answer('x')]).backend });
+    const results = await Promise.allSettled([
+      host.startThread({ threadId: 'same', metadata: { from: 'a' } }),
+      host.startThread({ threadId: 'same', metadata: { from: 'b' } }),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const refused = results.find((r) => r.status === 'rejected');
+    expect(refused?.status === 'rejected' && refused.reason).toMatchObject({
+      code: APP_SERVER_ERROR_CODES.invalidParams,
+    });
+    const kept = (await host.resumeThread('same')).thread.metadata.from;
+    const won = results.find((r) => r.status === 'fulfilled');
+    expect(won?.status === 'fulfilled' && won.value.metadata.from).toBe(kept);
+    await host.startThread({ threadId: 'free-again' });
+    await host.close();
+  });
+
+  it('drops a review whose host closed while it read its changes', async () => {
+    const scripted = scriptedBackend([answer('{}')]);
+    const gate = deferred();
+    const { host, notifications } = createTestHost({
+      backend: scripted.backend,
+      review: {
+        context: async () => {
+          await gate.promise;
+          return 'diff';
+        },
+      },
+    });
+    const thread = await host.startThread({});
+    const review = host.startReview({
+      threadId: thread.id,
+      target: { type: 'uncommittedChanges' },
+    });
+    const closed = host.close();
+    gate.resolve();
+    const error = await rejection(review);
+    expect(error.data).toEqual({ code: 'CANCELLED' });
+    await closed;
+    expect(notifications.some((n) => n.method === 'turn/started')).toBe(false);
+    expect(scripted.requests).toHaveLength(0);
+  });
+
   it('names what does not exist', async () => {
     const { host } = createTestHost({ backend: scriptedBackend([answer('x')]).backend });
     expect((await rejection(host.resumeThread('ghost'))).data).toEqual({

@@ -260,6 +260,7 @@ export class AppServerConnection {
       return await start({
         after,
         owner: this,
+        signal: this.asking.signal,
         ...(this.client?.capabilities?.approvals === 'request' && {
           onApproval: (ask: ApprovalAsk) => this.askApproval(ask),
         }),
