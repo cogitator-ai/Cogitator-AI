@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { lstat, readFile, readlink } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { ReviewTarget } from '../protocol/types.js';
 
@@ -7,6 +7,9 @@ import type { ReviewTarget } from '../protocol/types.js';
 export const MAX_REVIEW_CHANGES_CHARS = 200_000;
 
 const MAX_UNTRACKED_FILE_CHARS = 20_000;
+
+/** Untracked files larger than this are listed without their content */
+const MAX_UNTRACKED_FILE_BYTES = 1024 * 1024;
 
 /** The instructions of the agent that reviews */
 export const REVIEW_INSTRUCTIONS = `You review code changes the way a careful senior engineer does before a merge.
@@ -47,7 +50,17 @@ async function untrackedFiles(cwd: string): Promise<string> {
   const paths = listed.split('\0').filter((path) => path !== '');
   const parts: string[] = [];
   for (const path of paths) {
-    const content = await readFile(resolve(cwd, path), 'utf8').catch(() => undefined);
+    const full = resolve(cwd, path);
+    const info = await lstat(full).catch(() => undefined);
+    if (info?.isSymbolicLink()) {
+      const target = await readlink(full).catch(() => undefined);
+      parts.push(target === undefined ? `New symlink ${path}` : `New symlink ${path} -> ${target}`);
+      continue;
+    }
+    const content =
+      info?.isFile() && info.size <= MAX_UNTRACKED_FILE_BYTES
+        ? await readFile(full, 'utf8').catch(() => undefined)
+        : undefined;
     parts.push(
       content === undefined || content.includes('\0')
         ? `New file ${path} (not shown)`

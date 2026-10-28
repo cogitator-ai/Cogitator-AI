@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -37,6 +37,21 @@ describe('gitReviewContext', () => {
     expect(await resolveCommit(repo, 'HEAD')).toBe(head);
     expect(await read({ type: 'commit', sha: 'HEAD' })).toContain('+two');
     expect(await read({ type: 'baseBranch', branch: 'main' })).toContain('+two');
+  });
+
+  it('shows an untracked symlink as a link, never what it points to', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'app-server-review-outside-'));
+    try {
+      writeFileSync(join(outside, 'private.txt'), 'top secret');
+      symlinkSync(join(outside, 'private.txt'), join(repo, 'link.txt'));
+      writeFileSync(join(repo, 'plain.txt'), 'visible');
+      const context = await gitReviewContext(repo)({ type: 'uncommittedChanges' });
+      expect(context).toContain(`New symlink link.txt -> ${join(outside, 'private.txt')}`);
+      expect(context).toContain('visible');
+      expect(context).not.toContain('top secret');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('never lets a revision reach git as an option', async () => {
