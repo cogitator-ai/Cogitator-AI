@@ -45,15 +45,42 @@ export interface AcpCallSubject {
   args: Record<string, unknown>;
   /** Whether the call asks without a rule allowing it, whatever the mode says */
   needsApproval: boolean;
+  /**
+   * Whether an "always" answer may save a rule for it: not for a call the engine knows only by
+   * its kind (no tool name, no command, no paths), whose rule would name every such call
+   */
+  rememberable: boolean;
+  /** Whether the call leaves plan mode (`switch_mode`): it asks even in plan mode */
+  switchesMode?: boolean;
 }
 
 const COMMAND_TOOL = tool({
   name: 'run_command',
   description: 'A command an external agent runs',
-  parameters: z.object({ command: z.string(), cwd: z.string().optional() }),
-  access: { kind: 'command', command: ({ command }) => command, cwd: ({ cwd }) => cwd },
+  parameters: z.object({
+    command: z.string(),
+    cwd: z.string().optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  }),
+  access: {
+    kind: 'command',
+    command: ({ command }) => command,
+    cwd: ({ cwd }) => cwd,
+    env: ({ env }) => env,
+  },
   execute: async () => null,
 });
+
+/** The step that leaves plan mode, which the engine runs in plan mode only once a person agrees */
+const SWITCH_MODE_TOOL = tool({
+  name: 'exit_plan_mode',
+  description: 'An external agent leaving plan mode',
+  parameters: z.object({}).passthrough(),
+  requiresApproval: true,
+  execute: async () => null,
+});
+
+const PLAN_TOOLS: ReadonlySet<Tool> = new Set([SWITCH_MODE_TOOL]);
 
 const READ_TOOL = tool({
   name: 'read_file',
@@ -195,32 +222,51 @@ export function subjectOf(
 ): AcpCallSubject {
   const kind: ToolKind = call.kind ?? 'other';
   const paths = pathsOf(call, root);
+  const input =
+    call.rawInput !== null && typeof call.rawInput === 'object' && !Array.isArray(call.rawInput)
+      ? (call.rawInput as Record<string, unknown>)
+      : undefined;
   switch (kind) {
     case 'execute': {
       const command = commandOf(call);
-      if (command) return { tool: COMMAND_TOOL, args: { command }, needsApproval: true };
-      break;
+      if (!command) break;
+      const cwd = stringOf(input?.cwd);
+      const env = envOf(input?.env);
+      return {
+        tool: COMMAND_TOOL,
+        args: {
+          command,
+          ...(cwd !== undefined && { cwd: resolve(root, cwd) }),
+          ...(env && { env }),
+        },
+        needsApproval: true,
+        rememberable: true,
+      };
     }
     case 'read':
     case 'search':
-      if (paths.length > 0) return { tool: READ_TOOL, args: { paths }, needsApproval: false };
+      if (paths.length > 0) {
+        return { tool: READ_TOOL, args: { paths }, needsApproval: false, rememberable: true };
+      }
       if (kind === 'search') {
         return {
           tool: readOnlyTool(`acp__${ruleName(agent)}__search`),
           args: {},
           needsApproval: false,
+          rememberable: false,
         };
       }
       break;
     case 'edit':
     case 'delete':
     case 'move':
-      if (paths.length > 0) return { tool: EDIT_TOOL, args: { paths }, needsApproval: false };
+      if (paths.length > 0) {
+        return { tool: EDIT_TOOL, args: { paths }, needsApproval: false, rememberable: true };
+      }
       break;
     case 'fetch': {
-      const input = call.rawInput as Record<string, unknown> | undefined;
       const url = stringOf(input?.url);
-      if (url) return { tool: FETCH_TOOL, args: { url }, needsApproval: false };
+      if (url) return { tool: FETCH_TOOL, args: { url }, needsApproval: false, rememberable: true };
       break;
     }
     case 'think':
@@ -228,12 +274,44 @@ export function subjectOf(
         tool: readOnlyTool(`acp__${ruleName(agent)}__think`),
         args: {},
         needsApproval: false,
+        rememberable: false,
+      };
+    case 'switch_mode':
+      return {
+        tool: SWITCH_MODE_TOOL,
+        args: {},
+        needsApproval: true,
+        rememberable: false,
+        switchesMode: true,
       };
     default:
       break;
   }
-  const name = `acp__${ruleName(agent)}__${ruleName(call.name ?? kind)}`;
-  return { tool: otherTool(name), args: {}, needsApproval: true };
+  const named = stringOf(call.name);
+  const name = `acp__${ruleName(agent)}__${ruleName(named ?? kind)}`;
+  return {
+    tool: otherTool(name),
+    args: {},
+    needsApproval: true,
+    rememberable: named !== undefined,
+  };
+}
+
+/** The environment a call names, as `{ NAME: value }` or ACP's `[{ name, value }]` */
+export function envOf(value: unknown): Record<string, string> | undefined {
+  if (Array.isArray(value)) {
+    const entries = value.flatMap((entry): Array<[string, string]> => {
+      if (entry === null || typeof entry !== 'object') return [];
+      const { name, value: inner } = entry as { name?: unknown; value?: unknown };
+      return typeof name === 'string' && typeof inner === 'string' ? [[name, inner]] : [];
+    });
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+  }
+  if (value === null || typeof value !== 'object') return undefined;
+  const entries = Object.entries(value as Record<string, unknown>).filter(
+    (entry): entry is [string, string] => typeof entry[1] === 'string'
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 /**
@@ -297,11 +375,13 @@ export class AcpPermissions {
       workspace: this.workspace,
       cwd: resolve(this.root, this.workspace.cwd),
       projectRoot: this.root,
+      planTools: PLAN_TOOLS,
     });
   }
 
   /** The rule an "always" answer to a call saves, when one covers it */
   suggest(subject: AcpCallSubject): string | undefined {
+    if (!subject.rememberable) return undefined;
     return rememberableRules(subject.tool, subject.args, {
       workspace: this.workspace,
       cwd: resolve(this.root, this.workspace.cwd),

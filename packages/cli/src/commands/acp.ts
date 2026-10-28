@@ -105,6 +105,7 @@ export const acpCommand = new Command('acp')
         cogitator,
         agentInfo: { name: 'cogitator', title: 'Cogitator', version: cliVersion() },
         models: await offeredModels(model, options.models ?? [], config.llm?.providers?.ollama),
+        roots: [process.cwd()],
         authenticate: () => {
           if (model === undefined && !config.llm?.defaultModel) {
             throw RequestError.authRequired(

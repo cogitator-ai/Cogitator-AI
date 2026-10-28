@@ -434,6 +434,77 @@ describe('AcpAgent', () => {
       currentModeId: 'acceptEdits',
     });
     expect((await host.getThread(sessionId)).status).toBe('idle');
+    expect((await host.getThread(sessionId)).permissionMode).toBe('acceptEdits');
+    await acp.close();
+  });
+
+  it('cancels a prompt while it asks about the plan, without going on', async () => {
+    const scripted = scriptedBackend([
+      callTools([{ id: 'p1', name: 'exit_plan_mode', arguments: { plan: '1. Fix it' } }]),
+      answer('should not run'),
+    ]);
+    const { acp, host } = createTestAgent({
+      backend: scripted.backend,
+      config: { permissions: {} },
+    });
+    let sessionId = '';
+    const editor = connectClient(acp, {
+      onPermission: async (params) => {
+        await editor.agent.notify('session/cancel', { sessionId });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { outcome: { outcome: 'selected', optionId: params.options[0]!.optionId } };
+      },
+    });
+    await editor.initialize();
+    sessionId = (await editor.agent.request('session/new', { cwd: dir, mcpServers: [] })).sessionId;
+    await editor.agent.request('session/set_mode', { sessionId, modeId: 'plan' });
+    const response = await editor.agent.request('session/prompt', {
+      sessionId,
+      prompt: [{ type: 'text', text: 'plan it' }],
+    });
+    expect(response.stopReason).toBe('cancelled');
+    expect(scripted.requests).toHaveLength(1);
+    expect((await host.getThread(sessionId)).status).toBe('paused');
+    await acp.close();
+  });
+
+  it('ends a prompt as cancelled when its session closes', async () => {
+    const scripted = scriptedBackend([{ hold: true, first: 'working' }]);
+    const { acp } = createTestAgent({ backend: scripted.backend });
+    const editor = connectClient(acp);
+    await editor.initialize();
+    const { sessionId } = await editor.agent.request('session/new', { cwd: dir, mcpServers: [] });
+    const prompt = editor.agent.request('session/prompt', {
+      sessionId,
+      prompt: [{ type: 'text', text: 'wait' }],
+    });
+    await waitUntil(() => messageText(editor.updates(sessionId)) === 'working');
+    await editor.agent.request('session/close', { sessionId });
+    expect((await prompt).stopReason).toBe('cancelled');
+    await expect(
+      editor.agent.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'x' }] })
+    ).rejects.toMatchObject({ code: -32002 });
+    await acp.close();
+  });
+
+  it('refuses a session outside its roots', async () => {
+    const { acp, host } = createTestAgent({
+      backend: new MockLLMBackend(),
+      acp: { roots: [join(dir, 'project')] },
+    });
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(dir, 'project', 'src'), { recursive: true });
+    const editor = connectClient(acp);
+    await editor.initialize();
+    await expect(
+      editor.agent.request('session/new', { cwd: join(dir, 'elsewhere'), mcpServers: [] })
+    ).rejects.toThrow(/outside/);
+    expect((await host.listThreads({})).threads).toEqual([]);
+    const inside = await editor.agent.request('session/new', {
+      cwd: join(dir, 'project', 'src'),
+      mcpServers: [],
+    });
+    expect(inside.sessionId).toBeTruthy();
     await acp.close();
   });
 

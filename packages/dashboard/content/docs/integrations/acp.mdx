@@ -31,7 +31,7 @@ With the CLI there is nothing to write. In Zed's `settings.json`:
 }
 ```
 
-`cogitator acp` runs the `coding` [harness agent](/docs/core/harness-agent): workspace tools and a shell, a todo list, skills, subagents, commands and the project's instructions, on the model of `-m`, of `cogitator.yml` or of a local Ollama. Sessions live in `~/.cogitator/sessions.db`, so the editor can list, load and resume them across restarts.
+`cogitator acp` runs the `coding` [harness agent](/docs/core/harness-agent): workspace tools and a shell, a todo list, skills, subagents, commands and the project's instructions, on the model of `-m`, of `cogitator.yml` or of a local Ollama. Sessions live in `~/.cogitator/sessions.db`, so the editor can list, load and resume them across restarts. It works in the project it is launched in, where its settings, commands, subagents and hooks are read: a session in a directory outside it is refused.
 
 | Flag                       | What                                                                                                   |
 | -------------------------- | ------------------------------------------------------------------------------------------------------ |
@@ -113,6 +113,7 @@ await host.close();
 | `efforts`                     | Reasoning efforts offered                                                          |
 | `workspace(cwd)`              | The workspace on this machine for a session's directory (default `LocalWorkspace`) |
 | `mcp`                         | How MCP servers connect (default the connector of `@cogitator-ai/mcp`)             |
+| `roots`                       | Directories sessions may work in, a session outside them refused (default any)     |
 | `authMethods`, `authenticate` | The auth methods `initialize` offers and the check of `authenticate`               |
 
 Nothing but the protocol may write to stdout: log to stderr.
@@ -167,7 +168,7 @@ Every `session/request_permission` of the agent goes through `resolvePermission`
 | `fetch` of a URL          | `web_fetch`            | `WebFetch(domain:...)` |
 | any other tool            | `acp__<agent>__<tool>` | its name               |
 
-What the rules allow is allowed, what they deny is refused, and what would ask goes to the client of the turn (`approval/request` of the app-server). An "always" answer saves the rule for the thread, or to the settings file of `permissions.rememberIn`. Without a client to ask, it is refused. The files and terminals the agent asks for are served from the provider's workspace, inside its root, checked the same way.
+What the rules allow is allowed, what they deny is refused, and what would ask goes to the client of the turn (`approval/request` of the app-server). An "always" answer saves the rule for the thread, or to the settings file of `permissions.rememberIn`, but not for a call known only by its kind (no tool name, command or paths). Without a client to ask, it is refused. The files and terminals the agent asks for are served from the provider's workspace, inside its root, checked the same way: a terminal's directory and environment are checked with its command, and its output is kept up to `outputByteLimit` (1 MiB by default). Leaving plan mode (`switch_mode`) always asks, and once approved the thread goes on in the mode the agent picked.
 
 The agent's session follows the thread's permission mode when the agent has a mode of that name (Claude Code does), and the turn's model when the agent offers it. Its threads cannot be forked, rewound or reviewed, and a turn of one takes no steering.
 

@@ -13,7 +13,7 @@ import { diffOfToolCall, resultContent, viewOfToolCall } from '../agent/tool-cal
 import { TurnUpdates, type PendingUpdate } from '../agent/updates';
 import { AcpPermissions, commandLine, commandOf, subjectOf } from '../client/permissions';
 import { launchOfRegistryAgent, resolveAcpAgent, splitCommand } from '../client/registry';
-import { AcpTerminals, keepLast } from '../client/terminals';
+import { AcpTerminals, DEFAULT_AGENT_TERMINAL_OUTPUT_BYTES, keepLast } from '../client/terminals';
 import { AcpStreamMapper } from '../client/updates';
 import { sliceLines } from '../client/provider';
 
@@ -279,6 +279,37 @@ describe('external agents', () => {
     expect(commandLine('/bin/bash', ['-lc', 'npm test'])).toBe('npm test');
   });
 
+  it('reads the environment and directory of a command, and knows what it may remember', async () => {
+    const run = subjectOf(
+      {
+        kind: 'execute',
+        rawInput: { command: 'npm test', cwd: 'pkg', env: [{ name: 'BASH_ENV', value: 'x' }] },
+      },
+      'a',
+      dir
+    );
+    expect(run.args).toEqual({
+      command: 'npm test',
+      cwd: join(dir, 'pkg'),
+      env: { BASH_ENV: 'x' },
+    });
+    const permissions = new AcpPermissions(workspace, { rules: { allow: ['Bash(npm test *)'] } });
+    expect((await permissions.decide(run, 'default', 't')).decision).toBe('ask');
+    const plain = subjectOf({ kind: 'execute', rawInput: { command: 'npm test' } }, 'a', dir);
+    expect((await permissions.decide(plain, 'default', 't')).decision).toBe('allow');
+
+    const unnamed = subjectOf({ kind: 'other' }, 'a', dir);
+    expect(unnamed.rememberable).toBe(false);
+    expect(permissions.suggest(unnamed)).toBeUndefined();
+    expect(await permissions.remember(unnamed, 'allow', 't')).toBeUndefined();
+    expect(subjectOf({ kind: 'execute' }, 'a', dir).rememberable).toBe(false);
+    const named = subjectOf({ kind: 'other', name: 'deploy' }, 'a', dir);
+    expect(permissions.suggest(named)).toBe('acp__a__deploy');
+
+    const leave = subjectOf({ kind: 'switch_mode' }, 'a', dir);
+    expect((await permissions.decide(leave, 'plan', 't')).decision).toBe('ask');
+  });
+
   it('decides with rules and the mode, and remembers always answers', async () => {
     const permissions = new AcpPermissions(workspace, { rules: { deny: ['Bash(rm *)'] } });
     const run = (command: string) =>
@@ -377,6 +408,14 @@ describe('external agents', () => {
     expect((await terminals.waitForExit('s', slow)).signal).toBe('SIGTERM');
     terminals.release('s', slow);
     expect(keepLast('héllo', 4)).toEqual({ text: 'llo', cut: true });
+    const big = terminals.create(
+      { sessionId: 's', command: 'sh' },
+      "head -c 3000000 /dev/zero | tr '\\0' a"
+    );
+    await terminals.waitForExit('s', big);
+    const output = terminals.output('s', big);
+    expect(output.truncated).toBe(true);
+    expect(output.output.length).toBe(DEFAULT_AGENT_TERMINAL_OUTPUT_BYTES);
     expect(sliceLines('a\nb\nc', 2, 1)).toBe('b');
   });
 

@@ -21,6 +21,11 @@ export interface SessionProviderTurn {
   saveMetadata(patch: Record<string, unknown>): Promise<void>;
   /** The permission mode of the turn now: setting the thread's mode while the turn goes on changes it */
   permissionMode(): PermissionMode;
+  /**
+   * Sets the permission mode of the thread, and of the turn from now on, such as once a person
+   * approved the agent's plan and it leaves plan mode
+   */
+  setPermissionMode(mode: PermissionMode): Promise<void>;
   /** The model the turn asked for, when it named one */
   readonly model?: string;
   /**

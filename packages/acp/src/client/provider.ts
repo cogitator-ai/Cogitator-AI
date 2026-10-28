@@ -154,8 +154,10 @@ export class AcpAgentProvider implements SessionProvider {
   }
 
   async runTurn(turn: SessionProviderTurn): Promise<SessionProviderResult> {
-    const connected = await this.connection();
-    const sessionId = await this.sessionFor(turn, connected);
+    const signal = turn.signal;
+    refuseAborted(signal);
+    const connected = await untilAborted(this.connection(), signal);
+    const sessionId = await untilAborted(this.sessionFor(turn, connected), signal);
     if (this.active.has(sessionId)) {
       throw new Error(`A turn of the agent's session ${sessionId} goes on already`);
     }
@@ -166,9 +168,11 @@ export class AcpAgentProvider implements SessionProvider {
         .notify('session/cancel', { sessionId })
         .catch(() => undefined);
     };
-    turn.signal.addEventListener('abort', cancel, { once: true });
+    signal.addEventListener('abort', cancel, { once: true });
     try {
+      refuseAborted(signal);
       await this.align(connected, sessionId, turn);
+      refuseAborted(signal);
       const response = await connected.connection.agent.request('session/prompt', {
         sessionId,
         prompt: this.promptOf(turn.input, connected.init),
@@ -186,7 +190,7 @@ export class AcpAgentProvider implements SessionProvider {
       mapper.end();
       throw describe(error);
     } finally {
-      turn.signal.removeEventListener('abort', cancel);
+      signal.removeEventListener('abort', cancel);
       this.active.delete(sessionId);
       await this.terminals.releaseAll(sessionId);
     }
@@ -309,10 +313,18 @@ export class AcpAgentProvider implements SessionProvider {
       })
       .onRequest('terminal/create', async ({ params }) => {
         const line = commandLine(params.command, params.args ?? []);
-        if (!this.active.get(params.sessionId)?.commands.has(line)) {
+        const env = params.env ?? [];
+        const cwd = resolve(this.root, params.cwd ?? '.');
+        const granted =
+          env.length === 0 && this.active.get(params.sessionId)?.commands.has(grantKey(cwd, line));
+        if (!granted) {
           await this.check(
             params.sessionId,
-            subjectOf({ kind: 'execute', rawInput: { command: line } }, this.name, this.root),
+            subjectOf(
+              { kind: 'execute', rawInput: { command: line, cwd, env } },
+              this.name,
+              this.root
+            ),
             `run ${line}`
           );
         }
@@ -371,9 +383,17 @@ export class AcpAgentProvider implements SessionProvider {
       if (subject.tool.name === 'edit_file') {
         for (const path of subject.args.paths as string[]) active.edits.add(path);
       }
-      if (subject.tool.name === 'run_command') active.commands.add(subject.args.command as string);
+      if (subject.tool.name === 'run_command' && subject.args.env === undefined) {
+        const cwd = typeof subject.args.cwd === 'string' ? subject.args.cwd : this.root;
+        active.commands.add(grantKey(cwd, subject.args.command as string));
+      }
     }
     const option = pick(params.options, allowed);
+    if (allowed && subject.switchesMode && active && option) {
+      await active.turn
+        .setPermissionMode(modeOfOption(option.optionId))
+        .catch((error: unknown) => this.report(error));
+    }
     return option
       ? { outcome: { outcome: 'selected', optionId: option.optionId } }
       : { outcome: { outcome: 'cancelled' } };
@@ -545,6 +565,45 @@ const CLIENT_CAPABILITIES: ClientCapabilities = {
   fs: { readTextFile: true, writeTextFile: true },
   terminal: true,
 };
+
+/** The key a command the agent got permission for is kept under: where it runs and its line */
+function grantKey(cwd: string, line: string): string {
+  return `${cwd}\0${line}`;
+}
+
+const LEAVING_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'dontAsk'];
+
+/**
+ * The mode a thread goes on in once its agent left plan mode: the mode the agent's option names
+ * (Claude Code's options are named so), else `default`
+ */
+function modeOfOption(optionId: string): PermissionMode {
+  return LEAVING_MODES.find((mode) => mode === optionId) ?? 'default';
+}
+
+/** Throws when the turn was interrupted */
+function refuseAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw new Error('The turn was cancelled');
+}
+
+/** `work`, or a rejection as soon as the turn is interrupted: the work goes on, the turn does not wait */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error('The turn was cancelled'));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error('The turn was cancelled'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    );
+  });
+}
 
 /** The option of a permission question that says yes, or no: once when it can */
 function pick(options: readonly PermissionOption[], allow: boolean): PermissionOption | undefined {

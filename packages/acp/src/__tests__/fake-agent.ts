@@ -20,7 +20,10 @@ export interface FakeAgentLog {
  * through the client, as the prompt asks (`speak`, `command`, `write <path>`, `read <path>`,
  * `wait`), then answers
  */
-export function fakeAcpAgent(): { app: AgentApp; log: FakeAgentLog } {
+export function fakeAcpAgent(options: { sessionStarts?: Promise<void> } = {}): {
+  app: AgentApp;
+  log: FakeAgentLog;
+} {
   const log: FakeAgentLog = {
     sessions: [],
     prompts: [],
@@ -44,7 +47,8 @@ export function fakeAcpAgent(): { app: AgentApp; log: FakeAgentLog } {
       agentInfo: { name: 'fake-agent', version: '1.0.0' },
     }))
     .onRequest('authenticate', () => ({}))
-    .onRequest('session/new', () => {
+    .onRequest('session/new', async () => {
+      await options.sessionStarts;
       const sessionId = `fake_${++next}`;
       log.sessions.push(sessionId);
       return {
@@ -90,23 +94,58 @@ export function fakeAcpAgent(): { app: AgentApp; log: FakeAgentLog } {
             sessionUpdate: 'plan',
             entries: [{ content: arg, priority: 'high', status: 'in_progress' }],
           });
+        } else if (verb === 'exitplan' || verb === 'tool') {
+          const id = `call_${++next}`;
+          const switching = verb === 'exitplan';
+          const answer = await client.request('session/request_permission', {
+            sessionId,
+            toolCall: {
+              toolCallId: id,
+              title: switching ? 'Ready to code?' : 'Something',
+              kind: switching ? 'switch_mode' : 'other',
+            },
+            options: switching
+              ? [
+                  { optionId: 'acceptEdits', name: 'Yes, accept edits', kind: 'allow_always' },
+                  { optionId: 'default', name: 'Yes', kind: 'allow_once' },
+                  { optionId: 'plan', name: 'No, keep planning', kind: 'reject_once' },
+                ]
+              : [
+                  { optionId: 'yes', name: 'Allow', kind: 'allow_once' },
+                  { optionId: 'no', name: 'Reject', kind: 'reject_once' },
+                ],
+          });
+          log.permissions.push({
+            toolCallId: id,
+            outcome: answer.outcome.outcome === 'selected' ? answer.outcome.optionId : 'cancelled',
+          });
         } else if (verb === 'command') {
           const id = `call_${++next}`;
+          const words = arg.split(' ');
+          const extras = words.filter((word) => word.startsWith('@'));
+          const command = words.filter((word) => !word.startsWith('@')).join(' ');
+          const env = extras
+            .filter((word) => word.startsWith('@env='))
+            .map((word) => {
+              const [name, value] = word.slice(5).split(':');
+              return { name: name ?? '', value: value ?? '' };
+            });
+          const cwd = extras.find((word) => word.startsWith('@cwd='))?.slice(5);
           await send({
             sessionUpdate: 'tool_call',
             toolCallId: id,
-            title: `\`${arg}\``,
+            title: `\`${command}\``,
             kind: 'execute',
             status: 'pending',
-            rawInput: { command: arg },
+            rawInput: { command },
           });
           const answer = await client.request('session/request_permission', {
             sessionId,
             toolCall: {
               toolCallId: id,
-              title: `\`${arg}\``,
+              title: `\`${command}\``,
               kind: 'execute',
-              rawInput: { command: arg },
+              rawInput: { command },
             },
             options: [
               { optionId: 'yes', name: 'Allow', kind: 'allow_once' },
@@ -126,11 +165,20 @@ export function fakeAcpAgent(): { app: AgentApp; log: FakeAgentLog } {
             });
             continue;
           }
-          const terminal = await client.createTerminal({
-            sessionId,
-            command: '/bin/sh',
-            args: ['-c', arg],
-          });
+          let terminal: Awaited<ReturnType<AgentContext['createTerminal']>>;
+          try {
+            terminal = await client.createTerminal({
+              sessionId,
+              command: '/bin/sh',
+              args: ['-c', command],
+              ...(env.length > 0 && { env }),
+              ...(cwd !== undefined && { cwd }),
+            });
+          } catch (error) {
+            log.errors.push(error instanceof Error ? error.message : String(error));
+            await send({ sessionUpdate: 'tool_call_update', toolCallId: id, status: 'failed' });
+            continue;
+          }
           const exit = await terminal.waitForExit();
           const output = await terminal.currentOutput();
           await terminal.release();

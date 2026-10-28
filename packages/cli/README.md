@@ -326,6 +326,7 @@ In Zed's `settings.json`:
 - Files are read and written through the editor and commands run in its terminals when it offers them. Edits and commands ask with `session/request_permission`, showing the diff of an edit.
 - The editor picks the permission mode, the model (the ones of `--models` and the local Ollama models) and the reasoning effort of a session.
 - `--trust` trusts the project: its subagents, commands, hooks and the allow rules of its settings files apply, and an "always" answer is saved to `.cogitator/settings.local.json`. Without it an "always" answer lasts for the session.
+- It works in the directory it is launched in, where its settings, commands, subagents and hooks are read: a session in a directory outside it is refused, so an editor launches it in the project it opens.
 - The process starts without a model too, so an editor can list it: `authenticate` then says how to configure one.
 
 ---

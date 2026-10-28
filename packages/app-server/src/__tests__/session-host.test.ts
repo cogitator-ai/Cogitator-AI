@@ -814,6 +814,7 @@ describe('SessionHost with providers', () => {
 
   it('runs a turn of a provider, keeps its messages and its metadata', async () => {
     const seen: SessionProviderTurn[] = [];
+    const startModes: string[] = [];
     const provider: SessionProvider = {
       description: 'Outside',
       model: 'x/y',
@@ -823,6 +824,8 @@ describe('SessionHost with providers', () => {
         turn.emit({ type: 'text-delta', id: 't', delta: 'hi' });
         turn.emit({ type: 'text-end', id: 't' });
         await turn.saveMetadata({ session: 's1' });
+        startModes.push(turn.permissionMode());
+        await turn.setPermissionMode('acceptEdits');
         return { output: 'hi', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 } };
       },
     };
@@ -840,7 +843,7 @@ describe('SessionHost with providers', () => {
       usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
     });
     expect(seen[0]).toMatchObject({ threadId: thread.id, model: 'x/z', input: text('hello') });
-    expect(seen[0]!.permissionMode()).toBe('plan');
+    expect(startModes).toEqual(['plan']);
     const types = notifications.flatMap((n) =>
       n.method === 'turn/event' && n.params.turnId === turn.id ? [n.params.event.type] : []
     );
@@ -851,6 +854,8 @@ describe('SessionHost with providers', () => {
       ['assistant', 'hi'],
     ]);
     expect(resumed.thread.metadata.session).toBe('s1');
+    expect(resumed.thread.permissionMode).toBe('acceptEdits');
+    expect(seen[0]!.permissionMode()).toBe('acceptEdits');
     await host.close();
   });
 

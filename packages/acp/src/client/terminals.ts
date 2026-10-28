@@ -9,10 +9,15 @@ import { WorkspaceError, type Workspace } from '@cogitator-ai/types';
 /** Milliseconds a terminal's command may run before it is killed, when nothing else is set */
 export const DEFAULT_AGENT_TERMINAL_TIMEOUT = 30 * 60_000;
 
+/** Bytes of a terminal's output kept when the agent names no `outputByteLimit`, 1 MiB */
+export const DEFAULT_AGENT_TERMINAL_OUTPUT_BYTES = 1024 * 1024;
+
 interface RunningTerminal {
   sessionId: string;
   output: string;
-  limit: number | undefined;
+  /** UTF-8 bytes of `output`, kept as chunks come so they are not counted again */
+  bytes: number;
+  limit: number;
   truncated: boolean;
   exit?: TerminalExitStatus;
   done: Promise<TerminalExitStatus>;
@@ -26,6 +31,22 @@ export function keepLast(text: string, limit: number): { text: string; cut: bool
   let start = bytes.length - limit;
   while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
   return { text: bytes.subarray(start).toString('utf8'), cut: true };
+}
+
+/**
+ * How far past its limit a terminal's output may grow before it is cut back: cutting re-encodes
+ * what is kept, so doing it once per this many bytes keeps the cost linear in the output
+ */
+function slack(limit: number): number {
+  return Math.max(limit, 64 * 1024);
+}
+
+/** Cuts a terminal's output back to its limit, its newest bytes kept */
+function trim(terminal: RunningTerminal): void {
+  const kept = keepLast(terminal.output, terminal.limit);
+  terminal.output = kept.text;
+  terminal.bytes = Buffer.byteLength(kept.text);
+  if (kept.cut) terminal.truncated = true;
 }
 
 const SIGNAL_NAMES: Readonly<Record<number, string>> = {
@@ -54,10 +75,11 @@ export class AcpTerminals {
   create(request: CreateTerminalRequest, line: string): string {
     const id = `terminal_${++this.next}`;
     const abort = new AbortController();
-    const limit = request.outputByteLimit ?? undefined;
+    const limit = request.outputByteLimit ?? DEFAULT_AGENT_TERMINAL_OUTPUT_BYTES;
     const terminal: RunningTerminal = {
       sessionId: request.sessionId,
       output: '',
+      bytes: 0,
       limit,
       truncated: false,
       done: Promise.resolve({}),
@@ -65,11 +87,8 @@ export class AcpTerminals {
     };
     const append = (chunk: string) => {
       terminal.output += chunk;
-      if (terminal.limit !== undefined) {
-        const kept = keepLast(terminal.output, terminal.limit);
-        terminal.output = kept.text;
-        if (kept.cut) terminal.truncated = true;
-      }
+      terminal.bytes += Buffer.byteLength(chunk);
+      if (terminal.bytes > terminal.limit + slack(terminal.limit)) trim(terminal);
     };
     const cwd = request.cwd ?? undefined;
     terminal.done = this.workspace
@@ -104,6 +123,7 @@ export class AcpTerminals {
 
   output(sessionId: string, terminalId: string): TerminalOutputResponse {
     const terminal = this.get(sessionId, terminalId);
+    if (terminal.bytes > terminal.limit) trim(terminal);
     return {
       output: terminal.output,
       truncated: terminal.truncated,

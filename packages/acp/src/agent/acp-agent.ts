@@ -1,4 +1,4 @@
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import {
   PROTOCOL_VERSION,
   RequestError,
@@ -102,6 +102,12 @@ export interface AcpAgentOptions {
   authMethods?: readonly AuthMethod[];
   /** Checks an `authenticate` request, throwing when the method cannot be used (default: accepts) */
   authenticate?: (methodId: string) => void | Promise<void>;
+  /**
+   * The directories sessions may work in: a session whose directory is outside every one of them
+   * is refused. For an agent whose project files (settings, commands, subagents, hooks) are read
+   * from one directory, such as the one `cogitator acp` runs in. Default: any directory
+   */
+  roots?: readonly string[];
   /** Hears what went wrong outside a request, such as a notification that could not be sent */
   onError?: (error: Error) => void;
 }
@@ -120,6 +126,8 @@ interface LiveSession {
   turnId?: string;
   updates?: TurnUpdates;
   prompting: boolean;
+  /** Aborts when the prompt going on is cancelled or the session closed */
+  cancel?: AbortController;
   queue: Promise<void>;
   compactions: number;
 }
@@ -209,6 +217,7 @@ export class AcpAgent {
         return {};
       })
       .onRequest('session/new', async ({ params, client }) => {
+        this.refuseOutside(resolve(params.cwd));
         const thread = await this.host.startThread({
           agent: this.agentName,
           metadata: { [ACP_THREAD_KEYS.cwd]: params.cwd },
@@ -313,7 +322,7 @@ export class AcpAgent {
       )
       .onNotification('session/cancel', ({ params }) => {
         const session = this.sessions.get(params.sessionId);
-        if (session?.turnId) this.interrupt(session);
+        if (session) this.cancel(session);
       });
   }
 
@@ -348,8 +357,9 @@ export class AcpAgent {
     mcpServers: readonly McpServer[],
     client: AgentContext
   ): Promise<LiveSession> {
-    await this.closeSession(thread.id);
     const root = resolve(cwd);
+    this.refuseOutside(root);
+    await this.closeSession(thread.id);
     const base = this.options.workspace?.(root) ?? new LocalWorkspace({ root });
     let mcp: SubagentMcpConnection | undefined;
     try {
@@ -397,6 +407,16 @@ export class AcpAgent {
     }
     this.sessions.set(thread.id, session);
     return session;
+  }
+
+  /** Refuses a session directory outside the agent's `roots` */
+  private refuseOutside(cwd: string): void {
+    const roots = this.options.roots;
+    if (!roots || roots.some((root) => isInside(cwd, resolve(root)))) return;
+    throw RequestError.invalidParams(
+      { cwd, roots: [...roots] },
+      `This agent works in ${roots.join(', ')}: ${cwd} is outside it. Start the agent in ${cwd} to work there`
+    );
   }
 
   private settingsOf(thread: ThreadInfo): SessionSettings {
@@ -489,13 +509,16 @@ export class AcpAgent {
     }
     session.prompting = true;
     session.client = client;
+    session.cancel = new AbortController();
     try {
       const input = withSkill(toUserInput(prompt), session.commands.skills);
       if (input.length === 0) return { stopReason: 'end_turn' };
       await this.title(session, input);
+      if (this.stopped(session)) return { stopReason: 'cancelled' };
       return await this.runPrompt(session, input);
     } finally {
       session.prompting = false;
+      session.cancel = undefined;
       session.turnId = undefined;
       session.updates = undefined;
       await session.queue;
@@ -555,11 +578,14 @@ export class AcpAgent {
       let unsent: UserInput[] | undefined = input;
       let next: TurnStartParams = { threadId: session.id, input };
       const thread = await this.host.getThread(session.id);
+      if (this.stopped(session)) return { stopReason: 'cancelled' };
       if (thread.status === 'paused') {
         const { pending } = await this.host.resumeThread(session.id);
+        if (this.stopped(session)) return { stopReason: 'cancelled' };
         const resolution = pending
           ? await this.resolve(session, pending, inputText(input))
           : undefined;
+        if (this.stopped(session)) return { stopReason: 'cancelled' };
         if (resolution?.kind === 'ask') return this.askUser(session, resolution.interrupt);
         if (resolution) {
           if (pending?.interrupts.some((interrupt) => interrupt.kind === 'input'))
@@ -570,15 +596,19 @@ export class AcpAgent {
         unsent = undefined;
       }
       for (;;) {
+        if (this.stopped(session)) return { stopReason: 'cancelled' };
         const turn = await this.host.startTurn(this.turnParams(session, next), {
           owner: this,
           onApproval: (ask) => this.approve(session, updates, ask),
           run: this.runOptions(session, updates),
         });
         session.turnId = turn.id;
+        if (this.stopped(session)) this.interrupt(session);
         const done = await finished(turn.id);
         session.turnId = undefined;
-        if (done.status === 'interrupted') return { stopReason: 'cancelled' };
+        if (done.status === 'interrupted' || this.stopped(session)) {
+          return { stopReason: 'cancelled' };
+        }
         if (done.status === 'failed') {
           throw new RequestError(-32603, done.error?.message ?? 'The turn failed', {
             ...(done.error?.code !== undefined && { code: done.error.code }),
@@ -586,6 +616,7 @@ export class AcpAgent {
         }
         if (done.status === 'paused' && done.pending) {
           const resolution = await this.resolve(session, done.pending, undefined);
+          if (this.stopped(session)) return { stopReason: 'cancelled' };
           if (resolution.kind === 'ask') return this.askUser(session, resolution.interrupt);
           next = { threadId: session.id, resume: resolution.resume };
           continue;
@@ -730,7 +761,7 @@ export class AcpAgent {
           options,
           ...(request.reason !== undefined && { _meta: { reason: request.reason } }),
         },
-        { cancellationSignal: ask.signal }
+        { cancellationSignal: this.signalOf(session, ask.signal) }
       );
       if (answer.outcome.outcome === 'cancelled') {
         return { approved: false, reason: 'The user cancelled the question' };
@@ -812,19 +843,23 @@ export class AcpAgent {
   ): Promise<string | undefined> {
     await session.queue;
     try {
-      const answer = await session.client.request('session/request_permission', {
-        sessionId: session.id,
-        toolCall: {
-          toolCallId: interrupt.toolCallId ?? interrupt.id,
-          title,
-          kind,
-          status: 'pending',
-          ...(content !== undefined && {
-            content: [{ type: 'content', content: { type: 'text', text: content } }],
-          }),
+      const answer = await session.client.request(
+        'session/request_permission',
+        {
+          sessionId: session.id,
+          toolCall: {
+            toolCallId: interrupt.toolCallId ?? interrupt.id,
+            title,
+            kind,
+            status: 'pending',
+            ...(content !== undefined && {
+              content: [{ type: 'content', content: { type: 'text', text: content } }],
+            }),
+          },
+          options,
         },
-        options,
-      });
+        { cancellationSignal: this.signalOf(session) }
+      );
       return answer.outcome.outcome === 'selected' ? answer.outcome.optionId : undefined;
     } catch (error) {
       this.report(error);
@@ -852,6 +887,7 @@ export class AcpAgent {
     if (choice !== 'accept_edits' && choice !== 'default') return { approved: false };
     const mode = choice === 'accept_edits' ? 'acceptEdits' : 'default';
     if (this.choices.modes.includes(mode)) {
+      await this.host.setPermissionMode(session.id, mode);
       session.settings = { ...session.settings, mode };
       this.send(session, { sessionUpdate: 'current_mode_update', currentModeId: mode });
       this.send(session, {
@@ -882,13 +918,17 @@ export class AcpAgent {
     if (this.capabilities?.elicitation?.form == null || !isFormSchema(schema)) return undefined;
     await session.queue;
     try {
-      const answer = await session.client.request('elicitation/create', {
-        mode: 'form',
-        sessionId: session.id,
-        ...(interrupt.toolCallId !== undefined && { toolCallId: interrupt.toolCallId }),
-        message: interrupt.message,
-        requestedSchema: schema,
-      });
+      const answer = await session.client.request(
+        'elicitation/create',
+        {
+          mode: 'form',
+          sessionId: session.id,
+          ...(interrupt.toolCallId !== undefined && { toolCallId: interrupt.toolCallId }),
+          message: interrupt.message,
+          requestedSchema: schema,
+        },
+        { cancellationSignal: this.signalOf(session) }
+      );
       if (answer.action !== 'accept') return undefined;
       const content = 'content' in answer ? answer.content : undefined;
       return content && typeof content === 'object' ? { ...content } : {};
@@ -907,6 +947,25 @@ export class AcpAgent {
     return { stopReason: 'end_turn' };
   }
 
+  /** Cancels the prompt going on in a session: its turn is interrupted, its questions dropped */
+  private cancel(session: LiveSession): void {
+    session.cancel?.abort(new Error('The prompt was cancelled'));
+    this.interrupt(session);
+  }
+
+  /** Whether the prompt going on was cancelled, or its session closed */
+  private stopped(session: LiveSession): boolean {
+    return session.cancel?.signal.aborted === true || this.sessions.get(session.id) !== session;
+  }
+
+  /** What aborts a question of the prompt: a cancel, and `also` when given */
+  private signalOf(session: LiveSession, also?: AbortSignal): AbortSignal | undefined {
+    const signals = [session.cancel?.signal, also].filter(
+      (signal): signal is AbortSignal => signal !== undefined
+    );
+    return signals.length > 0 ? AbortSignal.any(signals) : undefined;
+  }
+
   private interrupt(session: LiveSession): void {
     const turnId = session.turnId;
     if (!turnId) return;
@@ -921,7 +980,7 @@ export class AcpAgent {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     this.sessions.delete(sessionId);
-    this.interrupt(session);
+    this.cancel(session);
     await this.host.waitForTurn(sessionId).catch(() => undefined);
     await session.queue;
     await Promise.allSettled([session.mcp.close(), session.base.dispose()]);
@@ -959,6 +1018,11 @@ export function createAcpAgent(options: AcpAgentOptions): AcpAgent {
 /** The error for a session the agent does not know, `-32002` with the session's id */
 export function sessionNotFound(sessionId: string): RequestError {
   return new RequestError(-32002, `Session ${sessionId} not found`, { sessionId });
+}
+
+function isInside(path: string, root: string): boolean {
+  const inner = relative(root, path);
+  return inner === '' || (!inner.startsWith('..') && !isAbsolute(inner));
 }
 
 function cwdOf(thread: ThreadInfo): string | undefined {

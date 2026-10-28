@@ -157,6 +157,9 @@ describe('cogitator acp over stdio (fake Ollama)', () => {
     expect(init.authMethods?.map((method) => method.id)).toEqual(['cogitator']);
     await editor.agent.request('authenticate', { methodId: 'cogitator' });
 
+    await expect(
+      editor.agent.request('session/new', { cwd: SCRATCH_ROOT, mcpServers: [] })
+    ).rejects.toThrow(/outside/);
     const session = await editor.agent.request('session/new', { cwd: workDir, mcpServers: [] });
     const model = session.configOptions?.find((option) => option.id === 'model');
     expect(model?.type === 'select' && model.currentValue).toBe('ollama/fake-model');

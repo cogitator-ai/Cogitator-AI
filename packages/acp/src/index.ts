@@ -61,6 +61,7 @@ export {
 export {
   AcpPermissions,
   commandLine,
+  envOf,
   commandOf,
   pathsOf,
   shellQuote,
@@ -79,5 +80,10 @@ export {
   type AcpLaunch,
   type AcpRegistryAgent,
 } from './client/registry.js';
-export { AcpTerminals, DEFAULT_AGENT_TERMINAL_TIMEOUT, keepLast } from './client/terminals.js';
+export {
+  AcpTerminals,
+  DEFAULT_AGENT_TERMINAL_OUTPUT_BYTES,
+  DEFAULT_AGENT_TERMINAL_TIMEOUT,
+  keepLast,
+} from './client/terminals.js';
 export { AcpStreamMapper, contentText } from './client/updates.js';

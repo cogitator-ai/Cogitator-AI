@@ -164,7 +164,7 @@ With `capabilities.approvals: 'request'` the server asks `approval/request` whil
 
 ## External agents
 
-A `SessionProvider` runs the turns of an agent outside the runtime: pass providers by name next to the agents, and clients see them in `initialize` with `external: true`. The host keeps the thread, its user and assistant messages and its turns, the provider runs each turn and sends its events, and the permission mode of the thread reaches it. A provider's threads cannot be forked, rewound or reviewed, and its turns take no steering. `AcpAgentProvider` of `@cogitator-ai/acp` is one for ACP agents such as Claude Code, Codex and Gemini CLI.
+A `SessionProvider` runs the turns of an agent outside the runtime: pass providers by name next to the agents, and clients see them in `initialize` with `external: true`. The host keeps the thread, its user and assistant messages and its turns, the provider runs each turn and sends its events, and the permission mode of the thread reaches it, which the provider may set (`setPermissionMode()`, such as when its agent leaves plan mode). A provider's threads cannot be forked, rewound or reviewed, and its turns take no steering. `AcpAgentProvider` of `@cogitator-ai/acp` is one for ACP agents such as Claude Code, Codex and Gemini CLI.
 
 ```typescript
 const host = new SessionHost({

@@ -1081,6 +1081,10 @@ export class SessionHost {
           this.unwrap(await memory.updateThread(threadId, patch));
         },
         permissionMode: () => turn.mode ?? plan.mode ?? 'default',
+        setPermissionMode: async (mode: PermissionMode) => {
+          await this.setPermissionMode(threadId, mode);
+          turn.mode = mode;
+        },
         ...(plan.model !== undefined && { model: plan.model }),
         emit,
         ...(asker && {
