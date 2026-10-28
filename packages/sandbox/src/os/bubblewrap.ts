@@ -112,8 +112,6 @@ export interface BubblewrapCommand {
 
 interface Mount {
   path: string;
-  /** Applied after the mounts of lower ranks at the same depth */
-  rank: number;
   args: string[];
 }
 
@@ -146,6 +144,63 @@ export function readHidden(
   return best?.deny === true;
 }
 
+/**
+ * Whether writing `path` is denied: some `denyWrite` entry covers it. An entry-only one covers
+ * the entry alone, and not even that when it is a directory, whose content stays writable
+ */
+function writeDenied(path: string, denyWrite: readonly BubblewrapPath[]): boolean {
+  return denyWrite.some((entry) =>
+    entry.path === path
+      ? !(entry.entryOnly && entry.directory)
+      : !entry.entryOnly && isWithin(entry.path, path)
+  );
+}
+
+/**
+ * The mounts of the file system rules, one per path, applied from the shallowest. Each shows its
+ * path as every rule over it decides, so what lies below without a mount of its own inherits the
+ * right view: a hidden path stays hidden under a writable root or a reopened read, a write-denied
+ * one stays read-only under a writable root or a writable child
+ */
+function filesystemMounts(
+  input: BubblewrapInput,
+  existing: (path: string) => boolean,
+  mountPoints: string[]
+): Mount[] {
+  const writableAt = (path: string) => input.writable.some((root) => isWithin(root, path));
+  const hidden = (path: string) => readHidden(path, input.denyRead, input.allowRead);
+  const mounts = new Map<string, Mount>();
+  const view = (path: string) => {
+    if (mounts.has(path) || hidden(path)) return;
+    const bind = writableAt(path) && !writeDenied(path, input.denyWrite) ? '--bind' : '--ro-bind';
+    mounts.set(path, { path, args: [bind, path, path] });
+  };
+  for (const entry of input.denyRead) {
+    mounts.set(entry.path, {
+      path: entry.path,
+      args: entry.directory ? ['--tmpfs', entry.path] : ['--ro-bind', '/dev/null', entry.path],
+    });
+  }
+  for (const path of input.writable) view(path);
+  for (const path of input.allowRead) view(path);
+  for (const entry of input.denyWrite) {
+    if (!writableAt(entry.path)) continue;
+    if (entry.exists) {
+      if (entry.real === undefined || !hidden(entry.real)) view(entry.path);
+      continue;
+    }
+    const at = firstMissing(entry.path, existing);
+    if (mounts.has(at) || hidden(at)) continue;
+    const directory = at !== entry.path || entry.directory;
+    mountPoints.push(at);
+    mounts.set(at, {
+      path: at,
+      args: directory ? ['--ro-bind', input.emptyDir, at] : ['--ro-bind', '/dev/null', at],
+    });
+  }
+  return [...mounts.values()].sort((a, b) => depthOf(a.path) - depthOf(b.path));
+}
+
 /** The bubblewrap command line for `input` */
 export function bubblewrapCommand(
   input: BubblewrapInput,
@@ -154,47 +209,8 @@ export function bubblewrapCommand(
   const args = ['--new-session', '--die-with-parent', '--unshare-net', '--unshare-pid'];
   args.push(input.filesystemDisabled ? '--bind' : '--ro-bind', '/', '/');
   args.push('--dev', '/dev', '--proc', '/proc');
-  const mounts: Mount[] = [];
   const mountPoints: string[] = [];
-  if (!input.filesystemDisabled) {
-    const writableAt = (path: string) => input.writable.some((root) => isWithin(root, path));
-    const hidden = (path: string) => readHidden(path, input.denyRead, input.allowRead);
-    for (const path of input.writable) mounts.push({ path, rank: 0, args: ['--bind', path, path] });
-    for (const entry of input.denyRead) {
-      mounts.push({
-        path: entry.path,
-        rank: 1,
-        args: entry.directory ? ['--tmpfs', entry.path] : ['--ro-bind', '/dev/null', entry.path],
-      });
-    }
-    for (const path of input.allowRead) {
-      const denied = input.denyWrite.some((entry) => isWithin(entry.path, path));
-      mounts.push({
-        path,
-        rank: 2,
-        args: [writableAt(path) && !denied ? '--bind' : '--ro-bind', path, path],
-      });
-    }
-    for (const entry of input.denyWrite) {
-      if (!writableAt(entry.path)) continue;
-      if (entry.exists) {
-        if (hidden(entry.path) || (entry.real !== undefined && hidden(entry.real))) continue;
-        const bind = entry.entryOnly && entry.directory ? '--bind' : '--ro-bind';
-        mounts.push({ path: entry.path, rank: 3, args: [bind, entry.path, entry.path] });
-        continue;
-      }
-      const at = firstMissing(entry.path, existing);
-      if (mountPoints.includes(at)) continue;
-      const directory = at !== entry.path || entry.directory;
-      mountPoints.push(at);
-      mounts.push({
-        path: at,
-        rank: 3,
-        args: directory ? ['--ro-bind', input.emptyDir, at] : ['--ro-bind', '/dev/null', at],
-      });
-    }
-  }
-  mounts.sort((a, b) => depthOf(a.path) - depthOf(b.path) || a.rank - b.rank);
+  const mounts = input.filesystemDisabled ? [] : filesystemMounts(input, existing, mountPoints);
   for (const mount of mounts) args.push(...mount.args);
   const socketDir = input.proxySocket.slice(0, input.proxySocket.lastIndexOf('/')) || '/';
   args.push('--ro-bind', socketDir, socketDir);

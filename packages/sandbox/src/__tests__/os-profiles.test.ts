@@ -167,6 +167,69 @@ describe('bubblewrapCommand', () => {
     expect(joined).toContain('--ro-bind /dev/null /w/secret.txt');
   });
 
+  it('keeps a read hidden when allowRead names the same path', () => {
+    const { args } = bubblewrapCommand(
+      {
+        ...input,
+        denyRead: [{ path: '/secret', directory: true, exists: true }],
+        allowRead: ['/secret'],
+      },
+      (path) => existing.has(path)
+    );
+    const joined = args.join(' ');
+    expect(joined).toContain('--tmpfs /secret');
+    expect(joined).not.toContain('--ro-bind /secret /secret');
+  });
+
+  it('keeps a writable child under a write-denied directory read-only', () => {
+    const { args } = bubblewrapCommand(
+      {
+        ...input,
+        writable: ['/w', '/w/locked/sub'],
+        denyWrite: [{ path: '/w/locked', directory: true, exists: true }],
+        denyRead: [],
+        allowRead: [],
+      },
+      (path) => existing.has(path)
+    );
+    const joined = args.join(' ');
+    expect(joined).toContain('--ro-bind /w/locked /w/locked');
+    expect(joined).toContain('--ro-bind /w/locked/sub /w/locked/sub');
+    expect(joined).not.toContain('--bind /w/locked/sub /w/locked/sub');
+  });
+
+  it('leaves a writable root under a hidden directory hidden unless a read reopens it', () => {
+    const hiddenRoot = {
+      ...input,
+      writable: ['/home/u/work'],
+      denyWrite: [],
+      denyRead: [{ path: '/home/u', directory: true, exists: true }],
+      allowRead: [],
+    };
+    const closed = bubblewrapCommand(hiddenRoot, (path) => existing.has(path)).args.join(' ');
+    expect(closed).toContain('--tmpfs /home/u');
+    expect(closed).not.toContain('/home/u/work');
+    const reopened = bubblewrapCommand({ ...hiddenRoot, allowRead: ['/home/u/work'] }, (path) =>
+      existing.has(path)
+    ).args.join(' ');
+    expect(reopened.indexOf('--tmpfs /home/u')).toBeLessThan(
+      reopened.indexOf('--bind /home/u/work /home/u/work')
+    );
+  });
+
+  it('keeps the content of an entry-only directory writable', () => {
+    const { args } = bubblewrapCommand(
+      {
+        ...input,
+        denyWrite: [{ path: '/w/.git', directory: true, exists: true, entryOnly: true }],
+        denyRead: [],
+        allowRead: [],
+      },
+      (path) => existing.has(path)
+    );
+    expect(args.join(' ')).toContain('--bind /w/.git /w/.git');
+  });
+
   it('covers missing protected paths with read-only mount points and lists them for removal', () => {
     const { args, mountPoints } = bubblewrapCommand(input, (path) => existing.has(path));
     const joined = args.join(' ');
