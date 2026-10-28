@@ -244,7 +244,10 @@ export class TurnLog {
     return found;
   }
 
-  /** The tool calls a turn's events show, with their results. */
+  /**
+   * The tool calls a turn's events show, with their results. A resumed turn sends the result of a
+   * call an earlier turn of the thread started, which is named after that turn's start.
+   */
   toolCalls(turnId: string): ToolCallSeen[] {
     const calls = new Map<string, ToolCallSeen>();
     for (const event of this.events(turnId)) {
@@ -257,8 +260,9 @@ export class TurnLog {
         const call = calls.get(event.toolCallId);
         if (call) call.args = JSON.stringify(event.arguments);
       } else if (event.type === 'tool-result') {
-        const call = calls.get(event.toolCallId);
+        const call = calls.get(event.toolCallId) ?? this.startedElsewhere(event.toolCallId);
         if (call) {
+          calls.set(call.id, call);
           call.result = event.result;
           call.failed =
             typeof event.result === 'object' && event.result !== null && 'error' in event.result;
@@ -266,6 +270,18 @@ export class TurnLog {
       }
     }
     return [...calls.values()];
+  }
+
+  /** A call another turn started, as that turn's events show it. */
+  private startedElsewhere(toolCallId: string): ToolCallSeen | undefined {
+    for (const events of this.eventsOf.values()) {
+      for (const event of events) {
+        if (event.type === 'tool-call-start' && event.id === toolCallId) {
+          return { id: event.id, name: event.toolName, args: '', failed: false };
+        }
+      }
+    }
+    return undefined;
   }
 
   /** The streamed text of a turn. */
