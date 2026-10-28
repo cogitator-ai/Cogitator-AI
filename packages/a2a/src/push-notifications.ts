@@ -4,6 +4,8 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP, type LookupFunction } from 'node:net';
 import type { A2ATask, PushNotificationConfig, PushNotificationStore } from './types.js';
+import { taskToV1 } from './v1/translate.js';
+import { A2A_CONTENT_TYPE } from './version.js';
 
 export class InMemoryPushNotificationStore implements PushNotificationStore {
   private configs = new Map<string, Map<string, PushNotificationConfig>>();
@@ -229,22 +231,36 @@ function postJson(
   });
 }
 
-/** Header carrying the config's `token` on every webhook call (A2A v0.3, section 9.5). */
+/** Header carrying the config's `token` on every webhook call (A2A v0.3 section 9.5, kept in 1.0). */
 export const NOTIFICATION_TOKEN_HEADER = 'X-A2A-Notification-Token';
 
 /**
- * The `Authorization` header for a webhook from the config's `authentication`: the credentials
- * under the first scheme the server knows (`Bearer`, or `Basic` with base64 `user:password`).
+ * The `Authorization` header for a webhook from the config's `authentication`. A2A 0.3 lists
+ * schemes: the credentials go under the first one the server knows (`Bearer`, or `Basic` with
+ * base64 `user:password`). An A2A 1.0 config names one scheme, used as it is.
  */
 function authorizationHeader(config: PushNotificationConfig): string | undefined {
   const auth = config.authentication;
   if (!auth?.credentials) return undefined;
+  if (config.protocolVersion === '1.0') {
+    const scheme = auth.schemes[0]?.trim();
+    return scheme && /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(scheme)
+      ? `${scheme} ${auth.credentials}`
+      : undefined;
+  }
   for (const scheme of auth.schemes) {
     const normalized = scheme.toLowerCase();
     if (normalized === 'bearer') return `Bearer ${auth.credentials}`;
     if (normalized === 'basic') return `Basic ${auth.credentials}`;
   }
   return undefined;
+}
+
+/** A config as clients see it: without the protocol version the server keeps on it. */
+export function publicPushConfig(config: PushNotificationConfig): PushNotificationConfig {
+  if (config.protocolVersion === undefined) return config;
+  const { protocolVersion: _protocolVersion, ...rest } = config;
+  return rest;
 }
 
 export class PushNotificationSender {
@@ -256,7 +272,11 @@ export class PushNotificationSender {
     this.allowPrivateUrls = allowPrivateUrls;
   }
 
-  /** POST the task, as the client sees it, to every webhook registered for it. */
+  /**
+   * POST the task, as the client sees it, to every webhook registered for it: the task itself for
+   * a config registered over A2A 0.3, `{ task }` (an A2A 1.0 stream response) as
+   * `application/a2a+json` for one registered over 1.0.
+   */
   async notify(task: A2ATask): Promise<void> {
     const configs = await this.store.list(task.id);
     const results = await Promise.allSettled(
@@ -276,7 +296,10 @@ export class PushNotificationSender {
       validateWebhookUrl(config.url);
     }
 
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const v1 = config.protocolVersion === '1.0';
+    const headers: Record<string, string> = {
+      'Content-Type': v1 ? A2A_CONTENT_TYPE : 'application/json',
+    };
     if (config.token) headers[NOTIFICATION_TOKEN_HEADER] = config.token;
     const authorization = authorizationHeader(config);
     if (authorization) headers.Authorization = authorization;
@@ -284,7 +307,7 @@ export class PushNotificationSender {
     const status = await postJson(
       new URL(config.url),
       headers,
-      JSON.stringify(task),
+      JSON.stringify(v1 ? { task: taskToV1(task) } : task),
       this.allowPrivateUrls ? undefined : publicOnlyLookup
     );
 

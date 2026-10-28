@@ -4,6 +4,23 @@ import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
 import { handleA2AHttp } from './shared.js';
 
+/**
+ * The JSON body: what a body parser put on `ctx.request.body`, else the raw body read here, so an
+ * `application/a2a+json` body the parser skipped is read too. Undefined without a body.
+ */
+async function readBody(ctx: Context): Promise<unknown> {
+  const parsed = (ctx.request as unknown as { body?: unknown }).body;
+  if (parsed !== undefined) return parsed;
+  const req = ctx.req;
+  if (req.readableEnded || req.complete) return undefined;
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer));
+  }
+  const text = Buffer.concat(chunks).toString('utf8');
+  return text.trim() === '' ? undefined : (JSON.parse(text) as unknown);
+}
+
 /** Where the middleware is mounted: the part of the original path before `ctx.path` (koa-mount). */
 function mountPath(ctx: Context): string {
   const original = new URL(ctx.originalUrl, 'http://localhost').pathname;
@@ -12,8 +29,10 @@ function mountPath(ctx: Context): string {
 
 /**
  * Koa middleware serving an A2A server: the Agent Card at `/.well-known/agent-card.json` (and the
- * pre-v0.3 `/.well-known/agent.json`), JSON-RPC at `basePath`, and every agent's own card and
- * endpoint under `<basePath>/<agent name>`. JSON bodies must be parsed by a body parser before it.
+ * pre-v0.3 `/.well-known/agent.json`), JSON-RPC at `basePath`, every agent's own card and
+ * endpoint under `<basePath>/<agent name>`, the A2A 1.0 HTTP+JSON binding under `restPath`, and
+ * the JWKS at `/.well-known/jwks.json` when the server publishes one. It takes the body a body
+ * parser put on `ctx.request.body`, and reads it itself when none did.
  */
 export function a2aKoa(server: A2AServer): Middleware {
   return async (ctx: Context, next: () => Promise<void>) => {
@@ -25,8 +44,9 @@ export function a2aKoa(server: A2AServer): Middleware {
         method: ctx.method,
         path: ctx.path,
         mountUrl: `${ctx.protocol}://${ctx.host}${mountPath(ctx)}`,
+        query: new URLSearchParams(ctx.querystring),
         header: (name) => ctx.get(name) || undefined,
-        readBody: async () => (ctx.request as unknown as { body?: unknown }).body,
+        readBody: () => readBody(ctx),
         signal: controller.signal,
       });
     } catch (error) {
@@ -45,6 +65,7 @@ export function a2aKoa(server: A2AServer): Middleware {
         return;
       case 'empty':
         ctx.status = response.status;
+        ctx.set(response.headers ?? {});
         return;
       case 'sse': {
         ctx.respond = false;

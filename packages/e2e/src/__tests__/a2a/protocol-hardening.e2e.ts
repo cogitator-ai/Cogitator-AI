@@ -200,7 +200,7 @@ describe('A2A: protocol hardening over HTTP', () => {
     });
 
     it('returns a submitted task immediately and pushes the completed task', async () => {
-      const client = new A2AClient(server.url);
+      const client = new A2AClient(server.url, { protocolVersion: '0.3' });
       const task = asTask(
         await client.sendMessage(
           { role: 'user', parts: [{ kind: 'text', text: 'long job' }] },

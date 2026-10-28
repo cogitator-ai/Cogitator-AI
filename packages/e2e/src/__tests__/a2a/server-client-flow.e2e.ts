@@ -95,15 +95,14 @@ describeE2E('A2A: Server-Client Flow', () => {
     }
   });
 
-  it('returns task for empty message parts', async () => {
-    const task = asTask(
-      await client.sendMessage({
-        role: 'user',
-        parts: [],
-      })
-    );
-
+  it('takes a message without parts over 0.3 and refuses it over 1.0', async () => {
+    const legacy = new A2AClient(testServer.url, { protocolVersion: '0.3' });
+    const task = asTask(await legacy.sendMessage({ role: 'user', parts: [] }));
     expect(task.status.state).toBe('completed');
+
+    await expect(client.sendMessage({ role: 'user', parts: [] })).rejects.toMatchObject({
+      code: -32602,
+    });
   });
 
   it('handles concurrent requests', async () => {

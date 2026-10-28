@@ -284,6 +284,9 @@ importers:
       '@a2a-js/sdk':
         specifier: 0.3.14
         version: 0.3.14(@bufbuild/protobuf@2.16.0)(@grpc/grpc-js@1.14.5)(express@5.2.1(supports-color@10.2.2))
+      '@a2a-js/sdk-v1':
+        specifier: npm:@a2a-js/sdk@1.3.0
+        version: '@a2a-js/sdk@1.3.0(@bufbuild/protobuf@2.16.0)(@grpc/grpc-js@1.14.5)(better-sqlite3@13.0.3)(express@5.2.1(supports-color@10.2.2))(pg@8.23.1)'
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
@@ -875,6 +878,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@a2a-js/sdk-v1':
+        specifier: npm:@a2a-js/sdk@1.3.0
+        version: '@a2a-js/sdk@1.3.0(@bufbuild/protobuf@2.16.0)(@grpc/grpc-js@1.14.5)(better-sqlite3@13.0.3)(express@5.2.1(supports-color@10.2.2))(pg@8.23.1)'
       '@types/bun':
         specifier: ^1.4.2
         version: 1.4.2
@@ -1975,6 +1981,34 @@ packages:
       '@grpc/grpc-js':
         optional: true
       express:
+        optional: true
+
+  '@a2a-js/sdk@1.3.0':
+    resolution: {integrity: sha512-OpK4nygUnLKlpTFZlM2IrYu7f3c/B7c4u4Z14+vgMq24lEINTVCxH/BqZx+GL92rNf7CoBL5oTP5UhNsl75yyg==}
+    engines: {node: '>=20'}
+    hasBin: true
+    peerDependencies:
+      '@bufbuild/protobuf': ^2.10.2
+      '@grpc/grpc-js': ^1.11.0
+      better-sqlite3: ^12.0.0 || ^13.0.0
+      express: ^4.21.2 || ^5.1.0
+      kysely: ^0.28.17 || ^0.29.0
+      mysql2: ^3.0.0
+      pg: ^8.0.0
+    peerDependenciesMeta:
+      '@bufbuild/protobuf':
+        optional: true
+      '@grpc/grpc-js':
+        optional: true
+      better-sqlite3:
+        optional: true
+      express:
+        optional: true
+      kysely:
+        optional: true
+      mysql2:
+        optional: true
+      pg:
         optional: true
 
   '@ai-sdk/gateway@2.0.162':
@@ -8626,6 +8660,16 @@ snapshots:
       '@bufbuild/protobuf': 2.16.0
       '@grpc/grpc-js': 1.14.5
       express: 5.2.1(supports-color@10.2.2)
+
+  '@a2a-js/sdk@1.3.0(@bufbuild/protobuf@2.16.0)(@grpc/grpc-js@1.14.5)(better-sqlite3@13.0.3)(express@5.2.1(supports-color@10.2.2))(pg@8.23.1)':
+    dependencies:
+      jose: 6.2.12
+    optionalDependencies:
+      '@bufbuild/protobuf': 2.16.0
+      '@grpc/grpc-js': 1.14.5
+      better-sqlite3: 13.0.3
+      express: 5.2.1(supports-color@10.2.2)
+      pg: 8.23.1
 
   '@ai-sdk/gateway@2.0.162(zod@4.6.5)':
     dependencies:

@@ -4,7 +4,7 @@ import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
 import { handleA2AHttp, type A2AHttpResponse } from './shared.js';
 
-const parseJson = json();
+const parseJson = json({ type: ['application/json', 'application/a2a+json'] });
 
 function readBody(req: Request, res: Response): Promise<unknown> {
   if (req.body !== undefined) return Promise.resolve(req.body);
@@ -22,7 +22,10 @@ async function send(res: Response, response: A2AHttpResponse): Promise<void> {
       res.status(response.status).set(response.headers).json(response.body);
       return;
     case 'empty':
-      res.status(response.status).end();
+      res
+        .status(response.status)
+        .set(response.headers ?? {})
+        .end();
       return;
     case 'sse':
       res.writeHead(200, response.headers);
@@ -38,8 +41,9 @@ async function send(res: Response, response: A2AHttpResponse): Promise<void> {
 
 /**
  * Express router serving an A2A server: the Agent Card at `/.well-known/agent-card.json` (and the
- * pre-v0.3 `/.well-known/agent.json`), JSON-RPC at `basePath`, and every agent's own card and
- * endpoint under `<basePath>/<agent name>`.
+ * pre-v0.3 `/.well-known/agent.json`), JSON-RPC at `basePath`, every agent's own card and
+ * endpoint under `<basePath>/<agent name>`, the A2A 1.0 HTTP+JSON binding under `restPath`, and
+ * the JWKS at `/.well-known/jwks.json` when the server publishes one.
  */
 export function a2aExpress(server: A2AServer): Router {
   const router = Router();
@@ -52,6 +56,7 @@ export function a2aExpress(server: A2AServer): Router {
         method: req.method,
         path: req.path,
         mountUrl: `${req.protocol}://${req.get('host') ?? 'localhost'}${req.baseUrl}`,
+        query: new URL(req.originalUrl, 'http://localhost').searchParams,
         header: (name) => req.get(name),
         readBody: () => readBody(req, res),
         signal: controller.signal,

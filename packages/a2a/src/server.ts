@@ -3,33 +3,46 @@ import type { Agent as IAgent } from '@cogitator-ai/types';
 import type {
   A2AServerConfig,
   AgentCard,
+  AgentExtension,
   AgentProvider,
   A2ATask,
   MessageSendConfiguration,
   MessageSendParams,
+  PushNotificationConfig,
   TaskFilter,
   CogitatorLike,
   PushNotificationStore,
   TaskPushNotificationConfig,
   A2AAuthConfig,
   A2ACaller,
+  LegacyCardSigningConfig,
+  AgentCardSigningConfig,
   Part,
 } from './types.js';
 import type { JsonRpcRequest, JsonRpcResponse } from './json-rpc.js';
 import { parseJsonRpcRequest, createSuccessResponse, createErrorResponse } from './json-rpc.js';
 import { TaskManager, type TaskEvent } from './task-manager.js';
-import { generateAgentCard, signAgentCard } from './agent-card.js';
-import type { AgentCardSigningOptions } from './agent-card.js';
+import {
+  buildAgentCardModel,
+  cardModelFromLegacy,
+  signAgentCard,
+  toLegacyCard,
+  toV1Card,
+  type AgentCardInterface,
+  type AgentCardModel,
+} from './agent-card.js';
+import { AgentCardSigner, type JsonWebKeySet } from './card-signing.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
 import { InMemoryTaskStore } from './task-store.js';
 import {
   InMemoryPushNotificationStore,
   PushNotificationSender,
+  publicPushConfig,
   validateWebhookUrl,
 } from './push-notifications.js';
-import { isStreamFinalState } from './types.js';
-import { isTaskVisibleTo, publicTask } from './ownership.js';
+import { isStreamFinalState, isTerminalState } from './types.js';
+import { isTaskOfAgent, isTaskVisibleTo, publicTask } from './ownership.js';
 import {
   parseDeletePushNotificationConfigParams,
   parseGetPushNotificationConfigParams,
@@ -40,6 +53,14 @@ import {
   parseTaskQueryParams,
 } from './protocol.js';
 import { trimTrailingSlashes } from './url.js';
+import { SUPPORTED_PROTOCOL_VERSIONS, type A2AProtocolVersion } from './version.js';
+import { COGITATOR_AGENT_EXTENSIONS, missingRequiredExtensions } from './extensions.js';
+import { paginateTasks, type ListTasksPage, type ListTasksPageQuery } from './list-tasks.js';
+import type { A2AOperations, CallContext } from './operations.js';
+import { dispatchV1, streamV1, V1_STREAMING_METHODS } from './v1/json-rpc.js';
+import { toV1JsonRpcError } from './v1/errors.js';
+import type { V1AgentCard } from './v1/types.js';
+import { handleRestRequest, type A2ARestRequest, type A2ARestResponse } from './rest.js';
 
 type HeaderGetter = (name: string) => string | null | undefined;
 
@@ -55,6 +76,15 @@ export const STREAMING_METHODS: readonly string[] = ['message/stream', 'tasks/re
 export interface A2AHandleOptions {
   /** The agent the request is addressed to by its endpoint; it wins over an `agentName` param */
   agentName?: string;
+  /**
+   * The protocol version the request speaks (default: '0.3'), which the adapters read from the
+   * `A2A-Version` header. '1.0' takes the PascalCase methods of A2A 1.0 and answers in its form.
+   */
+  protocolVersion?: A2AProtocolVersion;
+  /** The extension URIs the client asked for in `A2A-Extensions` (`X-A2A-Extensions` in 0.3) */
+  extensions?: readonly string[];
+  /** Absolute URL the framework adapter is mounted at, for the cards a request returns */
+  baseUrl?: string;
 }
 
 /** Options for building an Agent Card. */
@@ -86,6 +116,12 @@ function partMimeType(part: Part): string {
     case 'file':
       return part.file.mimeType ?? 'application/octet-stream';
   }
+}
+
+function isLegacySigning(
+  config: AgentCardSigningConfig | LegacyCardSigningConfig
+): config is LegacyCardSigningConfig {
+  return 'secret' in config;
 }
 
 /** The events of one task, queued until the stream that relays them takes them. */
@@ -135,6 +171,10 @@ export class A2AServer {
   private taskManager: TaskManager;
   /** The path the framework adapters serve JSON-RPC on, and the cards advertise without `cardUrl`. */
   readonly basePath: string;
+  /** The path the framework adapters serve the A2A 1.0 HTTP+JSON binding on; null when it is off */
+  readonly restPath: string | null;
+  /** The protocol versions the server speaks */
+  readonly protocolVersions: readonly A2AProtocolVersion[];
   /** How often the framework adapters write a heartbeat on an open stream; `0` for never */
   readonly sseHeartbeatMs: number;
   private cardUrl?: string;
@@ -143,10 +183,13 @@ export class A2AServer {
   private maxRunTimeoutMs: number;
   private pushNotificationStore: PushNotificationStore;
   private pushSender: PushNotificationSender;
-  private cardSigning?: AgentCardSigningOptions;
+  private legacySigning?: LegacyCardSigningConfig;
+  private signer?: AgentCardSigner;
   private extendedCardGenerator?: (agentName: string) => AgentCard;
   private allowPrivateUrls: boolean;
   private auth?: A2AAuthConfig;
+  private extensions: readonly AgentExtension[];
+  private readonly operations: A2AOperations;
 
   constructor(config: A2AServerConfig) {
     const agentNames = Object.keys(config.agents);
@@ -163,6 +206,8 @@ export class A2AServer {
         `A2AServer basePath must be a path starting with "/", got "${this.basePath}"`
       );
     }
+    this.protocolVersions = resolveProtocolVersions(config.protocolVersions);
+    this.restPath = this.resolveRestPath(config.restPath, agentNames);
     const maxRunTimeoutMs = config.maxRunTimeoutMs ?? DEFAULT_MAX_RUN_TIMEOUT_MS;
     if (
       !Number.isInteger(maxRunTimeoutMs) ||
@@ -178,10 +223,14 @@ export class A2AServer {
     this.cardUrl = config.cardUrl ? trimTrailingSlashes(config.cardUrl) : undefined;
     this.agentVersion = config.agentVersion;
     this.provider = config.provider;
-    this.cardSigning = config.cardSigning;
+    if (config.cardSigning) {
+      if (isLegacySigning(config.cardSigning)) this.legacySigning = config.cardSigning;
+      else this.signer = new AgentCardSigner(config.cardSigning);
+    }
     this.extendedCardGenerator = config.extendedCardGenerator;
     this.allowPrivateUrls = config.allowPrivateUrls ?? false;
     this.auth = config.auth;
+    this.extensions = mergeExtensions(COGITATOR_AGENT_EXTENSIONS, config.extensions ?? []);
 
     this.pushNotificationStore =
       config.pushNotificationStore ?? new InMemoryPushNotificationStore();
@@ -198,6 +247,46 @@ export class A2AServer {
         .then((task) => this.pushSender.notify(publicTask(task)))
         .catch(() => {});
     });
+
+    this.operations = {
+      authenticate: (token) => this.authenticate(token),
+      agentFor: (endpointAgent, tenant) => this.agentFor(endpointAgent, tenant),
+      sendMessage: (params, context) => this.sendMessage(params, context),
+      streamMessage: (params, context, signal) => this.streamMessage(params, context, signal),
+      getTask: (taskId, historyLength, context) => this.getTask(taskId, historyLength, context),
+      cancelTask: (taskId, context) => this.cancelTask(taskId, context),
+      subscribe: (taskId, context, signal) => this.subscribe(taskId, context, signal),
+      listTasksPage: (query, context) => this.listTasksPage(query, context),
+      createPushConfig: (taskId, pushConfig, context) =>
+        this.createPushConfig(taskId, pushConfig, context),
+      getPushConfig: (taskId, configId, context) => this.getPushConfig(taskId, configId, context),
+      listPushConfigs: (taskId, context) => this.listPushConfigs(taskId, context),
+      deletePushConfig: (taskId, configId, context) =>
+        this.deletePushConfig(taskId, configId, context),
+      extendedCard: (context) => this.v1ExtendedCard(context),
+    };
+  }
+
+  private resolveRestPath(
+    restPath: string | false | undefined,
+    agentNames: readonly string[]
+  ): string | null {
+    if (restPath === false || !this.protocolVersions.includes('1.0')) return null;
+    const path = trimTrailingSlashes(restPath ?? `${trimTrailingSlashes(this.basePath)}/rest`);
+    if (!path.startsWith('/') || path === '') {
+      throw new Error(`A2AServer restPath must be a path starting with "/", got "${restPath}"`);
+    }
+    if (path === trimTrailingSlashes(this.basePath)) {
+      throw new Error('A2AServer restPath must differ from basePath');
+    }
+    const base = trimTrailingSlashes(this.basePath);
+    const clash = agentNames.find((name) => `${base}/${encodeURIComponent(name)}` === path);
+    if (clash) {
+      throw new Error(
+        `A2AServer restPath "${path}" is the endpoint of agent "${clash}": set another restPath`
+      );
+    }
+    return path;
   }
 
   /**
@@ -226,37 +315,106 @@ export class A2AServer {
     return Object.hasOwn(this.agents, agentName);
   }
 
+  /** The extensions an agent declares in its card: the Cogitator ones and `extensions`. */
+  getAgentExtensions(): readonly AgentExtension[] {
+    return this.extensions;
+  }
+
   /**
-   * The Agent Card of an agent (the first one by default). Its `url` is the agent's JSON-RPC
-   * endpoint: `cardUrl`, or `baseUrl` plus `basePath`, and `/<agent name>` after it for every
-   * agent but the first.
+   * The Agent Card of an agent (the first one by default) for a client that speaks A2A 0.3 or
+   * names no version. Its `url` is the agent's JSON-RPC endpoint: `cardUrl`, or `baseUrl` plus
+   * `basePath`, and `/<agent name>` after it for every agent but the first. When the server
+   * speaks A2A 1.0 too, `supportedInterfaces` lists every interface of both versions.
    */
   getAgentCard(agentName?: string, options?: AgentCardRequestOptions): AgentCard {
-    const name = agentName ?? this.defaultAgentName;
-    if (!this.hasAgent(name)) throw new A2AError(errors.agentNotFound(name));
-    const card = generateAgentCard(this.agents[name], {
-      url: this.agentEndpoint(name, options?.baseUrl),
-      version: this.agentVersion,
-      provider: this.provider,
-      capabilities: { streaming: true, pushNotifications: true },
-      supportsAuthenticatedExtendedCard: !!this.extendedCardGenerator,
-    });
-    if (this.auth) {
-      const schemeName = this.auth.type === 'bearer' ? 'bearer' : 'apiKey';
-      card.securitySchemes = {
-        [schemeName]:
-          this.auth.type === 'bearer'
-            ? { type: 'http', scheme: 'bearer' }
-            : { type: 'apiKey', in: 'header', name: this.auth.headerName ?? 'x-api-key' },
-      };
-      card.security = [{ [schemeName]: [] }];
-    }
-    return this.signed(card);
+    const model = this.cardModel(agentName, options?.baseUrl);
+    const card = toLegacyCard(model, { embedInterfaces: this.protocolVersions.includes('1.0') });
+    if (this.legacySigning) return signAgentCard(card, this.legacySigning);
+    if (this.signer) return { ...card, signatures: [this.signer.signature(toV1Card(model))] };
+    return card;
+  }
+
+  /** The A2A 1.0 Agent Card of an agent (the first one by default). */
+  getV1AgentCard(agentName?: string, options?: AgentCardRequestOptions): V1AgentCard {
+    return this.signedV1(toV1Card(this.cardModel(agentName, options?.baseUrl)));
   }
 
   /** The cards of every agent, in the order they were registered. */
   getAgentCards(options?: AgentCardRequestOptions): AgentCard[] {
     return Object.keys(this.agents).map((name) => this.getAgentCard(name, options));
+  }
+
+  /**
+   * The JWKS with the public key the cards are signed with, when `cardSigning` signs with a
+   * private key and `publishJwks` is set; the adapters serve it at `/.well-known/jwks.json`.
+   */
+  getJwks(): JsonWebKeySet | undefined {
+    return this.signer?.publishesJwks ? this.signer.jwks() : undefined;
+  }
+
+  private signedV1(card: V1AgentCard): V1AgentCard {
+    if (this.legacySigning) return signAgentCard(card, this.legacySigning);
+    if (this.signer) return { ...card, signatures: [this.signer.signature(card)] };
+    return card;
+  }
+
+  private cardModel(agentName: string | undefined, baseUrl: string | undefined): AgentCardModel {
+    const name = agentName ?? this.defaultAgentName;
+    if (!this.hasAgent(name)) throw new A2AError(errors.agentNotFound(name));
+    const model = buildAgentCardModel(this.agents[name], {
+      interfaces: this.interfaces(name, baseUrl),
+      version: this.agentVersion,
+      provider: this.provider,
+      capabilities: {
+        streaming: true,
+        pushNotifications: true,
+        stateTransitionHistory: false,
+        extensions: this.extensions.map((extension) => ({ ...extension })),
+        ...(this.extendedCardGenerator && { extendedAgentCard: true }),
+      },
+    });
+    if (this.auth) {
+      const schemeName = this.auth.type === 'bearer' ? 'bearer' : 'apiKey';
+      model.securitySchemes = {
+        [schemeName]:
+          this.auth.type === 'bearer'
+            ? { type: 'http', scheme: 'bearer' }
+            : { type: 'apiKey', in: 'header', name: this.auth.headerName ?? 'x-api-key' },
+      };
+      model.security = [{ [schemeName]: [] }];
+    }
+    return model;
+  }
+
+  /**
+   * Where an agent is served, in the order clients should prefer: JSON-RPC 1.0, HTTP+JSON 1.0,
+   * JSON-RPC 0.3, each version only when the server speaks it. The 1.0 interfaces carry the
+   * agent's name as their tenant.
+   */
+  private interfaces(agentName: string, baseUrl: string | undefined): AgentCardInterface[] {
+    const rpcUrl = this.agentEndpoint(agentName, baseUrl);
+    const interfaces: AgentCardInterface[] = [];
+    if (this.protocolVersions.includes('1.0')) {
+      interfaces.push({
+        url: rpcUrl,
+        protocolBinding: 'JSONRPC',
+        protocolVersion: '1.0',
+        tenant: agentName,
+      });
+      const restUrl = this.restEndpoint(baseUrl);
+      if (restUrl) {
+        interfaces.push({
+          url: restUrl,
+          protocolBinding: 'HTTP+JSON',
+          protocolVersion: '1.0',
+          tenant: agentName,
+        });
+      }
+    }
+    if (this.protocolVersions.includes('0.3')) {
+      interfaces.push({ url: rpcUrl, protocolBinding: 'JSONRPC', protocolVersion: '0.3' });
+    }
+    return interfaces;
   }
 
   private agentEndpoint(agentName: string, baseUrl?: string): string {
@@ -266,24 +424,40 @@ export class A2AServer {
       : `${trimTrailingSlashes(shared)}/${encodeURIComponent(agentName)}`;
   }
 
-  private signed(card: AgentCard): AgentCard {
-    return this.cardSigning ? signAgentCard(card, this.cardSigning) : card;
+  /**
+   * The URL of the HTTP+JSON binding: next to `cardUrl` as `restPath` is next to `basePath`, or
+   * `baseUrl` plus `restPath`.
+   */
+  private restEndpoint(baseUrl?: string): string | null {
+    if (!this.restPath) return null;
+    const base = trimTrailingSlashes(this.basePath);
+    if (this.cardUrl && this.restPath.startsWith(`${base}/`)) {
+      return `${this.cardUrl}${this.restPath.slice(base.length)}`;
+    }
+    if (this.cardUrl && baseUrl === undefined) {
+      return `${new URL(this.cardUrl).origin}${this.restPath}`;
+    }
+    return `${trimTrailingSlashes(baseUrl ?? '')}${this.restPath}`;
   }
 
   /**
    * Answer a JSON-RPC request that is not streamed. Returns null for a notification (a request
-   * without `id`).
+   * without `id`). With `protocolVersion: '1.0'` it takes the A2A 1.0 methods and answers in
+   * their form, with `google.rpc` details in the `data` of errors.
    */
   async handleJsonRpc(
     body: unknown,
     authToken?: string,
     options?: A2AHandleOptions
   ): Promise<JsonRpcResponse | null> {
+    const v1 = options?.protocolVersion === '1.0';
+    const toError = (error: unknown, context: string) =>
+      v1 ? toV1JsonRpcError(error, context) : errors.clientJsonRpcError(error, context);
     let request: JsonRpcRequest;
     try {
       request = this.parseRequest(body);
     } catch (e) {
-      return createErrorResponse(requestIdOf(body), errors.clientJsonRpcError(e, 'parse'));
+      return createErrorResponse(requestIdOf(body), toError(e, 'parse'));
     }
 
     let caller: A2ACaller | undefined;
@@ -291,27 +465,32 @@ export class A2AServer {
       caller = await this.authenticate(authToken);
     } catch (e) {
       if (request.id === undefined) return null;
-      return createErrorResponse(request.id, errors.clientJsonRpcError(e, 'Authentication error'));
+      return createErrorResponse(request.id, toError(e, 'Authentication error'));
     }
 
     try {
-      const result = await this.routeMethod(request.method, request.params, caller, options);
+      const result = v1
+        ? await dispatchV1(this.operations, request.method, request.params, {
+            caller,
+            extensions: options?.extensions ?? [],
+            ...(options?.baseUrl && { baseUrl: options.baseUrl }),
+            ...(options?.agentName !== undefined && { endpointAgent: options.agentName }),
+          })
+        : await this.routeMethod(request.method, request.params, caller, options);
       if (request.id === undefined) return null;
       return createSuccessResponse(request.id, result);
     } catch (e) {
       if (request.id === undefined) return null;
-      return createErrorResponse(
-        request.id,
-        errors.clientJsonRpcError(e, `${request.method} failed`)
-      );
+      return createErrorResponse(request.id, toError(e, `${request.method} failed`));
     }
   }
 
   /**
    * Answer a JSON-RPC request with a stream of JSON-RPC responses, each the data of one SSE
-   * event: for `message/stream` and `tasks/resubscribe` the task, then its status and artifact
-   * updates until the `final` one; a failure ends the stream with an error response. Any other
-   * method yields its single response.
+   * event: for `message/stream` and `tasks/resubscribe` (A2A 1.0: `SendStreamingMessage` and
+   * `SubscribeToTask`) the task, then its status and artifact updates until the task ends or
+   * waits on the client; a failure ends the stream with an error response. Any other method
+   * yields its single response.
    */
   async *handleJsonRpcStream(
     body: unknown,
@@ -319,11 +498,14 @@ export class A2AServer {
     signal?: AbortSignal,
     options?: A2AHandleOptions
   ): AsyncGenerator<JsonRpcResponse> {
+    const v1 = options?.protocolVersion === '1.0';
+    const toError = (error: unknown, context: string) =>
+      v1 ? toV1JsonRpcError(error, context) : errors.clientJsonRpcError(error, context);
     let request: JsonRpcRequest;
     try {
       request = this.parseRequest(body);
     } catch (e) {
-      yield createErrorResponse(requestIdOf(body), errors.clientJsonRpcError(e, 'parse'));
+      yield createErrorResponse(requestIdOf(body), toError(e, 'parse'));
       return;
     }
     const id: RequestId = request.id ?? null;
@@ -332,28 +514,66 @@ export class A2AServer {
     try {
       caller = await this.authenticate(authToken);
     } catch (e) {
-      yield createErrorResponse(id, errors.clientJsonRpcError(e, 'Authentication error'));
+      yield createErrorResponse(id, toError(e, 'Authentication error'));
       return;
     }
 
-    if (!STREAMING_METHODS.includes(request.method)) {
+    const streaming = v1 ? V1_STREAMING_METHODS : STREAMING_METHODS;
+    if (!streaming.includes(request.method)) {
       const response = await this.handleJsonRpc(body, authToken, options);
       if (response) yield response;
       return;
     }
 
     try {
+      if (v1) {
+        const events = streamV1(
+          this.operations,
+          request.method,
+          request.params,
+          {
+            caller,
+            extensions: options?.extensions ?? [],
+            ...(options?.baseUrl && { baseUrl: options.baseUrl }),
+            ...(options?.agentName !== undefined && { endpointAgent: options.agentName }),
+          },
+          signal
+        );
+        for await (const event of events) yield createSuccessResponse(id, event);
+        return;
+      }
+      const context = this.legacyContext(caller, options, undefined);
       const events =
         request.method === 'message/stream'
-          ? this.streamMessage(request.params, caller, options, signal)
-          : this.resubscribe(request.params, caller, signal);
+          ? this.streamLegacyMessage(request.params, context, options, signal)
+          : this.subscribe(parseTaskIdParams(request.params).id, context, signal);
       for await (const event of events) {
         yield createSuccessResponse(id, event);
       }
     } catch (e) {
       if (signal?.aborted) return;
-      yield createErrorResponse(id, errors.clientJsonRpcError(e, `${request.method} failed`));
+      yield createErrorResponse(id, toError(e, `${request.method} failed`));
     }
+  }
+
+  /**
+   * Answer a request of the A2A 1.0 HTTP+JSON binding: `path` is relative to `restPath`, e.g.
+   * `/message:send`, `/tasks/<id>` or `/<tenant>/tasks`. The framework adapters call it for
+   * every request under `restPath`.
+   */
+  handleRest(request: A2ARestRequest): Promise<A2ARestResponse> {
+    return handleRestRequest(this.operations, request);
+  }
+
+  private async *streamLegacyMessage(
+    rawParams: unknown,
+    context: CallContext,
+    options: A2AHandleOptions | undefined,
+    signal: AbortSignal | undefined
+  ): AsyncGenerator<A2ATask | TaskEvent> {
+    const params = parseMessageSendParams(rawParams);
+    const agentName = this.legacyAgentName(params, options);
+    yield* this.streamMessage(params, { ...context, agentName }, signal);
   }
 
   private parseRequest(body: unknown): JsonRpcRequest {
@@ -365,18 +585,17 @@ export class A2AServer {
   }
 
   /**
-   * The events of `message/stream`: the task as it starts, then its updates until the final
-   * status update.
+   * The events of a streamed message: the task as it starts, then its updates until the status
+   * update that ends the interaction.
    */
   private async *streamMessage(
-    rawParams: unknown,
-    caller: A2ACaller | undefined,
-    options: A2AHandleOptions | undefined,
+    params: MessageSendParams,
+    context: CallContext,
     signal: AbortSignal | undefined
   ): AsyncGenerator<A2ATask | TaskEvent> {
-    const params = parseMessageSendParams(rawParams);
-    const { agentName, agent } = this.resolveAgent(params, options);
+    const agent = this.agentOf(context);
     const { message, configuration } = params;
+    this.assertRequiredExtensions(context);
     this.validateInitialPushConfig(configuration);
     if (signal?.aborted) return;
 
@@ -390,7 +609,7 @@ export class A2AServer {
     signal?.addEventListener('abort', onAbort, { once: true });
 
     try {
-      const task = await this.startTask(params, caller);
+      const task = await this.startTask(params, context);
       queue.taskId = task.id;
 
       let executionDone = false;
@@ -400,7 +619,7 @@ export class A2AServer {
         .executeTask(task, this.cogitator, agent, message, {
           stream: true,
           timeout: this.runTimeout(agent, configuration?.timeout),
-          ...(caller && { userId: caller.userId }),
+          ...(context.caller && { userId: context.caller.userId }),
         })
         .then(
           () => {
@@ -426,7 +645,9 @@ export class A2AServer {
         if (executionDone) {
           if (executionError !== undefined) throw executionError;
           throw new A2AError(
-            errors.internalError(`Task ${task.id} of ${agentName} ended without a final status`)
+            errors.internalError(
+              `Task ${task.id} of ${context.agentName} ended without a final status`
+            )
           );
         }
         await queue.wait();
@@ -440,20 +661,27 @@ export class A2AServer {
   }
 
   /**
-   * The events of `tasks/resubscribe`: the task as it is now, then, while it still runs in this
-   * process, its updates until the final status update.
+   * The events of a subscription to a task: the task as it is now, then, while it still runs in
+   * this process, its updates until the status update that ends the interaction. A2A 1.0 refuses
+   * a task that already ended (`UnsupportedOperationError`); A2A 0.3 answers with the task alone.
    */
-  private async *resubscribe(
-    rawParams: unknown,
-    caller: A2ACaller | undefined,
+  private async *subscribe(
+    taskId: string,
+    context: CallContext,
     signal: AbortSignal | undefined
   ): AsyncGenerator<A2ATask | TaskEvent> {
-    const { id } = parseTaskIdParams(rawParams);
-    const queue = new TaskEventQueue(this.taskManager, id);
+    const queue = new TaskEventQueue(this.taskManager, taskId);
     const onAbort = () => queue.notify();
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      const task = await this.visibleTask(id, caller);
+      const task = await this.visibleTask(taskId, context);
+      if (context.version === '1.0' && isTerminalState(task.status.state)) {
+        throw new A2AError(
+          errors.unsupportedOperation(
+            `SubscribeToTask: task ${taskId} already ended (${task.status.state})`
+          )
+        );
+      }
       yield this.shapeTask(task);
       if (isStreamFinalState(task.status.state)) return;
 
@@ -464,7 +692,7 @@ export class A2AServer {
           if (event.kind === 'status-update' && event.final) return;
           continue;
         }
-        if (!this.taskManager.isExecuting(id)) return;
+        if (!this.taskManager.isExecuting(taskId)) return;
         await queue.wait();
       }
     } finally {
@@ -489,10 +717,40 @@ export class A2AServer {
     return verdict === true ? undefined : verdict;
   }
 
-  /** A task the caller may see; another user's task is reported as not found. */
-  private async visibleTask(taskId: string, caller: A2ACaller | undefined): Promise<A2ATask> {
+  private agentFor(endpointAgent: string | undefined, tenant: string | undefined): string {
+    const requested = tenant || undefined;
+    if (endpointAgent !== undefined) {
+      if (requested !== undefined && requested !== endpointAgent) {
+        const description = `is "${requested}", but this endpoint serves agent "${endpointAgent}"`;
+        throw new A2AError(errors.invalidParams(`tenant: ${description}`), {
+          fieldViolations: [{ field: 'tenant', description }],
+        });
+      }
+      if (!this.hasAgent(endpointAgent)) throw new A2AError(errors.agentNotFound(endpointAgent));
+      return endpointAgent;
+    }
+    const name = requested ?? this.defaultAgentName;
+    if (!this.hasAgent(name)) throw new A2AError(errors.agentNotFound(name));
+    return name;
+  }
+
+  private agentOf(context: CallContext): IAgent {
+    if (!this.hasAgent(context.agentName)) {
+      throw new A2AError(errors.agentNotFound(context.agentName));
+    }
+    return this.agents[context.agentName];
+  }
+
+  /**
+   * A task the caller may see; another user's task is reported as not found. Over A2A 1.0 a
+   * task of another agent is not found either.
+   */
+  private async visibleTask(taskId: string, context: CallContext): Promise<A2ATask> {
     const task = await this.taskManager.getTask(taskId);
-    if (!isTaskVisibleTo(task, caller?.userId)) {
+    if (
+      !isTaskVisibleTo(task, context.caller?.userId) ||
+      (context.version === '1.0' && !isTaskOfAgent(task, context.agentName))
+    ) {
       throw new A2AError(errors.taskNotFound(taskId));
     }
     return task;
@@ -510,13 +768,34 @@ export class A2AServer {
     }
   }
 
-  private resolveAgent(
+  /** Refuses a message that does not ask for an extension the agent requires. */
+  private assertRequiredExtensions(context: CallContext): void {
+    const missing = missingRequiredExtensions(this.extensions, context.extensions);
+    if (missing.length > 0) throw new A2AError(errors.extensionSupportRequired(missing));
+  }
+
+  /** The agent of an A2A 0.3 request: its endpoint's, else its `agentName` param, else the first. */
+  private legacyAgentName(
     params: Pick<MessageSendParams, 'agentName'>,
     options?: A2AHandleOptions
-  ): { agentName: string; agent: IAgent } {
+  ): string {
     const agentName = options?.agentName ?? params.agentName ?? this.defaultAgentName;
     if (!this.hasAgent(agentName)) throw new A2AError(errors.agentNotFound(agentName));
-    return { agentName, agent: this.agents[agentName] };
+    return agentName;
+  }
+
+  private legacyContext(
+    caller: A2ACaller | undefined,
+    options: A2AHandleOptions | undefined,
+    agentName: string | undefined
+  ): CallContext {
+    return {
+      caller,
+      agentName: agentName ?? options?.agentName ?? this.defaultAgentName,
+      version: '0.3',
+      extensions: options?.extensions ?? [],
+      ...(options?.baseUrl && { baseUrl: options.baseUrl }),
+    };
   }
 
   /**
@@ -535,13 +814,10 @@ export class A2AServer {
   }
 
   /** A new task for the message, or the task it continues, ready to execute. */
-  private async startTask(
-    params: MessageSendParams,
-    caller: A2ACaller | undefined
-  ): Promise<A2ATask> {
+  private async startTask(params: MessageSendParams, context: CallContext): Promise<A2ATask> {
     const { message, configuration } = params;
     if (message.taskId) {
-      const existing = await this.visibleTask(message.taskId, caller);
+      const existing = await this.visibleTask(message.taskId, context);
       if (message.contextId && message.contextId !== existing.contextId) {
         throw new A2AError(
           errors.invalidParams(`contextId does not match the context of task ${existing.id}`)
@@ -549,8 +825,11 @@ export class A2AServer {
       }
       return this.taskManager.continueTask(message.taskId, message);
     }
-    await this.assertContextAvailable(message.contextId, caller);
-    const task = await this.taskManager.createTask(message, message.contextId, caller?.userId);
+    await this.assertContextAvailable(message.contextId, context.caller);
+    const task = await this.taskManager.createTask(message, message.contextId, {
+      ownerId: context.caller?.userId,
+      agentName: context.agentName,
+    });
     await this.registerInitialPushConfig(task.id, configuration);
     return task;
   }
@@ -561,49 +840,66 @@ export class A2AServer {
     caller: A2ACaller | undefined,
     options: A2AHandleOptions | undefined
   ): Promise<unknown> {
+    const context = this.legacyContext(caller, options, undefined);
     switch (method) {
-      case 'message/send':
-        return this.handleSendMessage(params, caller, options);
+      case 'message/send': {
+        const parsed = parseMessageSendParams(params);
+        const agentName = this.legacyAgentName(parsed, options);
+        return this.sendMessage(parsed, { ...context, agentName });
+      }
       case 'message/stream':
       case 'tasks/resubscribe':
         throw new A2AError(
           errors.unsupportedOperation(`${method} streams: use handleJsonRpcStream`)
         );
-      case 'tasks/get':
-        return this.handleGetTask(params, caller);
+      case 'tasks/get': {
+        const { id, historyLength } = parseTaskQueryParams(params);
+        return this.getTask(id, historyLength, context);
+      }
       case 'tasks/cancel':
-        return this.handleCancelTask(params, caller);
+        return this.cancelTask(parseTaskIdParams(params).id, context);
       case 'tasks/list':
-        return this.handleListTasks(params, caller);
-      case 'tasks/pushNotificationConfig/set':
-        return this.handleSetPushNotificationConfig(params, caller);
-      case 'tasks/pushNotificationConfig/get':
-        return this.handleGetPushNotificationConfig(params, caller);
-      case 'tasks/pushNotificationConfig/list':
-        return this.handleListPushNotificationConfigs(params, caller);
-      case 'tasks/pushNotificationConfig/delete':
-        return this.handleDeletePushNotificationConfig(params, caller);
+        return this.handleLegacyListTasks(params, caller);
+      case 'tasks/pushNotificationConfig/set': {
+        const { taskId, pushNotificationConfig } = parseTaskPushNotificationConfig(params);
+        const stored = await this.createPushConfig(taskId, pushNotificationConfig, context);
+        return { taskId, pushNotificationConfig: stored } satisfies TaskPushNotificationConfig;
+      }
+      case 'tasks/pushNotificationConfig/get': {
+        const { id, pushNotificationConfigId } = parseGetPushNotificationConfigParams(params);
+        const config = await this.getPushConfig(id, pushNotificationConfigId, context);
+        return { taskId: id, pushNotificationConfig: config } satisfies TaskPushNotificationConfig;
+      }
+      case 'tasks/pushNotificationConfig/list': {
+        const { id } = parseTaskIdParams(params);
+        const configs = await this.listPushConfigs(id, context);
+        return configs.map((pushNotificationConfig): TaskPushNotificationConfig => ({
+          taskId: id,
+          pushNotificationConfig,
+        }));
+      }
+      case 'tasks/pushNotificationConfig/delete': {
+        const { id, pushNotificationConfigId } = parseDeletePushNotificationConfigParams(params);
+        await this.deletePushConfig(id, pushNotificationConfigId, context);
+        return null;
+      }
       case 'agent/getAuthenticatedExtendedCard':
-        return this.handleExtendedCard(params, options);
+        return this.legacyExtendedCard(params, options);
       default:
         throw new A2AError(errors.methodNotFound(method));
     }
   }
 
-  private async handleSendMessage(
-    rawParams: unknown,
-    caller: A2ACaller | undefined,
-    options: A2AHandleOptions | undefined
-  ): Promise<A2ATask> {
-    const params = parseMessageSendParams(rawParams);
-    const { agent } = this.resolveAgent(params, options);
+  private async sendMessage(params: MessageSendParams, context: CallContext): Promise<A2ATask> {
+    const agent = this.agentOf(context);
     const { message, configuration } = params;
+    this.assertRequiredExtensions(context);
     this.validateInitialPushConfig(configuration);
 
-    const task = await this.startTask(params, caller);
+    const task = await this.startTask(params, context);
     const execution = this.taskManager.executeTask(task, this.cogitator, agent, message, {
       timeout: this.runTimeout(agent, configuration?.timeout),
-      ...(caller && { userId: caller.userId }),
+      ...(context.caller && { userId: context.caller.userId }),
     });
 
     if (configuration?.blocking === false) {
@@ -669,19 +965,21 @@ export class A2AServer {
     return shaped;
   }
 
-  private async handleGetTask(params: unknown, caller: A2ACaller | undefined): Promise<A2ATask> {
-    const { id, historyLength } = parseTaskQueryParams(params);
-    return this.shapeTask(await this.visibleTask(id, caller), { historyLength });
+  private async getTask(
+    taskId: string,
+    historyLength: number | undefined,
+    context: CallContext
+  ): Promise<A2ATask> {
+    return this.shapeTask(await this.visibleTask(taskId, context), { historyLength });
   }
 
-  private async handleCancelTask(params: unknown, caller: A2ACaller | undefined): Promise<A2ATask> {
-    const { id } = parseTaskIdParams(params);
-    await this.visibleTask(id, caller);
-    return publicTask(await this.taskManager.cancelTask(id));
+  private async cancelTask(taskId: string, context: CallContext): Promise<A2ATask> {
+    await this.visibleTask(taskId, context);
+    return publicTask(await this.taskManager.cancelTask(taskId));
   }
 
-  /** Cogitator extension `tasks/list`: the caller's tasks, newest first. */
-  private async handleListTasks(
+  /** Cogitator extension `tasks/list` of A2A 0.3: the caller's tasks, newest first. */
+  private async handleLegacyListTasks(
     params: unknown,
     caller: A2ACaller | undefined
   ): Promise<{ tasks: A2ATask[] }> {
@@ -697,56 +995,76 @@ export class A2AServer {
     return { tasks: tasks.map(publicTask) };
   }
 
-  private async handleSetPushNotificationConfig(
-    params: unknown,
-    caller: A2ACaller | undefined
-  ): Promise<TaskPushNotificationConfig> {
-    const { taskId, pushNotificationConfig } = parseTaskPushNotificationConfig(params);
-    this.assertWebhookAllowed(pushNotificationConfig.url);
-    await this.visibleTask(taskId, caller);
-    const stored = await this.pushNotificationStore.create(taskId, pushNotificationConfig);
-    return { taskId, pushNotificationConfig: stored };
+  /**
+   * A2A 1.0 `ListTasks`: the caller's tasks of the agent, the most recently updated first, a page
+   * at a time behind a keyset cursor.
+   */
+  private async listTasksPage(
+    query: ListTasksPageQuery,
+    context: CallContext
+  ): Promise<ListTasksPage> {
+    const matching = (
+      await this.taskManager.listTasks({
+        ...(query.contextId && { contextId: query.contextId }),
+        ...(query.state && { state: query.state }),
+        visibleTo: context.caller?.userId ?? null,
+      })
+    ).filter((task) => isTaskOfAgent(task, context.agentName));
+    const page = paginateTasks(matching, query);
+    return {
+      ...page,
+      tasks: page.tasks.map((task) => {
+        const shaped = this.shapeTask(task, { historyLength: query.historyLength });
+        if (query.includeArtifacts) return shaped;
+        const { artifacts: _artifacts, ...rest } = shaped;
+        return rest;
+      }),
+    };
   }
 
-  private async handleGetPushNotificationConfig(
-    params: unknown,
-    caller: A2ACaller | undefined
-  ): Promise<TaskPushNotificationConfig> {
-    const { id, pushNotificationConfigId } = parseGetPushNotificationConfigParams(params);
-    await this.visibleTask(id, caller);
-    const config = pushNotificationConfigId
-      ? await this.pushNotificationStore.get(id, pushNotificationConfigId)
-      : ((await this.pushNotificationStore.list(id))[0] ?? null);
+  private async createPushConfig(
+    taskId: string,
+    config: PushNotificationConfig,
+    context: CallContext
+  ): Promise<PushNotificationConfig> {
+    this.assertWebhookAllowed(config.url);
+    await this.visibleTask(taskId, context);
+    return publicPushConfig(await this.pushNotificationStore.create(taskId, config));
+  }
+
+  private async getPushConfig(
+    taskId: string,
+    configId: string | undefined,
+    context: CallContext
+  ): Promise<PushNotificationConfig> {
+    await this.visibleTask(taskId, context);
+    const config = configId
+      ? await this.pushNotificationStore.get(taskId, configId)
+      : ((await this.pushNotificationStore.list(taskId))[0] ?? null);
     if (!config) {
-      throw new A2AError(errors.pushNotificationConfigNotFound(id, pushNotificationConfigId ?? id));
+      throw new A2AError(errors.pushNotificationConfigNotFound(taskId, configId ?? taskId));
     }
-    return { taskId: id, pushNotificationConfig: config };
+    return publicPushConfig(config);
   }
 
-  private async handleListPushNotificationConfigs(
-    params: unknown,
-    caller: A2ACaller | undefined
-  ): Promise<TaskPushNotificationConfig[]> {
-    const { id } = parseTaskIdParams(params);
-    await this.visibleTask(id, caller);
-    const configs = await this.pushNotificationStore.list(id);
-    return configs.map((pushNotificationConfig) => ({ taskId: id, pushNotificationConfig }));
+  private async listPushConfigs(
+    taskId: string,
+    context: CallContext
+  ): Promise<PushNotificationConfig[]> {
+    await this.visibleTask(taskId, context);
+    return (await this.pushNotificationStore.list(taskId)).map(publicPushConfig);
   }
 
-  private async handleDeletePushNotificationConfig(
-    params: unknown,
-    caller: A2ACaller | undefined
-  ): Promise<null> {
-    const { id, pushNotificationConfigId } = parseDeletePushNotificationConfigParams(params);
-    await this.visibleTask(id, caller);
-    await this.pushNotificationStore.delete(id, pushNotificationConfigId);
-    return null;
+  private async deletePushConfig(
+    taskId: string,
+    configId: string,
+    context: CallContext
+  ): Promise<void> {
+    await this.visibleTask(taskId, context);
+    await this.pushNotificationStore.delete(taskId, configId);
   }
 
-  private async handleExtendedCard(
-    params: unknown,
-    options: A2AHandleOptions | undefined
-  ): Promise<AgentCard> {
+  private legacyExtendedCard(params: unknown, options: A2AHandleOptions | undefined): AgentCard {
     if (!this.extendedCardGenerator) {
       throw new A2AError(errors.authenticatedExtendedCardNotConfigured());
     }
@@ -757,6 +1075,57 @@ export class A2AServer {
     const name =
       options?.agentName ?? (typeof requested === 'string' ? requested : this.defaultAgentName);
     if (!this.hasAgent(name)) throw new A2AError(errors.agentNotFound(name));
-    return this.signed(this.extendedCardGenerator(name));
+    const card = this.extendedCardGenerator(name);
+    if (this.legacySigning) return signAgentCard(card, this.legacySigning);
+    if (this.signer) return { ...card, signatures: [this.signer.signature(card)] };
+    return card;
   }
+
+  /**
+   * A2A 1.0 `GetExtendedAgentCard`: the card `extendedCardGenerator` returns, in its 1.0 form.
+   * It keeps the interfaces it lists in `supportedInterfaces`, else gets the agent's own.
+   */
+  private v1ExtendedCard(context: CallContext): V1AgentCard {
+    if (!this.extendedCardGenerator) {
+      throw new A2AError(
+        errors.unsupportedOperation(
+          'GetExtendedAgentCard (the agent declares no extended Agent Card)'
+        )
+      );
+    }
+    const card = this.extendedCardGenerator(context.agentName);
+    const model = cardModelFromLegacy(card);
+    if (!card.supportedInterfaces?.length) {
+      model.interfaces = this.interfaces(context.agentName, context.baseUrl);
+    }
+    model.capabilities = { ...model.capabilities, extendedAgentCard: true };
+    return this.signedV1(toV1Card(model));
+  }
+}
+
+function resolveProtocolVersions(
+  versions: readonly A2AProtocolVersion[] | undefined
+): readonly A2AProtocolVersion[] {
+  if (versions === undefined) return SUPPORTED_PROTOCOL_VERSIONS;
+  const unknown = versions.filter((version) => !SUPPORTED_PROTOCOL_VERSIONS.includes(version));
+  if (versions.length === 0 || unknown.length > 0) {
+    throw new Error(
+      `A2AServer protocolVersions must list some of ${SUPPORTED_PROTOCOL_VERSIONS.join(', ')}${
+        unknown.length > 0 ? `, got ${unknown.join(', ')}` : ''
+      }`
+    );
+  }
+  return SUPPORTED_PROTOCOL_VERSIONS.filter((version) => versions.includes(version));
+}
+
+/** The built-in extensions, then the configured ones; a configured URI replaces a built-in one. */
+function mergeExtensions(
+  builtIn: readonly AgentExtension[],
+  configured: readonly AgentExtension[]
+): readonly AgentExtension[] {
+  const configuredUris = new Set(configured.map((extension) => extension.uri));
+  return [
+    ...builtIn.filter((extension) => !configuredUris.has(extension.uri)),
+    ...configured.map((extension) => ({ ...extension })),
+  ];
 }

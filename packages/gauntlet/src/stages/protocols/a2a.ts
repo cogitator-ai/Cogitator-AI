@@ -218,7 +218,7 @@ export const a2aStage: StageDefinition = {
         await client.continueTask(task.id, 'One more claim.');
         throw new Error('A completed task accepted another message');
       } catch (error) {
-        if (!(error instanceof A2AError) || error.code !== -32600) throw error;
+        if (!(error instanceof A2AError) || error.code !== -32004) throw error;
         evidence('completedTaskRefused', error.code);
       }
 

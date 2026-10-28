@@ -94,7 +94,7 @@ export function A2aDemo() {
   return (
     <div ref={ref} className="flex h-full flex-col">
       <DemoBar
-        label="A2A v0.3 · JSON-RPC"
+        label="A2A 1.0 + 0.3 · JSON-RPC · REST"
         right={
           <span className="font-mono text-[10.5px] text-l-faint">
             task_8f2c ·{' '}

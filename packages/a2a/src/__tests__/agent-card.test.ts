@@ -98,10 +98,19 @@ describe('generateAgentCard', () => {
     expect(card.skills[1].id).toBe('calculator');
   });
 
-  it('should handle agent with no tools', () => {
-    const agent = createMockAgent({ name: 'test' });
+  it('should give an agent with no tools one conversation skill, as A2A 1.0 needs a skill', () => {
+    const agent = createMockAgent({ name: 'test', description: 'Talks things through' });
     const card = generateAgentCard(agent, { url: 'https://example.com' });
-    expect(card.skills).toEqual([]);
+    expect(card.skills).toEqual([
+      {
+        id: 'chat',
+        name: 'test',
+        description: 'Talks things through',
+        tags: ['chat'],
+        inputModes: ['text/plain', 'application/json'],
+        outputModes: ['text/plain', 'application/json'],
+      },
+    ]);
   });
 
   it('should include provider when specified', () => {

@@ -2,7 +2,10 @@ import { CogitatorError } from '@cogitator-ai/types';
 import type { JsonRpcError } from './json-rpc.js';
 import { JsonRpcParseError } from './json-rpc.js';
 
-/** JSON-RPC error codes of A2A v0.3 (section 8), plus the server error this package adds. */
+/**
+ * JSON-RPC error codes of A2A (v0.3 section 8, v1.0 section 5.4), plus the server error this
+ * package adds.
+ */
 export const A2A_ERROR_CODES = {
   parseError: -32700,
   invalidRequest: -32600,
@@ -16,9 +19,36 @@ export const A2A_ERROR_CODES = {
   contentTypeNotSupported: -32005,
   invalidAgentResponse: -32006,
   authenticatedExtendedCardNotConfigured: -32007,
+  /** A2A 1.0: the agent requires an extension the client did not ask for */
+  extensionSupportRequired: -32008,
+  /** A2A 1.0: the server does not speak the protocol version the client asked for */
+  versionNotSupported: -32009,
   /** Cogitator: the request carries no valid credentials (answered with HTTP 401) */
   unauthorized: -32000,
 } as const;
+
+/** A field of a request that failed validation, as `google.rpc.BadRequest` reports it. */
+export interface FieldViolation {
+  /** The path of the field, e.g. `message.parts[0].text` */
+  field: string;
+  description: string;
+}
+
+/**
+ * The A2A 1.0 code of errors whose meaning got its own code in 1.0, kept apart so the 0.3 error
+ * stays exactly what it was.
+ */
+const V1_CODES = new WeakMap<JsonRpcError, number>();
+
+function withV1Code(error: JsonRpcError, code: number): JsonRpcError {
+  V1_CODES.set(error, code);
+  return error;
+}
+
+/** The code an error carries in A2A 1.0. */
+export function v1ErrorCode(error: JsonRpcError): number {
+  return V1_CODES.get(error) ?? error.code;
+}
 
 export function taskNotFound(taskId: string): JsonRpcError {
   return {
@@ -41,11 +71,14 @@ export function taskNotCancelable(taskId: string): JsonRpcError {
  * v0.3, section 7.1), and a task that is still running takes no second message.
  */
 export function taskNotContinuable(taskId: string, state: string): JsonRpcError {
-  return {
-    code: A2A_ERROR_CODES.invalidRequest,
-    message: `Task ${taskId} cannot take a message in state '${state}'`,
-    data: { taskId, state },
-  };
+  return withV1Code(
+    {
+      code: A2A_ERROR_CODES.invalidRequest,
+      message: `Task ${taskId} cannot take a message in state '${state}'`,
+      data: { taskId, state },
+    },
+    A2A_ERROR_CODES.unsupportedOperation
+  );
 }
 
 export function pushNotificationsNotSupported(): JsonRpcError {
@@ -55,12 +88,16 @@ export function pushNotificationsNotSupported(): JsonRpcError {
   };
 }
 
+/** A push notification config the task does not have: `TaskNotFoundError` in A2A 1.0. */
 export function pushNotificationConfigNotFound(taskId: string, configId: string): JsonRpcError {
-  return {
-    code: A2A_ERROR_CODES.invalidParams,
-    message: `Push notification config ${configId} not found for task ${taskId}`,
-    data: { taskId, pushNotificationConfigId: configId },
-  };
+  return withV1Code(
+    {
+      code: A2A_ERROR_CODES.invalidParams,
+      message: `Push notification config ${configId} not found for task ${taskId}`,
+      data: { taskId, pushNotificationConfigId: configId },
+    },
+    A2A_ERROR_CODES.taskNotFound
+  );
 }
 
 export function unsupportedOperation(method: string): JsonRpcError {
@@ -90,6 +127,24 @@ export function authenticatedExtendedCardNotConfigured(): JsonRpcError {
   return {
     code: A2A_ERROR_CODES.authenticatedExtendedCardNotConfigured,
     message: 'Authenticated Extended Card not configured',
+  };
+}
+
+/** The client did not ask for extensions the agent requires (A2A 1.0, section 3.3.4). */
+export function extensionSupportRequired(uris: readonly string[]): JsonRpcError {
+  return {
+    code: A2A_ERROR_CODES.extensionSupportRequired,
+    message: `Extension support required: ${uris.join(', ')}`,
+    data: { extensions: [...uris] },
+  };
+}
+
+/** The server does not speak the protocol version the client asked for (A2A 1.0, section 3.6.2). */
+export function versionNotSupported(requested: string, supported: readonly string[]): JsonRpcError {
+  return {
+    code: A2A_ERROR_CODES.versionNotSupported,
+    message: `A2A protocol version ${requested} is not supported, supported versions: ${supported.join(', ')}`,
+    data: { requestedVersion: requested, supportedVersions: [...supported] },
   };
 }
 
@@ -142,10 +197,22 @@ export function internalError(detail?: string): JsonRpcError {
   };
 }
 
+export interface A2AErrorOptions {
+  /** The request fields that failed validation, reported in A2A 1.0 as `google.rpc.BadRequest` */
+  fieldViolations?: readonly FieldViolation[];
+}
+
 export class A2AError extends Error {
-  constructor(public readonly jsonRpcError: JsonRpcError) {
+  /** The request fields that failed validation, when the error is about invalid params */
+  readonly fieldViolations?: readonly FieldViolation[];
+
+  constructor(
+    public readonly jsonRpcError: JsonRpcError,
+    options?: A2AErrorOptions
+  ) {
     super(jsonRpcError.message);
     this.name = 'A2AError';
+    if (options?.fieldViolations?.length) this.fieldViolations = options.fieldViolations;
   }
 
   get code(): number {
