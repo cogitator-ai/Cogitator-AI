@@ -31,11 +31,13 @@ export type ConfigEnv = Readonly<Record<string, string | undefined>>;
  * - COGITATOR_AZURE_ENDPOINT -> llm.providers.azure.endpoint
  * - COGITATOR_AZURE_API_VERSION -> llm.providers.azure.apiVersion
  * - COGITATOR_AZURE_DEPLOYMENT -> llm.providers.azure.deployment
+ * - COGITATOR_AZURE_MODEL -> llm.providers.azure.model
  * - COGITATOR_BEDROCK_REGION -> llm.providers.bedrock.region
  * - COGITATOR_BEDROCK_ACCESS_KEY_ID -> llm.providers.bedrock.accessKeyId
  * - COGITATOR_BEDROCK_SECRET_ACCESS_KEY -> llm.providers.bedrock.secretAccessKey
  * - COGITATOR_BEDROCK_SESSION_TOKEN -> llm.providers.bedrock.sessionToken
  * - COGITATOR_BEDROCK_PROFILE -> llm.providers.bedrock.profile
+ * - COGITATOR_BEDROCK_ENDPOINT -> llm.providers.bedrock.endpoint
  * - COGITATOR_MISTRAL_API_KEY -> llm.providers.mistral.apiKey
  * - COGITATOR_GROQ_API_KEY -> llm.providers.groq.apiKey
  * - COGITATOR_TOGETHER_API_KEY -> llm.providers.together.apiKey
@@ -205,6 +207,7 @@ function loadProviderConfigs(env: ConfigEnv): ProvidersConfig {
       endpoint: azure.endpoint,
       ...(azure.apiVersion ? { apiVersion: azure.apiVersion } : {}),
       ...(azure.deployment ? { deployment: azure.deployment } : {}),
+      ...(azure.model ? { model: azure.model } : {}),
     };
   }
 
