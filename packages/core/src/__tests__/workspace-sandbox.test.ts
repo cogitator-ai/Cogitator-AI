@@ -5,6 +5,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -81,6 +82,30 @@ describe('LocalWorkspace exec.launch', () => {
     expect(result.stderr).toBe('this gone\n<note>3</note>');
     expect(result.sandbox).toEqual({ sandboxed: true, kind: 'seatbelt', violations: [] });
     expect(cleanup).toHaveBeenCalledTimes(1);
+    await workspace.dispose();
+  });
+
+  it('returns the output a cleanup gives instead, and feeds extra inputs on descriptor 3', async () => {
+    const workspace = new LocalWorkspace({
+      root,
+      exec: {
+        launch: (launch) => ({
+          file: launch.file,
+          args: launch.args,
+          extraInputs: [new TextEncoder().encode('from fd 3')],
+          cleanup: (result) => ({
+            output: {
+              stdout: (result?.stdout ?? '').toUpperCase(),
+              stderr: 'rewritten',
+            },
+            notice: '<n/>',
+          }),
+        }),
+      },
+    });
+    const result = await workspace.exec('cat <&3; echo raw >&2');
+    expect(result.stdout).toBe('FROM FD 3');
+    expect(result.stderr).toBe('rewritten\n<n/>');
     await workspace.dispose();
   });
 
@@ -274,6 +299,55 @@ describe('the trash of a LocalWorkspace', () => {
     expect(await workspace.emptyTrash()).toEqual({ deleted: [entry.id] });
     expect(await workspace.listTrash()).toEqual([]);
     await expect(workspace.emptyTrash({ olderThan: -1 })).rejects.toThrow(RangeError);
+  });
+
+  it('empties folders whose entry is gone and records without a folder too', async () => {
+    await workspace.remove('src/a.ts', { trash: true });
+    const [entry] = await workspace.listTrash();
+    rmSync(join(root, WORKSPACE_TRASH_DIR, entry.id, 'src', 'a.ts'));
+    const record = '2026-01-02T03-04-05-678Z-zzz999';
+    writeFileSync(
+      join(root, WORKSPACE_TRASH_DIR, `${record}.json`),
+      JSON.stringify({ version: 1, path: 'gone.txt', trashedAt: Date.now(), type: 'file' })
+    );
+    expect(await workspace.listTrash()).toEqual([]);
+    expect(await workspace.emptyTrash({ olderThan: 60_000 })).toEqual({ deleted: [] });
+    expect(existsSync(join(root, WORKSPACE_TRASH_DIR, entry.id))).toBe(true);
+    expect(await workspace.emptyTrash()).toEqual({ deleted: [] });
+    expect(existsSync(join(root, WORKSPACE_TRASH_DIR, entry.id))).toBe(false);
+    expect(existsSync(join(root, WORKSPACE_TRASH_DIR, `${entry.id}.json`))).toBe(false);
+    expect(existsSync(join(root, WORKSPACE_TRASH_DIR, `${record}.json`))).toBe(false);
+  });
+
+  it('refuses to trash the trash or what it holds', async () => {
+    await workspace.remove('src/a.ts', { trash: true });
+    const [entry] = await workspace.listTrash();
+    for (const path of [WORKSPACE_TRASH_DIR, entry.trashedTo]) {
+      await expect(workspace.remove(path, { trash: true, recursive: true })).rejects.toSatisfy(
+        (error: unknown) => WorkspaceError.is(error, 'INVALID_PATH')
+      );
+    }
+    expect((await workspace.listTrash()).map((listed) => listed.id)).toEqual([entry.id]);
+  });
+
+  it('never lists or restores an entry reached through a symlink in its folder', async () => {
+    const outside = join(base, 'outside');
+    mkdirSync(join(outside, 'k'), { recursive: true });
+    writeFileSync(join(outside, 'k', 'big.bin'), 'x'.repeat(1000));
+    const id = '2026-01-02T03-04-05-678Z-sym111';
+    mkdirSync(join(root, WORKSPACE_TRASH_DIR, id), { recursive: true });
+    symlinkSync(outside, join(root, WORKSPACE_TRASH_DIR, id, 'a'));
+    writeFileSync(
+      join(root, WORKSPACE_TRASH_DIR, `${id}.json`),
+      JSON.stringify({ version: 1, path: 'a/k', trashedAt: Date.now(), type: 'directory' })
+    );
+    expect(await workspace.listTrash()).toEqual([]);
+    await expect(workspace.restoreFromTrash(id)).rejects.toSatisfy((error: unknown) =>
+      WorkspaceError.is(error, 'NOT_FOUND')
+    );
+    await workspace.emptyTrash();
+    expect(existsSync(join(outside, 'k', 'big.bin'))).toBe(true);
+    expect(existsSync(join(root, WORKSPACE_TRASH_DIR, id))).toBe(false);
   });
 
   it('refuses to empty the trash while a command runs', async () => {

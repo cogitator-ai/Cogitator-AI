@@ -9,11 +9,15 @@ import { depthOf } from './paths';
 /** The program that applies a profile */
 export const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
 
-/** A path a rule of the profile names: one path, a directory and what it holds, or an expression */
+/**
+ * A path a rule of the profile names: one path, a directory and what it holds, or an expression
+ * (POSIX extended syntax, over absolute paths) with how many names its glob spells (`**` counts
+ * none), which ranks it against the other read rules
+ */
 export type SeatbeltMatcher =
   | { kind: 'literal'; path: string }
   | { kind: 'subpath'; path: string }
-  | { kind: 'regex'; source: string };
+  | { kind: 'regex'; source: string; depth: number };
 
 export interface SeatbeltProfileInput {
   /** Where commands may write: the workspace root, `allowWrite`, the sandbox's `TMPDIR` */
@@ -74,14 +78,19 @@ function filter(matcher: SeatbeltMatcher): string {
     case 'subpath':
       return `(subpath ${sbString(matcher.path)})`;
     case 'regex':
-      return `(regex #${sbString(matcher.source)})`;
+      return `(regex ${sbString(matcher.source)})`;
   }
 }
 
-/** How specific a read rule is: literal paths by depth, expressions after them, a deny last on a tie */
+/**
+ * How specific a read rule is: by the names its path spells, a wildcard name counting as one and
+ * `**` as none, a deny after an allow on a tie. Seatbelt applies the last rule that matches, so
+ * the rules are written from the least specific to the most: a `denyRead` inside a wider
+ * `allowRead` holds, an `allowRead` inside a wider `denyRead` reopens
+ */
 function specificity(rule: { matcher: SeatbeltMatcher; allow: boolean }): number {
-  const depth = rule.matcher.kind === 'regex' ? 10_000 : depthOf(rule.matcher.path) * 2;
-  return depth + (rule.allow ? 0 : 1);
+  const depth = rule.matcher.kind === 'regex' ? rule.matcher.depth : depthOf(rule.matcher.path);
+  return depth * 2 + (rule.allow ? 0 : 1);
 }
 
 /** The profile for `input` */

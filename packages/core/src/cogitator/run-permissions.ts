@@ -40,6 +40,7 @@ import {
   type LoadedPermissionSettings,
 } from '../permissions/settings';
 import { accessKindOf } from '../permissions/rules';
+import { commandWorkspace } from '../permissions/sandbox';
 
 let hostProbeTool: Tool | undefined;
 
@@ -493,7 +494,7 @@ export class RunPermissions {
     call: PermissionCall
   ): Promise<PermissionDecision> {
     if (!this.active) {
-      if (call.workspace?.sandbox && accessKindOf(tool) === 'command') {
+      if (accessKindOf(tool) === 'command' && commandWorkspace(tool, call.workspace)?.sandbox) {
         return resolvePermission(tool, args, {
           mode: 'default',
           rules: new PermissionRuleSet([]),

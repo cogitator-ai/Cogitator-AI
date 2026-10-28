@@ -210,11 +210,11 @@ The classifier reads what the user asked for, the newest messages of the convers
 
 1. a `deny` rule refuses the call
 2. `plan` mode refuses a call that is not read-only
-3. an `rm` or `rmdir` of a critical path (the workspace root or above it, `~`, `/`, `.git`) asks, in every mode
-4. an `ask` rule asks (`bypassPermissions` runs it). A bare `Bash` ask rule is skipped for a command that runs in the workspace's [OS sandbox](/docs/tools/os-sandbox), except in `plan` mode
+3. an `rm` or `rmdir` of a critical path (the workspace root or above it, `~`, `/`, `.git`, compared without case where the filesystem ignores it, an operand the shell or another program decides such as `$DIR`, `{a,b}`, `xargs rm` or `find -delete`) asks, in every mode. Plugin hook commands skip this check and the next outside-removal one (`removalChecks: false`), as in Claude Code
+4. an `ask` rule asks (`bypassPermissions` runs it). A bare `Bash` ask rule is skipped for a command the next steps would let run in the workspace's [OS sandbox](/docs/tools/os-sandbox) (step 7), never in `plan` mode
 5. a removal outside the workspace by a command that runs without a sandbox asks, in every mode but `bypassPermissions`
 6. an `allow` rule runs it (not a sandboxed command that names hosts of its own)
-7. a command that runs in the workspace's OS sandbox runs (`decidedBy: 'sandbox'`), unless a variable set in front of it, `eval` or `make X=y` could change what it runs, it names hosts of its own, or the guardrails want an approval
+7. a command of `run_command` that runs in the workspace's OS sandbox runs (`decidedBy: 'sandbox'`), unless a variable set in front of it, `eval`, `make X=y`, `source`, `alias`, `export`, `set -a` or a shell reading stdin could change what it runs, the line hides what a rule names, it names hosts of its own, or the guardrails want an approval. Only `run_command` of `workspaceTools()` executing in that workspace qualifies, never `exec` or a tool bound to another workspace
 8. `bypassPermissions` runs it (a command line that could hide what a deny or ask rule names asks), `acceptEdits` runs an edit inside the workspace, `plan` runs a read-only command
 9. an edit, or a call whose tool needs approval, asks, `auto` mode asks its classifier instead, `dontAsk` refuses it
 10. any other call runs

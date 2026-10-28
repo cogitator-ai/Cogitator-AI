@@ -233,6 +233,54 @@ describe('executeTool', () => {
     expect(result.error).toContain('sandbox.allowNativeFallback is false');
   });
 
+  it('runs an os-sandboxed tool through the sandbox manager, never natively', async () => {
+    const registry = new ToolRegistry();
+    const nativeExecute = vi.fn(async () => ({ ran: true }));
+    registry.register(
+      tool({
+        name: 'shell',
+        description: 'Run shell',
+        parameters: z.object({ command: z.string() }),
+        sandbox: { type: 'os', os: { network: { allowedDomains: ['github.com'] } } },
+        execute: nativeExecute,
+      })
+    );
+    const run = (initializeSandbox: () => Promise<SandboxManager | undefined>) =>
+      executeTool(
+        registry,
+        { id: 'tc_1', name: 'shell', arguments: { command: 'echo hi' } },
+        'run_1',
+        'agent_1',
+        undefined,
+        undefined,
+        false,
+        initializeSandbox
+      );
+
+    const missing = await run(async () => undefined);
+    expect(nativeExecute).not.toHaveBeenCalled();
+    expect(missing.error).toContain('needs the OS sandbox');
+    expect(missing.errorCode).toBe('SANDBOX_UNAVAILABLE');
+
+    const execute = vi.fn(async () => ({
+      success: false as const,
+      error: 'The OS sandbox cannot run here: bwrap is not installed',
+    }));
+    const manager: SandboxManager = {
+      initialize: async () => undefined,
+      execute,
+      isDockerAvailable: async () => false,
+      shutdown: async () => undefined,
+    };
+    const refused = await run(async () => manager);
+    expect(nativeExecute).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ command: ['sh', '-c', 'echo hi'] }),
+      expect.objectContaining({ type: 'os', os: { network: { allowedDomains: ['github.com'] } } })
+    );
+    expect(refused.error).toContain('cannot run here');
+  });
+
   it('uses the sandbox manager created on first sandboxed call', async () => {
     const registry = new ToolRegistry();
     const nativeExecute = vi.fn(async () => ({ native: true }));

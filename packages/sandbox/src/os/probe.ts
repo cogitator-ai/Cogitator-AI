@@ -1,14 +1,23 @@
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 import type { OsSandboxAvailability, OsSandboxKind } from '@cogitator-ai/types';
+import { innerBubblewrap, type BubblewrapNesting } from './bubblewrap';
+import { seccompArch, seccompFilter, type SeccompArch } from './seccomp';
 import { SANDBOX_EXEC } from './seatbelt';
 
 const PROBE_TIMEOUT = 15_000;
 
-/** What the sandbox found on this machine: whether it runs, and the binaries it uses on Linux */
-export type OsSandboxProbe = OsSandboxAvailability & { bwrap?: string; socat?: string };
+/**
+ * What the sandbox found on this machine: whether it runs, and on Linux the binaries it uses and
+ * how it keeps commands from making namespaces of their own
+ */
+export type OsSandboxProbe = OsSandboxAvailability & {
+  bwrap?: string;
+  socat?: string;
+  nesting?: BubblewrapNesting;
+};
 
 export interface ProbeOptions {
   platform?: NodeJS.Platform;
@@ -16,6 +25,8 @@ export interface ProbeOptions {
   bwrapPath?: string;
   /** Linux: `socat` to use instead of the one on `PATH` */
   socatPath?: string;
+  /** Linux: the CPU to build the seccomp filter for (default: this one), for tests */
+  arch?: string;
 }
 
 async function executable(path: string): Promise<boolean> {
@@ -40,17 +51,70 @@ export async function findProgram(name: string, given?: string): Promise<string 
   return undefined;
 }
 
-function run(file: string, args: readonly string[]): Promise<{ code: number; stderr: string }> {
+function run(
+  file: string,
+  args: readonly string[],
+  inputs: readonly Uint8Array[] = []
+): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolveRun) => {
-    execFile(file, [...args], { timeout: PROBE_TIMEOUT }, (error, _stdout, stderr) => {
-      if (!error) {
-        resolveRun({ code: 0, stderr: String(stderr) });
-        return;
-      }
-      const code = typeof error.code === 'number' ? error.code : 1;
-      resolveRun({ code, stderr: String(stderr) || error.message });
+    let stdout = '';
+    let stderr = '';
+    let done = false;
+    const finish = (code: number, extra = '') => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolveRun({ code, stdout, stderr: stderr || extra });
+    };
+    const child = spawn(file, [...args], {
+      stdio: ['ignore', 'pipe', 'pipe', ...inputs.map(() => 'pipe' as const)],
     });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(1, `timed out after ${PROBE_TIMEOUT}ms`);
+    }, PROBE_TIMEOUT);
+    inputs.forEach((bytes, index) => {
+      const pipe = child.stdio[3 + index];
+      if (!pipe || !('write' in pipe)) return;
+      pipe.on('error', () => undefined);
+      pipe.end(Buffer.from(bytes));
+    });
+    child.stdout?.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
+    child.stderr?.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+    child.on('error', (error) => finish(1, error.message));
+    child.on('close', (code) => finish(code ?? 1));
   });
+}
+
+/** The version `bwrap --version` prints (`bubblewrap 0.8.0`), undefined when it prints none */
+export function bubblewrapVersion(output: string): [number, number, number] | undefined {
+  const match = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(output);
+  if (!match) return undefined;
+  return [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)];
+}
+
+/** Whether a bubblewrap version has `--disable-userns` (0.8.0 and later) */
+export function supportsDisableUserns(version: readonly number[] | undefined): boolean {
+  if (!version) return false;
+  const [major, minor] = version;
+  return major > 0 || minor >= 8;
+}
+
+/**
+ * The ways to keep commands from making namespaces of their own to try, strongest first: both
+ * `--disable-userns` and the seccomp filter, then each alone, as far as this bubblewrap and this
+ * CPU have them
+ */
+export function nestingCandidates(
+  disableUserns: boolean,
+  arch: SeccompArch | undefined
+): BubblewrapNesting[] {
+  const seccomp = arch !== undefined;
+  const candidates: BubblewrapNesting[] = [];
+  if (disableUserns && seccomp) candidates.push({ disableUserns: true, seccomp: true });
+  if (seccomp) candidates.push({ disableUserns: false, seccomp: true });
+  if (disableUserns) candidates.push({ disableUserns: true, seccomp: false });
+  return candidates;
 }
 
 /**
@@ -93,7 +157,7 @@ export async function probeOsSandbox(options: ProbeOptions = {}): Promise<OsSand
       };
     }
     const truePath = (await executable('/bin/true')) ? '/bin/true' : '/usr/bin/true';
-    const tried = await run(bwrap, [
+    const outer = [
       '--new-session',
       '--die-with-parent',
       '--unshare-net',
@@ -105,8 +169,8 @@ export async function probeOsSandbox(options: ProbeOptions = {}): Promise<OsSand
       '/dev',
       '--proc',
       '/proc',
-      truePath,
-    ]);
+    ];
+    const tried = await run(bwrap, [...outer, truePath]);
     if (tried.code !== 0) {
       return {
         available: false,
@@ -114,7 +178,34 @@ export async function probeOsSandbox(options: ProbeOptions = {}): Promise<OsSand
         reason: `bwrap cannot create its namespaces here (${tried.stderr.trim()}): unprivileged user namespaces may be disabled (kernel.unprivileged_userns_clone, kernel.apparmor_restrict_unprivileged_userns) or the process runs in a container that forbids them`,
       };
     }
-    return { available: true, kind, bwrap, socat };
+    const version = bubblewrapVersion((await run(bwrap, ['--version'])).stdout);
+    const arch = seccompArch(options.arch);
+    const failures: string[] = [];
+    for (const nesting of nestingCandidates(supportsDisableUserns(version), arch)) {
+      const inputs =
+        nesting.seccomp && arch ? [seccompFilter({ arch, allowUnixSockets: false })] : [];
+      const nested = await run(
+        bwrap,
+        [...outer, '--', ...innerBubblewrap(bwrap, nesting, '/', truePath, [])],
+        inputs
+      );
+      if (nested.code === 0) return { available: true, kind, bwrap, socat, nesting };
+      failures.push(nested.stderr.trim());
+    }
+    const missing = [
+      ...(supportsDisableUserns(version)
+        ? []
+        : [
+            `bwrap ${version?.join('.') ?? '(unknown version)'} has no --disable-userns (0.8.0 or later)`,
+          ]),
+      ...(arch ? [] : [`no seccomp filter for the ${options.arch ?? process.arch} CPU`]),
+      ...failures.filter(Boolean),
+    ];
+    return {
+      available: false,
+      kind,
+      reason: `bwrap cannot keep commands from making namespaces of their own, which would let them undo the protected paths (${missing.join('; ')})`,
+    };
   }
   return {
     available: false,

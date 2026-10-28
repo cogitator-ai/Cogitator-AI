@@ -10,6 +10,8 @@ export interface RunChildOptions {
   /** Run `file` through the system shell (a single-string command) */
   shell?: boolean;
   stdin?: string;
+  /** Bytes the process reads from descriptors 3, 4 and on, each pipe closed once written */
+  extraInputs?: readonly Uint8Array[];
   timeout: number;
   maxOutput: number;
   signal?: AbortSignal;
@@ -52,10 +54,16 @@ export function runChild(
     const child = spawn(options.file, [...options.args], {
       cwd: options.cwd,
       env: options.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe', ...(options.extraInputs ?? []).map(() => 'pipe' as const)],
       windowsHide: true,
       detached: useProcessGroup,
       shell: options.shell === true,
+    });
+    (options.extraInputs ?? []).forEach((bytes, index) => {
+      const pipe = child.stdio[3 + index];
+      if (!pipe || !('write' in pipe)) return;
+      pipe.on('error', () => undefined);
+      pipe.end(Buffer.from(bytes));
     });
 
     const kill = () => {

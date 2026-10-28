@@ -31,6 +31,7 @@ export async function runSandboxed(
       args: launch.args,
       cwd: root,
       env: launch.env ?? baseEnv,
+      ...(launch.extraInputs && { extraInputs: launch.extraInputs }),
       timeout: 30_000,
       maxOutput: 1024 * 1024,
     });
@@ -46,6 +47,10 @@ export async function runSandboxed(
   } finally {
     const report = await launch.cleanup?.(result);
     if (result && report) {
+      if (report.output) {
+        result.stdout = report.output.stdout;
+        result.stderr = report.output.stderr;
+      }
       if (report.notice) result.stderr = `${result.stderr}${report.notice}`;
       if (report.sandbox) result.sandbox = report.sandbox;
     }

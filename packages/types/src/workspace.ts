@@ -302,6 +302,12 @@ export interface WorkspaceLaunchOverride {
   args: string[];
   /** The environment instead of the one the workspace made */
   env?: Record<string, string>;
+  /**
+   * Bytes the program reads from descriptors past stdio: the first from descriptor 3, the next
+   * from 4, each through a pipe closed once written (bubblewrap's `--seccomp 3` reads its filter
+   * so)
+   */
+  extraInputs?: readonly Uint8Array[];
   /** Runs once the command is over, before its result is returned */
   cleanup?: (
     result: WorkspaceExecResult | undefined
@@ -314,6 +320,12 @@ export interface WorkspaceLaunchReport {
   sandbox?: WorkspaceExecSandbox;
   /** Text appended to the result's `stderr`, such as a `<sandbox_violations>` block */
   notice?: string;
+  /**
+   * The command's output to return instead of what it wrote, such as with its own
+   * `<sandbox_violations>` tags neutralized so it cannot forge the sandbox's block. Listeners of
+   * the streamed output still get what it wrote
+   */
+  output?: { stdout: string; stderr: string };
 }
 
 /**

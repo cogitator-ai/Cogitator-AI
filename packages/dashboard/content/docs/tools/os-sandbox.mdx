@@ -8,7 +8,7 @@ description: Run a local workspace's commands inside the operating system's sand
 A [`LocalWorkspace`](/docs/tools/workspace) runs commands as your process: confined to its directory, but able to read and write anything you can and to reach any host. `OsSandbox` from `@cogitator-ai/sandbox` puts every command it runs inside the operating system's own sandbox instead, the boundary Claude Code's sandboxed Bash tool uses:
 
 - **macOS**: Seatbelt, `sandbox-exec` with a profile generated for each command, network allowed only to the sandbox's proxy on loopback. It ships with the system.
-- **Linux**: bubblewrap, `bwrap` with a network namespace of its own, the proxy reached through a Unix socket and `socat` inside. Install both: `apt-get install bubblewrap socat` (or `dnf install bubblewrap socat`).
+- **Linux**: bubblewrap, `bwrap` with a network namespace of its own, the proxy reached through a Unix socket and `socat` inside. The command itself runs in a second `bwrap` inside the first, which keeps it from making user or mount namespaces of its own (where it would hold every capability over a copy of the mount tree): `--disable-userns` (bubblewrap 0.8.0 and later) and a seccomp filter on x86_64 and arm64 that refuses `unshare`, `setns`, mounting, `clone` with a namespace flag, `clone3`, io_uring and Unix sockets. The sandbox is unavailable when neither protection works here. Install both: `apt-get install bubblewrap socat` (or `dnf install bubblewrap socat`).
 
 The operating system enforces the boundary on the running process and on everything it starts, so it holds whatever the command looks like, which the permission rules, matching command text, cannot promise. That is why a command that runs inside can skip its approval.
 
@@ -34,12 +34,12 @@ const coder = new Agent({
 
 ## What a command can reach
 
-| Access                | Default                                                                                | Change it with                                                     |
-| --------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| Writes                | The workspace root and the sandbox's own temporary directory, which `TMPDIR` points to | `filesystem.allowWrite`, `filesystem.denyWrite`                    |
-| Reads                 | Everywhere, credential files such as `~/.ssh` and `~/.aws` included                    | `filesystem.denyRead`, `filesystem.allowRead`, `credentials.files` |
-| Network               | No route out but the sandbox's proxy, whose allowed hosts start empty                  | `network.allowedDomains`, `network.deniedDomains`, `onUnknownHost` |
-| Environment variables | What the workspace passes, without API keys by default (`exec.inheritEnv`)             | `credentials.envVars`                                              |
+| Access                | Default                                                                                                                            | Change it with                                                     |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Writes                | The workspace root and a temporary directory for that command alone, which `TMPDIR` points to and which is removed once it is over | `filesystem.allowWrite`, `filesystem.denyWrite`                    |
+| Reads                 | Everywhere, credential files such as `~/.ssh` and `~/.aws` included                                                                | `filesystem.denyRead`, `filesystem.allowRead`, `credentials.files` |
+| Network               | No route out but the sandbox's proxy, whose allowed hosts start empty                                                              | `network.allowedDomains`, `network.deniedDomains`, `onUnknownHost` |
+| Environment variables | What the workspace passes, without API keys by default (`exec.inheritEnv`)                                                         | `credentials.envVars`                                              |
 
 ### Files
 
@@ -55,7 +55,7 @@ Paths are absolute, `~/` for the home directory, or relative to the workspace ro
 
 ### Protected paths
 
-Inside the writable roots a command still cannot write what Cogitator and Claude Code load configuration and code from: the settings files, `hooks`, `skills`, `agents`, `commands` and `plugins` of `.claude` and `.cogitator` in the root and every directory above it, `~/.claude`, `~/.cogitator` and `~/.claude.json`, the whole `.cogitator` directory of the root (the workspace's trash and snapshots), `.mcp.json`, shell startup files (`.bashrc`, `.zshrc`, `.profile`...), `.gitconfig`, `.gitmodules`, `.vscode`, `.idea`, the repository's `.git/hooks` and `.git/config` (of the main repository too for a linked worktree, and where they would go in a root that is no repository yet), and a `HEAD` file at the root, without which no command can turn the root into a bare repository whose config git, run outside the sandbox later, would execute. A symlink at a protected path protects its target as well. An `allowWrite` cannot lift them, only `filesystem.disabled`, which turns filesystem isolation off altogether while keeping the network confined. On Linux a protected file that does not exist yet is covered by an empty read-only file while the command runs, removed afterwards.
+Inside the writable roots a command still cannot write what Cogitator and Claude Code load configuration and code from: the settings files, `hooks`, `skills`, `agents`, `commands` and `plugins` of `.claude` and `.cogitator` in the root and every directory above it, `~/.claude`, `~/.cogitator` and `~/.claude.json`, the whole `.cogitator` directory of the root (the workspace's trash and snapshots), `.mcp.json`, shell startup files (`.bashrc`, `.zshrc`, `.profile`...), `.gitconfig`, `.gitmodules`, `.vscode`, `.idea`, the files of the repository's git directory that git runs or follows (`hooks`, `config`, `commondir`, `config.worktree`, of the main repository too for a linked worktree, of its linked worktrees and submodules, and where they would go in a root that is no repository yet), the root's `.git` entry itself (no command can remove, rename or replace it, so none swaps it for a `gitdir:` file pointing at a git directory of its own, while git still writes the index and objects inside), and a `HEAD` file at the root, without which no command can turn the root into a bare repository whose config git, run outside the sandbox later, would execute. A symlink at a protected path protects its target as well. An `allowWrite` cannot lift them, only `filesystem.disabled`, which turns filesystem isolation off altogether while keeping the network confined. On Linux a protected file that does not exist yet is covered by an empty read-only file while the command runs, removed afterwards, except a missing `commondir` or `config.worktree`, whose mere presence changes what git does: one a command makes is removed once the command is over.
 
 ### Network
 
@@ -67,7 +67,7 @@ Commands get `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` (SOCKS5) pointing at a 
 4. `strictAllowlist` refuses it
 5. the call's `onUnknownHost` decides, else the sandbox's own `onUnknownHost`, else it is refused
 
-A host name that resolves only to loopback, link-local, a cloud metadata endpoint or an address of this machine is refused (a public name pointing at `127.0.0.1` reaches nothing local), `localhost` and `*.localhost` aside. Allow the address itself, such as `127.0.0.1:3000`, to reach a local server by any name. The address that passed is the one dialed. UDP, QUIC and ICMP do not leave the sandbox, and tools that ignore the proxy variables (plain `ssh`, most database drivers) cannot connect at all. On macOS `allowLocalBinding` lets commands listen on local ports and reach `localhost` directly, `allowUnixSockets` and `allowAllUnixSockets` open Unix sockets.
+A host name that resolves only to loopback, link-local, a cloud metadata endpoint or an address of this machine is refused (a public name pointing at `127.0.0.1` reaches nothing local), `localhost` and `*.localhost` aside. Allow the address itself, such as `127.0.0.1:3000`, to reach a local server by any name. The address that passed is the one dialed. UDP, QUIC and ICMP do not leave the sandbox, and tools that ignore the proxy variables (plain `ssh`, most database drivers) cannot connect at all. On macOS `allowLocalBinding` lets commands listen on local ports and reach `localhost` directly, `allowUnixSockets` opens the Unix sockets it names and `allowAllUnixSockets` every one. On Linux the seccomp filter cannot tell socket paths apart: any `allowUnixSockets` entry, or `allowAllUnixSockets`, lets commands create every Unix socket.
 
 ### What the sandbox refused
 
@@ -82,15 +82,18 @@ deny file-access .claude/settings.json (/bin/sh: .claude/settings.json: Operatio
 
 `ignoreViolations` silences the expected ones: keys are substrings of the command (`*` for every command), values substrings of the violation.
 
+Network violations come from the proxy and can be trusted. File violations are advisory: they are read from the errors the command wrote, so a command can hide one (`2>/dev/null`) or print one that never happened. The access is blocked either way. A `<sandbox_violations>` tag a command prints itself comes back neutralized (`&lt;sandbox_violations>`) in the result, so only the block the sandbox appends reads as one.
+
 ## Permissions
 
-A command that runs inside the sandbox skips the approval it would need: `run_command`'s own (`requiresApproval`), and a bare `Bash` ask rule (or `Bash(*)`). The decision is logged as decided by `sandbox`. What still applies:
+A command that runs inside the sandbox skips the approval it would need: `run_command`'s own (`requiresApproval`), and a bare `Bash` ask rule (or `Bash(*)`). The decision is logged as decided by `sandbox`. Only `run_command` of `workspaceTools()` gets this, and only when it runs in the sandboxed workspace (bound to it, or unbound in a run that uses it): the core `exec` tool, a `run_command` bound to another workspace and any other command tool keep their approval. What still applies:
 
 - deny rules, which refuse as before
 - ask rules with a pattern, such as `Bash(git push *)`
 - plan mode, where nothing gets wider: a bare `Bash` ask rule still asks for read-only commands
-- the guardrails, when they want an approval
-- a command with a variable in front (`FOO=bar npm test`, `env FOO=bar ...`), `eval`, or `make` with a variable (`make CC=clang`), any of which can change which program runs: they go through the normal flow, and an allow rule such as `Bash(make *)` approves them
+- the guardrails, when they want an approval: a bare `Bash` ask rule then still asks a person, no hook or `auto` classifier answers it
+- a command with a variable in front (`FOO=bar npm test`, `env FOO=bar ...`), `eval`, `make` with a variable (`make CC=clang`), `source` and `.`, `alias`, `export`, `declare -x`, `set -a`, `trap`, `enable`, `hash -p`, and a shell that reads its code from stdin (`... | sh`, `bash -s`, `sh < script`), any of which can change which program runs or run code the line does not show: they go through the normal flow, and an allow rule such as `Bash(make *)` approves them
+- a line a deny or ask rule could not read in full (a substitution, an expansion where a `Read` rule guards files): a bare `Bash` ask rule still asks
 - a command that names hosts of its own (`allowedDomains`): no allow rule approves it, it asks (the `auto` classifier sees the hosts with the command)
 - a command outside the sandbox: one `excludedCommands` takes out, one whose `dangerouslyDisableSandbox` the policy honors
 
@@ -98,8 +101,10 @@ A command that runs inside the sandbox skips the approval it would need: `run_co
 
 Two kinds of removal ask whatever the sandbox:
 
-- `rm` and `rmdir` of a critical path: the workspace root or a directory above it, the home directory, `/`, a `.git` directory or anything in it, an operand the shell expands (`$DIR`), a wildcard over one of those (`rm -rf *` in the root). They ask in every mode, `bypassPermissions` and `acceptEdits` included, over any allow rule, a person deciding rather than the `auto` classifier (`dontAsk` refuses them).
+- `rm` and `rmdir` of a critical path: the workspace root or a directory above it, the home directory, `/`, a `.git` directory or anything in it (without case where the filesystem ignores it, so `.GIT` is `.git` on macOS), an operand the shell or another program decides (`$DIR`, a brace expansion such as `{a,b}` or `{1..3}`, the `{}` of `find -exec`), a removal whose operands come from elsewhere (`xargs rm`, `find -delete`, a remover under `find -exec`), a wildcard over one of those (`rm -rf *` in the root). They ask in every mode, `bypassPermissions` and `acceptEdits` included, over any allow rule, a person deciding rather than the `auto` classifier (`dontAsk` refuses them).
 - a removal outside the workspace (and its extra directories) by a command that runs without the sandbox, and a `file_delete` of a path outside it: they ask in every mode but `bypassPermissions`.
+
+These removal checks apply to tool calls (an agent's, or `invokeTool`). The commands of plugin hooks keep their own checks, as in Claude Code.
 
 A host no sandbox list decides is decided by the run as a `WebFetch(domain:...)` call: a `WebFetch` deny rule refuses it, an allow rule lets it through, `bypassPermissions` allows it, `auto` and `dontAsk` refuse it, and the other modes ask a person through the run's `onApproval` (a request with `toolName: 'WebFetch'` and the host's URL). A host a person allowed stays allowed for the rest of the session. A run without permissions set up leaves it to the sandbox's own `onUnknownHost`.
 
@@ -128,7 +133,7 @@ It returns `{ policy, warnings }`: hand `policy` to `OsSandbox` when `policy.ena
 
 - `network.allowManagedDomainsOnly` (managed) keeps only the managed `allowedDomains` and refuses other hosts
 - `filesystem.allowManagedReadPathsOnly` (managed) keeps only the managed `allowRead`
-- the sandbox is admin-required when managed settings set `allowUnsandboxedCommands: false` or `allowManagedDomainsOnly`: a repository's files cannot loosen it then (`excludedCommands`, `ignoreViolations`, `allowedDomains`, `allowUnixSockets`, `allowWrite`, `Edit` allow rules, `additionalDirectories`, a `true` of `allowLocalBinding` or `allowAllUnixSockets`, a `false` of `enabled` or `failIfUnavailable` against the user's `true`)
+- the sandbox is admin-required when managed settings set `allowUnsandboxedCommands: false` or `allowManagedDomainsOnly`: a repository's files cannot loosen it then (`excludedCommands`, `ignoreViolations`, `allowedDomains`, `allowUnixSockets`, `allowWrite`, `Edit` allow rules, `additionalDirectories`, a `true` of `allowLocalBinding` or `allowAllUnixSockets`, a `false` of `enabled` against the user's `true`, any `false` of `failIfUnavailable`)
 - `network.strictAllowlist` and `filesystem.disabled` count from user and managed settings only (`filesystem.disabled` from managed ones only once they configure the filesystem), `bwrapPath` and `socatPath` from managed settings only
 - a `false` of `allowUnsandboxedCommands` in user or managed settings holds against a repository's `true`
 - a repository's `allowRead`, `allowWrite` and extra directories at or under a path that managed or user settings deny reading are left out
@@ -154,21 +159,22 @@ Two defaults differ from Claude Code, on the safe side: `failIfUnavailable` is t
 | `network.deniedDomains`       | none    | Hosts refused whatever allows them                                                           |
 | `network.strictAllowlist`     | `false` | Refuse other hosts without asking, and calls that list hosts of their own                    |
 | `network.allowLocalBinding`   | `false` | macOS: listen on local ports, reach `localhost` directly                                     |
-| `network.allowUnixSockets`    | none    | macOS: Unix sockets commands may connect to                                                  |
-| `network.allowAllUnixSockets` | `false` | macOS: every Unix socket                                                                     |
+| `network.allowUnixSockets`    | none    | Unix sockets commands may connect to (on Linux any entry opens every one)                    |
+| `network.allowAllUnixSockets` | `false` | Every Unix socket                                                                            |
 | `credentials.envVars`         | none    | Variables removed from the environment of sandboxed commands                                 |
 | `credentials.files`           | none    | Files hidden from reads                                                                      |
 | `bwrapPath`, `socatPath`      | `PATH`  | Linux: the binaries to use                                                                   |
 
 `new OsSandbox({ policy, onUnknownHost, onWarning })` takes the policy, a decider for hosts no list decides and where warnings go (default `console.warn`). `OsSandbox.probe()` says whether the sandbox runs on this machine and why not, `OsSandbox.create(options)` returns a started sandbox, `route(command, request)` says how a command would run, and `dispose()` closes the proxies of commands still running and removes the sandbox's directories. One sandbox can serve several workspaces: each command is confined to the root of the workspace that runs it.
 
-A workspace call passes its own sandbox options: `exec(command, { allowedDomains, dangerouslyDisableSandbox, onUnknownHost })`, and `run_command` takes `allowedDomains` and `dangerouslyDisableSandbox` from the model. The `os` type of the `SandboxManager` runs an execution under the same sandbox, see [Sandbox](/docs/deployment/sandbox#os-sandbox).
+A workspace call passes its own sandbox options: `exec(command, { allowedDomains, dangerouslyDisableSandbox, onUnknownHost })`, and `run_command` takes `allowedDomains` and `dangerouslyDisableSandbox` from the model. The `os` type of the `SandboxManager` runs an execution under the same sandbox, see [Sandbox](/docs/deployment/sandbox#os-sandbox). It never runs unprotected: `failIfUnavailable: false` is ignored there, and a tool with `sandbox: { type: 'os' }` fails with `SANDBOX_UNAVAILABLE` rather than running natively when no sandbox manager is available.
 
 ## Limitations
 
 - `rm` in a command deletes for good: the trash belongs to the `delete_file` tool, see [Workspace](/docs/tools/workspace#trash).
-- Processes a command leaves running in the background lose the network once it exits, and on Linux they stop with it (the sandbox has a process namespace of its own).
-- Seatbelt violations are read from the command's errors, not from the system log, so a tool that hides its errors reports none.
-- On Linux a wildcard read deny covers what exists when the command starts, Unix sockets are not filtered (no seccomp filter), and nested git repositories below the root keep their hooks writable.
+- Processes a command leaves running in the background lose the network and their `TMPDIR` once it exits, and on Linux they stop with it (the sandbox has a process namespace of its own).
+- File violations are read from the command's errors, not from the system log, so they are advisory (see above).
+- On Linux a wildcard read deny covers what exists when the command starts, and a protected path behind a symlinked directory inside the root is protected where the link leads, not at the link: a command can replace the link with a directory of its own (macOS closes the path as written too).
+- Git repositories below the root (a nested repository, a submodule a command makes without `.gitmodules`) keep their hooks and config writable: run git in them only after a look.
 - The proxy checks host names, it does not inspect TLS: an allowed domain carries whatever is sent to it, so allow narrowly.
 - Hooks, MCP servers and the file tools run outside the sandbox and follow the [permission rules](/docs/tools/permissions) instead.

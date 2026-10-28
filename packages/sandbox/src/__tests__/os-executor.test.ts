@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { OsSandboxExecutor } from '../executors/os';
 import { probeOsSandbox } from '../os/probe';
 import { SandboxManager } from '../sandbox-manager';
 
@@ -58,6 +59,18 @@ describe('SandboxManager with the os sandbox type', () => {
       if (!result.success) expect(result.error).toContain('cannot run here');
     }
   );
+
+  it('never runs unsandboxed, even with failIfUnavailable: false', async () => {
+    const executor = new OsSandboxExecutor({ platform: 'freebsd', onWarning: () => undefined });
+    const result = await executor.execute(
+      { command: [`echo ran > ${join(root, 'ran.txt')}`] },
+      { type: 'os', workdir: root, os: { failIfUnavailable: false } }
+    );
+    await executor.disconnect();
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toContain('cannot run here');
+    expect(existsSync(join(root, 'ran.txt'))).toBe(false);
+  });
 
   it('refuses a disabled os policy', async () => {
     const result = await manager.execute(

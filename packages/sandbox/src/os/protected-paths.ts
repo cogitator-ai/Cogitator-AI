@@ -1,4 +1,4 @@
-import { lstat, readFile } from 'node:fs/promises';
+import { lstat, readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { isWithin, namesOf } from './paths';
@@ -59,7 +59,33 @@ export interface ProtectedPath {
   exists: boolean;
   /** Whether it is a directory when it exists, else what it would be once made */
   directory: boolean;
+  /**
+   * Only the entry itself is protected: it may not be made, removed, renamed or replaced, while
+   * what a directory holds stays writable (the root's `.git` directory, whose index and objects
+   * git writes, but which no command may swap for a `gitdir:` file of its own)
+   */
+  entryOnly?: boolean;
+  /**
+   * A file git changes course on by its mere presence (`commondir`): bubblewrap puts no mount
+   * point where it is missing, and removes one a command made once the command is over
+   */
+  watched?: boolean;
 }
+
+/**
+ * Files of a git directory that make git, run outside the sandbox later, read configuration or
+ * hooks from elsewhere: `config`, `hooks`, `commondir` (where the shared config and hooks live)
+ * and `config.worktree`
+ */
+const GIT_DIR_PROTECTED: ReadonlyArray<{ name: string; directory: boolean; watched?: true }> = [
+  { name: 'hooks', directory: true },
+  { name: 'config', directory: false },
+  { name: 'commondir', directory: false, watched: true },
+  { name: 'config.worktree', directory: false, watched: true },
+];
+
+/** The most nested submodule git directories looked at under `.git/modules` */
+const MAX_MODULE_DIRS = 200;
 
 /** Names of protected entries that are directories when they do not exist yet */
 const DIRECTORY_NAMES = new Set([
@@ -87,8 +113,10 @@ async function linkedGitDir(dotGit: string): Promise<string | undefined> {
  * at `root`: Claude Code's and Cogitator's settings, hooks, skills, agents, commands and plugins
  * in the root and every directory above it, the whole `.cogitator` directory of the root (the
  * workspace's trash and snapshots), shell startup files, `.gitconfig`, editor folders, the
- * hooks and config of the repository (of the main repository too for a linked worktree, and
- * where they would go when the root is no repository yet, so none is made with hooks),
+ * hooks, config, `commondir` and `config.worktree` of the repository (of the main repository too
+ * for a linked worktree, of its linked worktrees and submodules, and where they would go when the
+ * root is no repository yet, so none is made with hooks), the root's `.git` entry itself (so no
+ * command replaces it with a `gitdir:` file pointing at a git directory of its own),
  * `~/.claude`, `~/.cogitator` and `~/.claude.json` (unless the root lies inside one), and
  * `HEAD` at the root, without which no command can turn the root into a bare repository that
  * git, run outside the sandbox later, would read config and hooks from (with `objects`, `refs`,
@@ -99,7 +127,12 @@ export async function protectedPaths(
   root: string,
   home: string = homedir()
 ): Promise<ProtectedPath[]> {
-  const candidates: Array<{ path: string; directory: boolean }> = [];
+  const candidates: Array<{
+    path: string;
+    directory: boolean;
+    entryOnly?: boolean;
+    watched?: boolean;
+  }> = [];
   const add = (path: string) =>
     candidates.push({ path, directory: DIRECTORY_NAMES.has(basename(path)) });
   for (let dir = root; ; dir = dirname(dir)) {
@@ -121,6 +154,7 @@ export async function protectedPaths(
   const gitInfo = await lstat(dotGit).catch(() => undefined);
   const gitDirs: string[] = [];
   if (!gitInfo?.isFile()) {
+    candidates.push({ path: dotGit, directory: true, entryOnly: true });
     gitDirs.push(dotGit);
   } else {
     candidates.push({ path: dotGit, directory: false });
@@ -131,9 +165,15 @@ export async function protectedPaths(
       if (common) gitDirs.push(common.startsWith('/') ? common : join(gitDir, common));
     }
   }
+  for (const dir of [...gitDirs]) gitDirs.push(...(await nestedGitDirs(dir)));
   for (const dir of gitDirs) {
-    candidates.push({ path: join(dir, 'hooks'), directory: true });
-    candidates.push({ path: join(dir, 'config'), directory: false });
+    for (const file of GIT_DIR_PROTECTED) {
+      candidates.push({
+        path: join(dir, file.name),
+        directory: file.directory,
+        ...(file.watched && { watched: true }),
+      });
+    }
   }
   candidates.push({ path: join(root, 'HEAD'), directory: false });
   if (await lstat(join(root, 'HEAD')).catch(() => undefined)) {
@@ -153,8 +193,34 @@ export async function protectedPaths(
         path: name,
         exists: info !== undefined,
         directory: info ? info.isDirectory() : candidate.directory,
+        ...(candidate.entryOnly && { entryOnly: true }),
+        ...(candidate.watched && { watched: true }),
       });
     }
   }
   return result;
+}
+
+/**
+ * The git directories git keeps inside `gitDir` and reads its own config and hooks from: those of
+ * linked worktrees (`worktrees/<name>`, read by git run in that worktree) and of submodules
+ * (`modules/<name>`, nested ones too, read by a `git status` that looks into them). Only those
+ * that exist now: a submodule a command adds needs `.gitmodules`, which is protected
+ */
+async function nestedGitDirs(gitDir: string): Promise<string[]> {
+  const found: string[] = [];
+  const queue = [join(gitDir, 'modules')];
+  const children = async (dir: string) =>
+    (await readdir(dir, { withFileTypes: true }).catch(() => []))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(dir, entry.name));
+  found.push(...(await children(join(gitDir, 'worktrees'))));
+  while (queue.length > 0 && found.length < MAX_MODULE_DIRS) {
+    for (const dir of await children(queue.shift()!)) {
+      if ((await lstat(join(dir, 'HEAD')).catch(() => undefined))?.isFile()) found.push(dir);
+      else queue.push(dir);
+      queue.push(join(dir, 'modules'));
+    }
+  }
+  return found.slice(0, MAX_MODULE_DIRS);
 }

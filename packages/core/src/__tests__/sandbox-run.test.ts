@@ -13,6 +13,7 @@ import type {
 } from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
+import { exec } from '../tools/exec';
 import { workspaceTools } from '../tools/workspace-tools';
 import { LocalWorkspace } from '../workspace/local-workspace';
 
@@ -123,6 +124,27 @@ describe('a run in a sandboxed workspace', () => {
     const result = await cog.run(coder(plain), { input: 'go', threadId: 't-plain' });
     expect(result.status).toBe('paused');
     await cog.close();
+    await plain.dispose();
+  });
+
+  it('still pauses for exec and for run_command bound to a workspace without the sandbox', async () => {
+    const plain = new LocalWorkspace({ root });
+    for (const tools of [[exec], workspaceTools(plain)]) {
+      const cog = setup([
+        turn(call('c1', tools[0] === exec ? 'exec' : 'run_command', { command: 'echo hi > x' })),
+      ]);
+      const agent = new Agent({
+        name: 'coder',
+        model: 'mock/m',
+        instructions: 'You code.',
+        tools,
+        workspace,
+      });
+      const result = await cog.run(agent, { input: 'go', threadId: `t-${tools.length}` });
+      expect(result.status).toBe('paused');
+      expect(existsSync(join(root, 'x'))).toBe(false);
+      await cog.close();
+    }
     await plain.dispose();
   });
 

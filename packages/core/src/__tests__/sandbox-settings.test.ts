@@ -183,6 +183,25 @@ describe('sandboxPolicyOf', () => {
     expect(policy.ignoreViolations).toBeUndefined();
   });
 
+  it('ignores any repository false of failIfUnavailable once the sandbox is admin-required', () => {
+    const required = policyOf([
+      layer('managed', { enabled: true, allowUnsandboxedCommands: false }),
+      layer('project', { failIfUnavailable: false }),
+      layer('local', { failIfUnavailable: false }),
+    ]);
+    expect(required.policy.failIfUnavailable).toBe(true);
+    const user = policyOf([
+      layer('managed', { enabled: true, allowUnsandboxedCommands: false }),
+      layer('user', { failIfUnavailable: false }),
+    ]);
+    expect(user.policy.failIfUnavailable).toBe(false);
+    const free = policyOf([
+      layer('user', { enabled: true }),
+      layer('project', { failIfUnavailable: false }),
+    ]);
+    expect(free.policy.failIfUnavailable).toBe(false);
+  });
+
   it('honors only managed domains under allowManagedDomainsOnly, and refuses unknown hosts', () => {
     const { policy } = policyOf([
       layer('managed', {

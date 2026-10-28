@@ -11,7 +11,7 @@ import {
   unlink,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   CogitatorError,
   ErrorCode,
@@ -28,11 +28,17 @@ import {
   type WorkspaceSandboxRequest,
   type WorkspaceSandboxRoute,
 } from '@cogitator-ai/types';
-import { BRIDGE_PORT, bubblewrapCommand, type BubblewrapPath } from './bubblewrap';
+import {
+  BRIDGE_PORT,
+  bubblewrapCommand,
+  type BubblewrapCommand,
+  type BubblewrapPath,
+} from './bubblewrap';
 import { isExcludedCommand } from './commands';
 import { parseDomainList, type DomainPattern } from './domains';
 import {
   canonicalPath,
+  depthOf,
   expandWildcard,
   globSource,
   kindOf,
@@ -42,9 +48,15 @@ import {
 } from './paths';
 import { probeOsSandbox, type OsSandboxProbe } from './probe';
 import { protectedPaths } from './protected-paths';
+import { seccompArch, seccompFilter } from './seccomp';
 import { ProxySession, type ProxyRules } from './proxy';
 import { seatbeltLaunch, seatbeltProfile, type SeatbeltMatcher } from './seatbelt';
-import { fileViolations, violationsBlock, withoutIgnored } from './violations';
+import {
+  fileViolations,
+  neutralizeViolationTags,
+  violationsBlock,
+  withoutIgnored,
+} from './violations';
 
 export interface OsSandboxOptions {
   /** What commands may read, write and reach (default: the defaults of {@link OsSandboxPolicy}) */
@@ -60,7 +72,10 @@ export interface OsSandboxOptions {
   platform?: NodeJS.Platform;
 }
 
-/** The sandbox's own directories: the `TMPDIR` of its commands, the proxy sockets, an empty one */
+/**
+ * The sandbox's own directories: the one each command's `TMPDIR` is made in (a directory of its
+ * own, removed once the command is over), the proxy sockets, an empty one
+ */
 interface SandboxDirs {
   base: string;
   tmp: string;
@@ -81,8 +96,11 @@ const PROXY_VARIABLES = [
 /** The plan of one sandboxed launch: what to spawn and what the filesystem rules are */
 interface Restrictions {
   writable: PolicyPath[];
-  /** With whether a missing protected path would be a directory */
-  denyWrite: Array<PolicyPath & { directory?: boolean }>;
+  /**
+   * With whether a missing protected path would be a directory, and whether only the entry itself
+   * is protected (see `ProtectedPath.entryOnly`)
+   */
+  denyWrite: Array<PolicyPath & { directory?: boolean; entryOnly?: boolean; watched?: boolean }>;
   denyRead: PolicyPath[];
   allowRead: PolicyPath[];
 }
@@ -92,10 +110,11 @@ interface Restrictions {
  * bubblewrap (`bwrap`, with `socat`) on Linux, with the semantics of Claude Code's sandbox.
  *
  * A command may write in the workspace root, `filesystem.allowWrite` and a temporary directory
- * of the sandbox's own, which its `TMPDIR` points to, never in the protected paths (settings,
- * hooks and plugins of Cogitator and Claude Code, `.cogitator` of the root, shell startup files,
- * `.gitconfig`, the repository's hooks and config, files that would turn the root into a bare
- * repository), and may read everywhere but `filesystem.denyRead`, the narrower of a deny and an
+ * for that command alone (its `TMPDIR`, removed once it is over), never in the protected paths
+ * (settings, hooks and plugins of Cogitator and Claude Code, `.cogitator` of the root, shell
+ * startup files, `.gitconfig`, the files of the repository's git directory that git would run or
+ * follow, the `.git` entry itself, files that would turn the root into a bare repository), and
+ * may read everywhere but `filesystem.denyRead`, the narrower of a deny and an
  * allow winning. It has no network but the sandbox's proxy, an HTTP and SOCKS5 proxy for that
  * command alone, which lets through the hosts `network.allowedDomains` names, refuses
  * `network.deniedDomains`, and asks `onUnknownHost` (of the call, else of the sandbox) about the
@@ -130,6 +149,7 @@ export class OsSandbox implements WorkspaceCommandSandbox {
   private probing?: Promise<OsSandboxProbe>;
   private directories?: Promise<SandboxDirs>;
   private warnedUnavailable = false;
+  private readonly warned = new Set<string>();
   private disposed = false;
 
   constructor(options: OsSandboxOptions = {}) {
@@ -251,9 +271,14 @@ export class OsSandbox implements WorkspaceCommandSandbox {
     });
     this.sessions.add(session);
     let mountPoints: string[] = [];
+    let extraInputs: Uint8Array[] | undefined;
+    let watched: string[] = [];
+    let tmp: string | undefined;
     try {
-      const env = this.environment(launch.env, dirs, session);
-      const restrictions = await this.restrictions(launch.root, dirs);
+      tmp = join(dirs.tmp, randomUUID().slice(0, 12));
+      await mkdir(tmp, { mode: 0o700 });
+      const env = this.environment(launch.env, tmp, session);
+      const restrictions = await this.restrictions(launch.root, tmp);
       let spawned: { file: string; args: string[] };
       if (this.kind === 'seatbelt') {
         spawned = seatbeltLaunch(
@@ -286,16 +311,21 @@ export class OsSandbox implements WorkspaceCommandSandbox {
       } else {
         const linux = await this.bubblewrap(launch, restrictions, dirs, probe, session);
         mountPoints = linux.mountPoints;
+        watched = linux.watched;
         spawned = { file: linux.file, args: linux.args };
+        if (linux.extraInputs.length > 0) extraInputs = linux.extraInputs;
       }
       return {
         ...spawned,
         env,
-        cleanup: (result) => this.finish(session, launch.command, mountPoints, result),
+        ...(extraInputs && { extraInputs }),
+        cleanup: (result) =>
+          this.finish(session, launch.command, mountPoints, watched, tmp, result),
       };
     } catch (error) {
       this.sessions.delete(session);
       await session.close();
+      if (tmp) await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
       throw error;
     }
   }
@@ -311,6 +341,12 @@ export class OsSandbox implements WorkspaceCommandSandbox {
       await chmod(dirs.empty, 0o700).catch(() => undefined);
       await rm(dirs.base, { recursive: true, force: true }).catch(() => undefined);
     }
+  }
+
+  private warnOnce(message: string): void {
+    if (this.warned.has(message)) return;
+    this.warned.add(message);
+    this.warn(message);
   }
 
   private warnUnavailable(reason: string): void {
@@ -362,7 +398,7 @@ export class OsSandbox implements WorkspaceCommandSandbox {
 
   private environment(
     given: Record<string, string>,
-    dirs: SandboxDirs,
+    tmp: string,
     session: ProxySession
   ): Record<string, string> {
     const env = { ...given };
@@ -385,16 +421,16 @@ export class OsSandbox implements WorkspaceCommandSandbox {
       env.no_proxy = env.NO_PROXY;
     }
     if (this.policy.filesystem?.disabled !== true) {
-      env.TMPDIR = dirs.tmp;
-      env.TMP = dirs.tmp;
-      env.TEMP = dirs.tmp;
+      env.TMPDIR = tmp;
+      env.TMP = tmp;
+      env.TEMP = tmp;
     }
     env.COGITATOR_SANDBOX = this.kind;
     return env;
   }
 
   /** The filesystem lists of a launch in the workspace at `root`, resolved */
-  private async restrictions(root: string, dirs: SandboxDirs): Promise<Restrictions> {
+  private async restrictions(root: string, tmp: string): Promise<Restrictions> {
     const fs = this.policy.filesystem ?? {};
     const resolveAll = (entries: readonly string[] | undefined) =>
       (entries ?? []).map((entry) => resolvePolicyPath(entry, root));
@@ -405,11 +441,13 @@ export class OsSandbox implements WorkspaceCommandSandbox {
             entry: entry.path,
             path: entry.path,
             directory: entry.directory,
+            ...(entry.entryOnly && { entryOnly: true }),
+            ...(entry.watched && { watched: true }),
           }));
     return {
       writable: [
         { entry: '.', path: root },
-        { entry: 'TMPDIR', path: dirs.tmp },
+        { entry: 'TMPDIR', path: tmp },
         ...resolveAll(fs.allowWrite),
       ],
       denyWrite: [...resolveAll(fs.denyWrite), ...protectedList],
@@ -423,7 +461,7 @@ export class OsSandbox implements WorkspaceCommandSandbox {
    * base, a path as a subpath under each name it has (as written and where its symlinks lead)
    */
   private async matchers(
-    entries: readonly PolicyPath[],
+    entries: ReadonlyArray<PolicyPath & { entryOnly?: boolean }>,
     use: 'write-allow' | 'deny'
   ): Promise<SeatbeltMatcher[]> {
     const out: SeatbeltMatcher[] = [];
@@ -431,11 +469,16 @@ export class OsSandbox implements WorkspaceCommandSandbox {
       if (entry.pattern && entry.base) {
         const base = await canonicalPath(entry.base);
         const rest = entry.path.slice(entry.base.length);
-        out.push({ kind: 'regex', source: `^${globSource(base + rest, 'posix')}(/.*)?$` });
+        const names = rest.split('/').filter((part) => part !== '' && part !== '**').length;
+        out.push({
+          kind: 'regex',
+          source: `^${globSource(base + rest, 'posix')}(/.*)?$`,
+          depth: depthOf(base) + names,
+        });
         continue;
       }
       const names = use === 'deny' ? await namesOf(entry.path) : [await canonicalPath(entry.path)];
-      for (const path of names) out.push({ kind: 'subpath', path });
+      for (const path of names) out.push({ kind: entry.entryOnly ? 'literal' : 'subpath', path });
     }
     return out;
   }
@@ -446,7 +489,7 @@ export class OsSandbox implements WorkspaceCommandSandbox {
     dirs: SandboxDirs,
     probe: OsSandboxProbe,
     session: ProxySession
-  ): Promise<{ file: string; args: string[]; mountPoints: string[] }> {
+  ): Promise<BubblewrapCommand & { watched: string[] }> {
     const writable: string[] = [];
     for (const entry of restrictions.writable) {
       if (entry.pattern) {
@@ -457,16 +500,26 @@ export class OsSandbox implements WorkspaceCommandSandbox {
       if (await kindOf(real)) writable.push(real);
     }
     const denyWrite: BubblewrapPath[] = [];
+    const watched: string[] = [];
     for (const entry of restrictions.denyWrite) {
       const paths = entry.pattern
         ? (await expandWildcard(entry)).matches
         : await namesOf(entry.path);
       for (const path of paths) {
+        if (denyWrite.some((known) => known.path === path) || (await throughSymlink(path))) {
+          continue;
+        }
         const kind = await kindOf(path);
+        if (entry.watched && kind === undefined) {
+          watched.push(path);
+          continue;
+        }
         denyWrite.push({
           path,
           exists: kind !== undefined,
           directory: kind === undefined ? entry.directory === true : kind === 'directory',
+          ...(kind === 'symlink' && { real: await canonicalPath(path) }),
+          ...(entry.entryOnly && { entryOnly: true }),
         });
       }
     }
@@ -487,6 +540,7 @@ export class OsSandbox implements WorkspaceCommandSandbox {
         paths = await namesOf(entry.path);
       }
       for (const path of paths) {
+        if (await throughSymlink(path)) continue;
         const kind = await kindOf(path);
         if (kind === undefined) continue;
         const real = kind === 'symlink' ? await canonicalPath(path) : path;
@@ -512,9 +566,25 @@ export class OsSandbox implements WorkspaceCommandSandbox {
         if (await kindOf(prefix)) existing.add(prefix);
       }
     }
-    return bubblewrapCommand(
+    const nesting = probe.nesting;
+    if (!nesting) throw unavailableError('bwrap was not checked for its nesting protections');
+    const network = this.policy.network ?? {};
+    const unixSockets =
+      network.allowAllUnixSockets === true || (network.allowUnixSockets ?? []).length > 0;
+    if ((network.allowUnixSockets ?? []).length > 0 && network.allowAllUnixSockets !== true) {
+      this.warnOnce(
+        'allowUnixSockets: on Linux the seccomp filter cannot tell socket paths apart, so commands may create every Unix socket'
+      );
+    }
+    const arch = seccompArch();
+    if (nesting.seccomp && !arch)
+      throw unavailableError(`no seccomp filter for the ${process.arch} CPU`);
+    const command = bubblewrapCommand(
       {
         bwrap: probe.bwrap ?? 'bwrap',
+        disableUserns: nesting.disableUserns,
+        ...(nesting.seccomp &&
+          arch && { seccomp: seccompFilter({ arch, allowUnixSockets: unixSockets }) }),
         socat: probe.socat ?? 'socat',
         writable,
         denyWrite,
@@ -529,17 +599,23 @@ export class OsSandbox implements WorkspaceCommandSandbox {
       },
       (path) => existing.has(path)
     );
+    return { ...command, watched };
   }
 
   private async finish(
     session: ProxySession,
     command: string,
     mountPoints: readonly string[],
+    watched: readonly string[],
+    tmp: string | undefined,
     result: WorkspaceExecResult | undefined
   ): Promise<WorkspaceLaunchReport> {
     this.sessions.delete(session);
     await session.close();
+    if (tmp) await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
     for (const point of mountPoints) await removeMountPoint(point);
+    for (const path of watched)
+      await rm(path, { recursive: true, force: true }).catch(() => undefined);
     const found: SandboxViolation[] = [
       ...session.violations,
       ...(result ? fileViolations(result.stderr) : []),
@@ -549,8 +625,23 @@ export class OsSandbox implements WorkspaceCommandSandbox {
     return {
       sandbox: { sandboxed: true, kind: this.kind, violations },
       ...(notice && { notice }),
+      ...(result && {
+        output: {
+          stdout: neutralizeViolationTags(result.stdout),
+          stderr: neutralizeViolationTags(result.stderr),
+        },
+      }),
     };
   }
+}
+
+/**
+ * Whether a directory above `path` is a symlink. Bubblewrap cannot mount there (the link may lead
+ * anywhere once the new root is set up), and the same path with its parent resolved is on the
+ * list as well
+ */
+async function throughSymlink(path: string): Promise<boolean> {
+  return (await canonicalPath(dirname(path))) !== dirname(path);
 }
 
 /** The socket path a Linux session listens on */

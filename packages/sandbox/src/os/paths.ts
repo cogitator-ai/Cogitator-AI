@@ -145,14 +145,16 @@ async function canonicalFrom(path: string, hops: number): Promise<string> {
 }
 
 /**
- * The names a path has: as written with its parent resolved (the link itself when it is one),
- * and fully resolved (where a symlink leads). Both are denied, so neither name reaches it
+ * The names a path has: as written (what a command reaches once it replaces a symlinked parent
+ * with a real directory), with its parent resolved (the link itself when it is one), and fully
+ * resolved (where a symlink leads). All are denied, so no name reaches it
  */
 export async function namesOf(path: string): Promise<string[]> {
-  const parent = await canonicalPath(dirname(path));
-  const lexical = join(parent, basename(path));
-  const real = await canonicalPath(path);
-  return real === lexical ? [lexical] : [lexical, real];
+  const written = resolve(path);
+  const parent = await canonicalPath(dirname(written));
+  const lexical = join(parent, basename(written));
+  const real = await canonicalPath(written);
+  return [...new Set([lexical, real, written])];
 }
 
 /** What exists at `path`, without following a final symlink */

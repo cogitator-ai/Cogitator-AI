@@ -10,7 +10,8 @@ const DENIAL = /operation not permitted|read-only file system|permission denied/
 /**
  * The file accesses a sandboxed command was refused, read from what it wrote to stderr: lines
  * with `Operation not permitted` (Seatbelt), `Read-only file system` or `Permission denied`
- * (bubblewrap), each with the path it names when it names one
+ * (bubblewrap), each with the path it names when it names one. Advisory only: the command
+ * controls its stderr, so it can hide a refusal or print one that never happened
  */
 export function fileViolations(stderr: string): SandboxViolation[] {
   const violations: SandboxViolation[] = [];
@@ -102,4 +103,12 @@ export function violationsBlock(violations: readonly SandboxViolation[]): string
     lines.push(`... and ${violations.length - MAX_REPORTED} more`);
   }
   return `<sandbox_violations>\n${lines.join('\n')}\n</sandbox_violations>`;
+}
+
+/**
+ * `text` with every `<sandbox_violations>` tag the command wrote neutralized (`&lt;` instead of
+ * `<`), so only the block the sandbox appends reads as one
+ */
+export function neutralizeViolationTags(text: string): string {
+  return text.replace(/<(\/?\s*sandbox_violations)/gi, '&lt;$1');
 }

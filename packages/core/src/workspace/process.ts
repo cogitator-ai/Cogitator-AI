@@ -54,6 +54,8 @@ export class ProcessGroups {
 
 export interface RunProcessOptions {
   launch: Pick<WorkspaceLaunch, 'file' | 'args' | 'cwd' | 'env'>;
+  /** Bytes the command reads from descriptors 3, 4 and on, see `WorkspaceLaunchOverride` */
+  extraInputs?: readonly Uint8Array[];
   timeout: number;
   maxOutput: number;
   /** Milliseconds between SIGTERM and SIGKILL when a command is stopped */
@@ -80,6 +82,7 @@ export function runProcess(options: RunProcessOptions): Promise<WorkspaceExecRes
   const stdout = new CappedText(options.maxOutput, options.onStdout);
   const stderr = new CappedText(options.maxOutput, options.onStderr);
   const { file, args, cwd, env } = options.launch;
+  const extraInputs = options.extraInputs ?? [];
 
   return new Promise<WorkspaceExecResult>((resolvePromise, reject) => {
     const child = spawn(file, args, {
@@ -88,8 +91,9 @@ export function runProcess(options: RunProcessOptions): Promise<WorkspaceExecRes
       detached: !windows,
       windowsHide: true,
       windowsVerbatimArguments: windows,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', ...extraInputs.map(() => 'pipe' as const)],
     });
+    writeExtraInputs(child, extraInputs);
     options.groups.add(child);
     let timedOut = false;
     let abortedBy: AbortSignal | undefined;
@@ -243,4 +247,14 @@ function signalNumber(signal: NodeJS.Signals): number {
     SIGTERM: 15,
   };
   return numbers[signal] ?? 0;
+}
+
+/** Writes each of `inputs` to the pipe of descriptor 3 and on of `child`, and closes it */
+export function writeExtraInputs(child: ChildProcess, inputs: readonly Uint8Array[]): void {
+  inputs.forEach((bytes, index) => {
+    const pipe = child.stdio[3 + index];
+    if (!pipe || !('write' in pipe)) return;
+    pipe.on('error', () => undefined);
+    pipe.end(Buffer.from(bytes));
+  });
 }

@@ -540,6 +540,15 @@ export class LocalWorkspace implements Workspace {
     const recursive = options.recursive ?? false;
 
     if (options.trash) {
+      const lower = rel.toLowerCase();
+      const trashDir = WORKSPACE_TRASH_DIR.toLowerCase();
+      if (lower === trashDir || lower.startsWith(`${trashDir}/`)) {
+        throw new WorkspaceError(
+          'INVALID_PATH',
+          `${path} is in the trash already: restore it with restoreFromTrash or delete it with emptyTrash`,
+          { path }
+        );
+      }
       const stamp = `${new Date().toISOString().replace(/[:.]/g, '-')}-${nanoid(6)}`;
       const trashedTo = `${WORKSPACE_TRASH_DIR}/${stamp}/${rel}`;
       const target = join(this.root, ...trashedTo.split('/'));
@@ -649,13 +658,48 @@ export class LocalWorkspace implements Workspace {
     if (!trash) return { deleted: [] };
     const cutoff = options.olderThan === undefined ? Infinity : Date.now() - options.olderThan;
     const deleted: string[] = [];
+    const listed = new Set<string>();
     for (const entry of await this.listTrash()) {
+      listed.add(entry.id);
       if (entry.trashedAt > cutoff) continue;
       await this.remove(`${WORKSPACE_TRASH_DIR}/${entry.id}`, { recursive: true });
       await unlink(join(trash, `${entry.id}${TRASH_MANIFEST}`)).catch(() => undefined);
       deleted.push(entry.id);
     }
+    for (const orphan of await this.trashOrphans(trash, listed)) {
+      if (orphan.time > cutoff) continue;
+      if (orphan.folder) {
+        await this.remove(`${WORKSPACE_TRASH_DIR}/${orphan.id}`, { recursive: true });
+      }
+      await unlink(join(trash, `${orphan.id}${TRASH_MANIFEST}`)).catch(() => undefined);
+    }
     return { deleted };
+  }
+
+  /**
+   * What the trash holds that `listTrash` does not list: a folder whose entry is gone (deleted by
+   * hand, or never moved there) and a record without its folder, each with the time it was made
+   */
+  private async trashOrphans(
+    trash: string,
+    listed: ReadonlySet<string>
+  ): Promise<Array<{ id: string; folder: boolean; time: number }>> {
+    const orphans = new Map<string, { id: string; folder: boolean; time: number }>();
+    for (const dirent of await readdir(trash, { withFileTypes: true }).catch(() => [])) {
+      const record = dirent.name.endsWith(TRASH_MANIFEST) && dirent.isFile();
+      const id = record ? dirent.name.slice(0, -TRASH_MANIFEST.length) : dirent.name;
+      if (listed.has(id) || !TRASH_ID.test(id) || (!record && !dirent.isDirectory())) continue;
+      const known = orphans.get(id);
+      const info = await lstat(join(trash, dirent.name)).catch(() => undefined);
+      const manifest = record ? await readTrashManifest(join(trash, dirent.name)) : undefined;
+      const time = manifest?.trashedAt || stampTime(id) || info?.mtimeMs || 0;
+      orphans.set(id, {
+        id,
+        folder: (known?.folder ?? false) || !record,
+        time: Math.max(known?.time ?? 0, time),
+      });
+    }
+    return [...orphans.values()];
   }
 
   /** The trash directory, resolved inside the root, undefined while there is none */
@@ -670,12 +714,11 @@ export class LocalWorkspace implements Workspace {
     const folder = join(trash, id);
     const manifest = await readTrashManifest(join(trash, `${id}${TRASH_MANIFEST}`));
     let rel = manifest?.path;
-    if (rel !== undefined) {
-      if (!(await lstat(join(folder, ...rel.split('/'))).catch(() => undefined))) return undefined;
-    } else {
+    if (rel === undefined) {
       rel = await trashedPathIn(folder);
       if (rel === undefined) return undefined;
     }
+    if (!(await withoutSymlinkedParents(folder, rel))) return undefined;
     const at = join(folder, ...rel.split('/'));
     const info = await lstat(at).catch(() => undefined);
     if (!info) return undefined;
@@ -809,6 +852,7 @@ export class LocalWorkspace implements Workspace {
       this.state.groups.prune();
       outcome = await runProcess({
         launch: { file: override.file, args: override.args, cwd, env: override.env ?? env },
+        ...(override.extraInputs && { extraInputs: override.extraInputs }),
         timeout,
         maxOutput,
         killGrace: this.execConfig.killGrace ?? DEFAULT_KILL_GRACE,
@@ -1584,6 +1628,22 @@ async function trashedPathIn(folder: string): Promise<string | undefined> {
   }
 }
 
+/**
+ * Whether `rel` exists under `folder` with no symlink before its last component: a trash entry
+ * reached through a link would be listed (and sized) by what lies outside the trash
+ */
+async function withoutSymlinkedParents(folder: string, rel: string): Promise<boolean> {
+  const parts = rel.split('/');
+  let at = folder;
+  for (const [index, part] of parts.entries()) {
+    at = join(at, part);
+    const info = await lstat(at).catch(() => undefined);
+    if (!info) return false;
+    if (index < parts.length - 1 && !info.isDirectory()) return false;
+  }
+  return true;
+}
+
 /** The time a trash folder's name carries (`2026-10-28T12-34-56-789Z-abcdef`) */
 function stampTime(id: string): number | undefined {
   const match = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z/.exec(id);
@@ -1735,11 +1795,15 @@ function withReport(
   report: WorkspaceLaunchReport
 ): WorkspaceExecResult {
   const notice = report.notice;
+  const output = report.output ?? { stdout: result.stdout, stderr: result.stderr };
   return {
     ...result,
-    ...(notice && {
-      stderr: result.stderr ? `${result.stderr.replace(/\n$/, '')}\n${notice}` : notice,
-    }),
+    stdout: output.stdout,
+    stderr: notice
+      ? output.stderr
+        ? `${output.stderr.replace(/\n$/, '')}\n${notice}`
+        : notice
+      : output.stderr,
     ...(report.sandbox && { sandbox: report.sandbox }),
   };
 }

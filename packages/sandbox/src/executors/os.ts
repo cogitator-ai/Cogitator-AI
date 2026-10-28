@@ -25,6 +25,8 @@ const MAX_OUTPUT_SIZE = 50_000;
 export interface OsExecutorOptions {
   /** Hears what the sandboxes warn about (default: `console.warn`) */
   onWarning?: (message: string) => void;
+  /** The platform to sandbox for (default: this one), for tests */
+  platform?: NodeJS.Platform;
 }
 
 export class OsSandboxExecutor extends BaseSandboxExecutor {
@@ -50,13 +52,19 @@ export class OsSandboxExecutor extends BaseSandboxExecutor {
     return (await OsSandbox.probe()).available;
   }
 
-  private sandboxFor(policy: OsSandboxPolicy): OsSandbox {
+  /**
+   * The sandbox of a policy, made once. `failIfUnavailable` is always true here: an `os`
+   * execution has no unsandboxed fallback, whatever the policy says
+   */
+  private sandboxFor(given: OsSandboxPolicy): OsSandbox {
+    const policy: OsSandboxPolicy = { ...given, failIfUnavailable: true };
     const key = JSON.stringify(policy);
     let sandbox = this.sandboxes.get(key);
     if (!sandbox) {
       sandbox = new OsSandbox({
         policy,
         ...(this.options.onWarning && { onWarning: this.options.onWarning }),
+        ...(this.options.platform && { platform: this.options.platform }),
       });
       this.sandboxes.set(key, sandbox);
     }
@@ -109,6 +117,7 @@ export class OsSandboxExecutor extends BaseSandboxExecutor {
         args: launch.args,
         cwd,
         env: launch.env ?? env,
+        ...(launch.extraInputs && { extraInputs: launch.extraInputs }),
         stdin: request.stdin,
         timeout: request.timeout ?? config.timeout ?? DEFAULT_TIMEOUT,
         maxOutput: MAX_OUTPUT_SIZE,
@@ -126,6 +135,10 @@ export class OsSandboxExecutor extends BaseSandboxExecutor {
           durationMs: outcome.duration,
         }
       );
+      if (outcome && report?.output) {
+        outcome.stdout = report.output.stdout;
+        outcome.stderr = report.output.stderr;
+      }
       if (outcome && report?.notice) {
         outcome.stderr = outcome.stderr ? `${outcome.stderr}\n${report.notice}` : report.notice;
       }

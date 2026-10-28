@@ -399,7 +399,9 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
       }
     }
     const result = await insideLockOwner(owner, () =>
-      tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm'
+      tool.sandbox?.type === 'docker' ||
+      tool.sandbox?.type === 'wasm' ||
+      tool.sandbox?.type === 'os'
         ? executeInSandbox(
             tool,
             { ...toolCall, arguments: args as Record<string, unknown> },
@@ -607,6 +609,15 @@ async function executeInSandbox(
 
   if (!manager) {
     const type = tool.sandbox?.type;
+    if (type === 'os') {
+      return {
+        callId: toolCall.id,
+        name: toolCall.name,
+        result: null,
+        error: `Tool "${tool.name}" needs the OS sandbox, and no sandbox manager is available (install @cogitator-ai/sandbox): an OS-sandboxed tool never runs unprotected`,
+        errorCode: ErrorCode.SANDBOX_UNAVAILABLE,
+      };
+    }
     if (type === 'docker' && !allowNativeFallback) {
       return {
         callId: toolCall.id,
@@ -713,7 +724,7 @@ async function executeInSandbox(
       callId: toolCall.id,
       name: toolCall.name,
       result: null,
-      error: `Tool "${tool.name}" timed out in the Docker sandbox after ${result.data.duration}ms`,
+      error: `Tool "${tool.name}" timed out in the ${sandboxConfig.type === 'os' ? 'OS' : 'Docker'} sandbox after ${result.data.duration}ms`,
       errorCode: ErrorCode.TOOL_TIMEOUT,
     };
   }

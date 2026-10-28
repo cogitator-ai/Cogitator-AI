@@ -186,7 +186,7 @@ const result = await manager.execute(
 );
 ```
 
-A violation (a write outside the workdir, a refused host) fails the command and is reported in a `<sandbox_violations>` block of its stderr. There is no fallback: on a machine without the sandbox the execution fails with the reason, whatever `allowNativeFallback` says, unless the policy itself sets `failIfUnavailable: false`. `manager.isOsAvailable()` tells ahead. For an agent's commands give a `LocalWorkspace` an `OsSandbox` instead, see [OS Sandbox](/docs/tools/os-sandbox).
+A violation (a write outside the workdir, a refused host) fails the command and is reported in a `<sandbox_violations>` block of its stderr. There is no fallback: on a machine without the sandbox the execution fails with the reason, whatever `allowNativeFallback` or the policy's `failIfUnavailable` say. A tool with `sandbox: { type: 'os' }` runs `sh -c <command>` through the manager the same way, and fails with `SANDBOX_UNAVAILABLE` when there is no manager, never running its own `execute` on the host. `manager.isOsAvailable()` tells ahead. For an agent's commands give a `LocalWorkspace` an `OsSandbox` instead, see [OS Sandbox](/docs/tools/os-sandbox).
 
 ## ContainerPool
 

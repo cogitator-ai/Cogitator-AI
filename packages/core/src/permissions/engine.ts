@@ -52,7 +52,13 @@ import {
   type ShellCommand,
 } from './shell';
 import { own } from '../utils/own';
-import { criticalRemoval, plainForSandbox, removesOutside, sandboxedCall } from './sandbox';
+import {
+  commandWorkspace,
+  criticalRemoval,
+  plainForSandbox,
+  removesOutside,
+  sandboxedCall,
+} from './sandbox';
 
 const BEHAVIORS: readonly PermissionBehavior[] = ['deny', 'ask', 'allow'];
 
@@ -208,6 +214,13 @@ export interface PermissionContext {
    * that runs in the workspace's OS sandbox skips only the tool's own approval
    */
   guardrailsApproval?: boolean;
+  /**
+   * Whether removals ask as an agent's tool calls do: an `rm` or `rmdir` of a critical path in
+   * every mode, and a removal outside the workspace by a command no sandbox confines in every mode
+   * but `bypassPermissions` (default true). The capability checks of plugin hooks turn it off, so
+   * their commands keep running as in Claude Code
+   */
+  removalChecks?: boolean;
   /** The run's workspace: relative paths of calls start from its root, `acceptEdits` keeps inside it */
   workspace?: Workspace;
   /** The working directory without a workspace (default: the process's) */
@@ -930,12 +943,16 @@ async function decide(
     );
   }
   const commandCall = subject.kind === 'command' ? subject.command() : undefined;
+  const runsIn = commandCall ? commandWorkspace(tool, context.workspace) : undefined;
   const sandboxed = commandCall
-    ? await sandboxedCall(context.workspace, commandCall.text, subject.values)
+    ? await sandboxedCall(runsIn, commandCall.text, subject.values)
     : undefined;
   const inSandbox = sandboxed?.route.sandboxed === true;
-  if (commandCall) {
-    const critical = criticalRemoval(commandCall.line, commandCall.cwd, base);
+  const removalChecks = context.removalChecks !== false;
+  if (commandCall && removalChecks) {
+    const critical = criticalRemoval(commandCall.line, commandCall.cwd, runsIn?.root ?? base, {
+      ignoreCase: subject.ignoreCase,
+    });
     if (critical !== undefined) {
       return decision(
         'ask',
@@ -944,12 +961,15 @@ async function decide(
       );
     }
   }
+  const hidden = commandCall !== undefined && guarded && !(await allowableLine(commandCall, allow));
   const autoAllow =
     sandboxed !== undefined &&
     inSandbox &&
     sandboxed.sandbox.autoAllow &&
     mode !== 'plan' &&
     !sandboxed.domains &&
+    !hidden &&
+    context.guardrailsApproval !== true &&
     commandCall !== undefined &&
     plainForSandbox(commandCall.line);
   for (const rule of rules.rules('ask')) {
@@ -958,7 +978,7 @@ async function decide(
     if (autoAllow && rule.parsed.specifier === undefined && commandRule(rule, tool)) continue;
     return decision('ask', 'rule', ruleReason(rule.ref, 'Asked'), rule.ref);
   }
-  if (mode !== 'bypassPermissions' && !inSandbox) {
+  if (mode !== 'bypassPermissions' && !inSandbox && removalChecks) {
     const outside = commandCall
       ? await removesOutside(commandCall.line, commandCall.cwd, inside)
       : await deletesOutside(subject, inside);
@@ -975,9 +995,7 @@ async function decide(
       ? undefined
       : await allowingRule(subject, rules.rules('allow'), projectRoot, allow);
   if (allowing) return decision('allow', 'rule', ruleReason(allowing.ref, 'Allowed'), allowing.ref);
-  const call = commandCall;
-  const hidden = call !== undefined && guarded && !(await allowableLine(call, allow));
-  if (autoAllow && !hidden && !context.guardrailsApproval) {
+  if (autoAllow) {
     return decision(
       'allow',
       'sandbox',

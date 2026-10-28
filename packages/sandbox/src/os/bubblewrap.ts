@@ -2,7 +2,9 @@
  * The bubblewrap command line a command runs under on Linux: the root file system read-only,
  * the writable roots bound read-write, denied reads hidden behind empty mounts, write-protected
  * paths bound read-only over the writable roots, and a network namespace of its own whose only
- * way out is a `socat` bridge from a loopback port to the proxy's Unix socket
+ * way out is a `socat` bridge from a loopback port to the proxy's Unix socket. The command itself
+ * runs in a second bubblewrap inside the first, which keeps it from making namespaces of its own
+ * (`--disable-userns`, a seccomp filter) once the bridge, which needs a Unix socket, is up
  */
 
 import { shellQuote } from '../workspace/remote/shell-quote';
@@ -15,6 +17,58 @@ export interface BubblewrapPath {
   path: string;
   directory: boolean;
   exists: boolean;
+  /** Where a symlink at `path` leads, when it is one: what a bind of it would show */
+  real?: string;
+  /**
+   * Only the entry itself is write-protected: an existing directory is bound read-write over
+   * itself, so it becomes a mount point no command can remove, rename or replace, while what it
+   * holds stays writable
+   */
+  entryOnly?: boolean;
+}
+
+/**
+ * How the command is kept from making a user or mount namespace of its own, where it would hold
+ * every capability over a copy of the mount tree. At least one is needed
+ */
+export interface BubblewrapNesting {
+  /** `--unshare-user --disable-userns` (bubblewrap 0.8.0 and later) */
+  disableUserns: boolean;
+  /** The seccomp filter, read from descriptor 3 (`--seccomp 3`) */
+  seccomp: boolean;
+}
+
+/**
+ * The inner bubblewrap that runs `file args` in `cwd`: the outer sandbox's whole view bound as it
+ * is (the read-only binds stay read-only, and a namespace made below them cannot undo them), with
+ * the nesting protections applied right before the command starts
+ */
+export function innerBubblewrap(
+  bwrap: string,
+  nesting: BubblewrapNesting,
+  cwd: string,
+  file: string,
+  args: readonly string[]
+): string[] {
+  if (!nesting.disableUserns && !nesting.seccomp) {
+    throw new Error(
+      'A bubblewrap sandbox needs --disable-userns or a seccomp filter to keep commands from making namespaces of their own'
+    );
+  }
+  return [
+    bwrap,
+    '--die-with-parent',
+    ...(nesting.disableUserns ? ['--unshare-user', '--disable-userns'] : []),
+    ...(nesting.seccomp ? ['--seccomp', '3'] : []),
+    '--dev-bind',
+    '/',
+    '/',
+    '--chdir',
+    cwd,
+    '--',
+    file,
+    ...args,
+  ];
 }
 
 export interface BubblewrapInput {
@@ -38,11 +92,17 @@ export interface BubblewrapInput {
   cwd: string;
   file: string;
   args: readonly string[];
+  /** Whether bubblewrap has `--disable-userns`, see {@link BubblewrapNesting} */
+  disableUserns: boolean;
+  /** The seccomp filter's bytes, see `seccompFilter`, when the CPU has one */
+  seccomp?: Uint8Array;
 }
 
 export interface BubblewrapCommand {
   file: string;
   args: string[];
+  /** What to write to descriptor 3 and on: the seccomp filter */
+  extraInputs: Uint8Array[];
   /**
    * Mount points bubblewrap creates on the host for protected paths that do not exist yet (an
    * empty file or directory), to remove once the command is over
@@ -67,6 +127,25 @@ function firstMissing(path: string, existing: (path: string) => boolean): string
   return path;
 }
 
+/**
+ * Whether reading `path` is denied: the narrowest `denyRead` or `allowRead` entry over it is a
+ * deny (a deny wins a tie). A write-protected path hidden this way gets no read-only bind of its
+ * own, which would show its content again over the empty mount that hides it
+ */
+export function readHidden(
+  path: string,
+  denyRead: readonly BubblewrapPath[],
+  allowRead: readonly string[]
+): boolean {
+  let best: { depth: number; deny: boolean } | undefined;
+  const consider = (depth: number, deny: boolean) => {
+    if (!best || depth > best.depth || (depth === best.depth && deny)) best = { depth, deny };
+  };
+  for (const entry of denyRead) if (isWithin(entry.path, path)) consider(depthOf(entry.path), true);
+  for (const entry of allowRead) if (isWithin(entry, path)) consider(depthOf(entry), false);
+  return best?.deny === true;
+}
+
 /** The bubblewrap command line for `input` */
 export function bubblewrapCommand(
   input: BubblewrapInput,
@@ -79,6 +158,7 @@ export function bubblewrapCommand(
   const mountPoints: string[] = [];
   if (!input.filesystemDisabled) {
     const writableAt = (path: string) => input.writable.some((root) => isWithin(root, path));
+    const hidden = (path: string) => readHidden(path, input.denyRead, input.allowRead);
     for (const path of input.writable) mounts.push({ path, rank: 0, args: ['--bind', path, path] });
     for (const entry of input.denyRead) {
       mounts.push({
@@ -98,7 +178,9 @@ export function bubblewrapCommand(
     for (const entry of input.denyWrite) {
       if (!writableAt(entry.path)) continue;
       if (entry.exists) {
-        mounts.push({ path: entry.path, rank: 3, args: ['--ro-bind', entry.path, entry.path] });
+        if (hidden(entry.path) || (entry.real !== undefined && hidden(entry.real))) continue;
+        const bind = entry.entryOnly && entry.directory ? '--bind' : '--ro-bind';
+        mounts.push({ path: entry.path, rank: 3, args: [bind, entry.path, entry.path] });
         continue;
       }
       const at = firstMissing(entry.path, existing);
@@ -117,8 +199,14 @@ export function bubblewrapCommand(
   const socketDir = input.proxySocket.slice(0, input.proxySocket.lastIndexOf('/')) || '/';
   args.push('--ro-bind', socketDir, socketDir);
   args.push('--chdir', input.cwd, '--', '/bin/sh', '-c', bridgeScript(input), 'cogitator-sandbox');
-  args.push(input.file, ...input.args);
-  return { file: input.bwrap, args, mountPoints };
+  const nesting = { disableUserns: input.disableUserns, seccomp: input.seccomp !== undefined };
+  args.push(...innerBubblewrap(input.bwrap, nesting, input.cwd, input.file, input.args));
+  return {
+    file: input.bwrap,
+    args,
+    mountPoints,
+    extraInputs: input.seccomp ? [input.seccomp] : [],
+  };
 }
 
 /**

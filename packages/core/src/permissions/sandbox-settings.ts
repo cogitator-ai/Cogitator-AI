@@ -376,8 +376,8 @@ function within(dir: string, path: string): boolean {
  *   or `allowManagedDomainsOnly`: then a repository's files (project and local) cannot loosen
  *   it (`excludedCommands`, `ignoreViolations`, `allowedDomains`, `allowUnixSockets`,
  *   `allowWrite`, `Edit` allow rules, `additionalDirectories`, a `true` of
- *   `allowLocalBinding` or `allowAllUnixSockets`, a `false` of `enabled` or
- *   `failIfUnavailable` against the user's `true`)
+ *   `allowLocalBinding` or `allowAllUnixSockets`, a `false` of `enabled` against the user's
+ *   `true`, any `false` of `failIfUnavailable`)
  * - `strictAllowlist` counts from user and managed settings, and then a repository's allowed
  *   domains do not count; `filesystem.disabled` from user and managed settings, from managed
  *   ones only once they configure the filesystem; `bwrapPath` and `socatPath` from managed ones
@@ -442,7 +442,7 @@ export function sandboxPolicyOf(
   const failIfUnavailable =
     highest(
       (s) => s.failIfUnavailable,
-      notRepoFalse((s) => s.failIfUnavailable)
+      (layer, value) => !(adminRequired && isRepo(layer) && value === false)
     ) ?? true;
   const autoAllow = highest((s) => s.autoAllowBashIfSandboxed) ?? true;
   const trustedFalse = files.some(

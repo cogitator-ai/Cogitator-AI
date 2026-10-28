@@ -33,7 +33,12 @@ export {
   sandboxSettingsPath,
   type SandboxPolicyResult,
 } from './sandbox-settings';
-export { criticalRemoval, plainForSandbox, removesOutside } from './sandbox';
+export {
+  criticalRemoval,
+  plainForSandbox,
+  removesOutside,
+  type CriticalRemovalOptions,
+} from './sandbox';
 export {
   addAllowRule,
   loadSandboxPolicy,

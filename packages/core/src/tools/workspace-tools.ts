@@ -9,6 +9,7 @@ import {
 } from '@cogitator-ai/types';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
+import { markWorkspaceCommandTool } from '../permissions/sandbox';
 import { tool } from '../tool';
 import { fileLockKey } from './path-guard';
 import { RegexWorker } from './regex-worker';
@@ -620,6 +621,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
   });
 
   readFileBindings.set(readFile, workspace ? { workspace } : {});
+  markWorkspaceCommandTool(runCommand, workspace);
   const all = [readFile, writeFile, editFile, listFiles, glob, grep, runCommand, deleteFile];
   if (workspace) {
     for (const made of all) workspaceBindings.set(made, { workspace, options });

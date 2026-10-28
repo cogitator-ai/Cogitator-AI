@@ -125,9 +125,15 @@ export type OsSandboxAvailability =
   | { available: true; kind: OsSandboxKind }
   | { available: false; kind?: OsSandboxKind; reason: string };
 
-/** Something the sandbox refused a command, as the command's result reports it */
+/**
+ * Something the sandbox refused a command, as the command's result reports it. Network
+ * violations come from the sandbox's proxy and are authoritative. Filesystem violations are
+ * advisory: they are read from the errors the command wrote to stderr, so a command can hide
+ * them (`2>/dev/null`) or print lines that look like them. The sandbox blocks the access either
+ * way, so never base a security decision on them
+ */
 export interface SandboxViolation {
-  /** A connection the proxy refused, or a file access the operating system refused */
+  /** A connection the proxy refused, or a file access the operating system refused (advisory) */
   kind: 'network' | 'filesystem';
   /** What was attempted: `network-outbound`, `file-write`, `file-read` */
   operation: string;
