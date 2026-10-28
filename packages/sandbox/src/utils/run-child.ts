@@ -50,6 +50,10 @@ export function runChild(
       });
     };
 
+    if (options.signal?.aborted) {
+      resolve({ aborted: true });
+      return;
+    }
     const useProcessGroup = process.platform !== 'win32';
     const child = spawn(options.file, [...options.args], {
       cwd: options.cwd,

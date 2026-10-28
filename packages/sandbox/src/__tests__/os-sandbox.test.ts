@@ -238,6 +238,23 @@ describe.skipIf(!probe.available)(`OsSandbox on this machine (${probe.kind})`, (
     expect(env.stdout).toBe('');
   });
 
+  it('never lets an allowRead reopen a denyRead through a symlink a command made', async () => {
+    await writeFile(join(outside, 'key'), 'secret');
+    const warnings: string[] = [];
+    const sandbox = make({
+      policy: {
+        filesystem: { denyRead: [outside], allowRead: [join(root, 'alias', 'key')] },
+      },
+      onWarning: (message) => warnings.push(message),
+    });
+    const linked = await runSandboxed(sandbox, root, `ln -s ${outside} alias`);
+    expect(linked.exitCode).toBe(0);
+    const read = await runSandboxed(sandbox, root, 'cat alias/key');
+    expect(read.stdout).toBe('');
+    expect(read.exitCode).not.toBe(0);
+    expect(warnings.join('\n')).toMatch(/reaches into a denyRead region only through a symlink/);
+  });
+
   it('hides what wildcard denyRead and credentials.files name', async () => {
     await mkdir(join(root, 'sub'), { recursive: true });
     await writeFile(join(root, '.env'), 'SECRET');

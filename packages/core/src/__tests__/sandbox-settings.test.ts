@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -322,6 +322,25 @@ describe('loadSandboxPolicy', () => {
       },
       network: { allowedDomains: ['github.com', '*.npmjs.org'], deniedDomains: ['evil.com'] },
     });
+  });
+
+  it('drops a repository allowRead that reaches a trusted denyRead through a symlink', async () => {
+    const secrets = join(dir, 'secrets');
+    mkdirSync(secrets);
+    symlinkSync(secrets, join(dir, 'project', 'alias'));
+    writeFileSync(
+      join(dir, 'user', 'settings.json'),
+      JSON.stringify({ sandbox: { filesystem: { denyRead: [secrets] } } })
+    );
+    writeFileSync(
+      join(dir, 'project', '.claude', 'settings.json'),
+      JSON.stringify({ sandbox: { filesystem: { allowRead: ['./alias/key', './public'] } } })
+    );
+    const { policy } = await loadSandboxPolicy(join(dir, 'project'), {
+      userDirs: [join(dir, 'user')],
+      managedDirs: [],
+    });
+    expect(policy.filesystem?.allowRead).toEqual([join(dir, 'project', 'public')]);
   });
 
   it('keeps only what tightens the sandbox from an untrusted project', async () => {

@@ -170,7 +170,7 @@ Idle plugins are pooled per module, WASI flag and allowed hosts (up to `cacheSiz
 
 ## OS Sandbox
 
-The `os` type runs a command on the host under the operating system's sandbox: Seatbelt (`sandbox-exec`) on macOS, bubblewrap with `socat` on Linux. Its `workdir` is the one writable directory besides a temporary one, the network goes only through a proxy that allows the hosts the policy lists, and `os` holds the policy, the same as an `OsSandbox` takes:
+The `os` type runs a command on the host under the operating system's sandbox: Seatbelt (`sandbox-exec`) on macOS, bubblewrap with `socat` on Linux. Its `workdir` (default: the process's working directory, never `/`) is the one writable directory besides a temporary one, whatever `cwd` a request names, the network goes only through a proxy that allows the hosts the policy lists, and `os` holds the policy, the same as an `OsSandbox` takes:
 
 ```typescript
 const result = await manager.execute(

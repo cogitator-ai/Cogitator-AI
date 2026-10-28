@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -409,6 +409,23 @@ describe('protectedPaths', () => {
     for (const name of ['objects', 'refs', 'config', 'hooks']) {
       expect(paths).toContain(join(root, name));
     }
+  });
+
+  it('refuses a protected file with another hard link', async () => {
+    await mkdir(join(root, '.claude'), { recursive: true });
+    await writeFile(join(root, '.claude', 'settings.json'), '{}');
+    await link(join(root, '.claude', 'settings.json'), join(root, 'alias.json'));
+    await expect(protectedPaths(root, home)).rejects.toThrow(
+      /settings\.json is protected but has 2 hard links/
+    );
+  });
+
+  it('refuses a hard linked hook script in a protected hooks directory', async () => {
+    await writeFile(join(root, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\n');
+    await link(join(root, '.git', 'hooks', 'pre-commit'), join(root, 'script.sh'));
+    await expect(protectedPaths(root, home)).rejects.toThrow(
+      /pre-commit is protected but has 2 hard links/
+    );
   });
 
   it('protects what a symlink at a protected path points to', async () => {

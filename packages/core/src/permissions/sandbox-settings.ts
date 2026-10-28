@@ -3,8 +3,9 @@
  * layers into the policy of an OS sandbox (`OsSandbox` of `@cogitator-ai/sandbox`)
  */
 
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type {
   OsSandboxPolicy,
   PermissionLayer,
@@ -364,6 +365,16 @@ function within(dir: string, path: string): boolean {
   return path === dir || path.startsWith(dir.endsWith('/') ? dir : `${dir}/`);
 }
 
+/** `path` with the symlinks of its nearest existing ancestor resolved, the rest kept as written */
+function realOf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    const parent = dirname(path);
+    return parent === path ? path : join(realOf(parent), basename(path));
+  }
+}
+
 /**
  * The policy the `sandbox` sections of the layers make, as Claude Code merges them: a boolean
  * from the highest layer that sets it (managed, local, project, user), lists combined across the
@@ -520,11 +531,17 @@ export function sandboxPolicyOf(
       trustedDenyRead.push(...rulesOf(layer, anchor, home).denyRead);
     }
   }
-  const underTrustedDeny = (path: string) =>
-    trustedDenyRead.some((denied) => {
-      const wildcard = denied.indexOf('/**');
-      return within(wildcard === -1 ? denied : denied.slice(0, wildcard), path);
-    });
+  const trustedDenyBases = trustedDenyRead.map((denied) => {
+    const wildcard = denied.indexOf('/**');
+    const base = wildcard === -1 ? denied : denied.slice(0, wildcard);
+    return { base, real: realOf(base) };
+  });
+  const underTrustedDeny = (path: string) => {
+    const real = realOf(path);
+    return trustedDenyBases.some(
+      (denied) => within(denied.base, path) || within(denied.real, real)
+    );
+  };
 
   for (const layer of files) {
     const section = layer.sandbox ?? {};

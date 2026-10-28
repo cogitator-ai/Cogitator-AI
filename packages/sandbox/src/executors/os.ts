@@ -12,6 +12,7 @@ import type {
   SandboxResult,
   WorkspaceLaunchOverride,
 } from '@cogitator-ai/types';
+import { parse, resolve } from 'node:path';
 import { BaseSandboxExecutor } from './base';
 import { baseEnvironment } from './native';
 import { OsSandbox } from '../os/os-sandbox';
@@ -91,8 +92,13 @@ export class OsSandboxExecutor extends BaseSandboxExecutor {
       return this.failure(error instanceof Error ? error.message : String(error));
     }
 
-    const cwd = request.cwd ?? config.workdir ?? process.cwd();
-    const root = config.workdir ?? cwd;
+    const root = resolve(config.workdir ?? process.cwd());
+    if (root === parse(root).root) {
+      return this.failure(
+        `The writable root of the os sandbox would be ${root}: set the sandbox workdir to a project directory`
+      );
+    }
+    const cwd = request.cwd ? resolve(root, request.cwd) : root;
     const single = request.command.length === 1;
     const [first, ...rest] = request.command;
     const env = { ...baseEnvironment(), ...config.env, ...request.env };

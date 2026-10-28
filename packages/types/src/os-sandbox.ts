@@ -26,7 +26,9 @@ export interface OsSandboxFilesystemPolicy {
   denyRead?: readonly string[];
   /**
    * What commands may read again inside a `denyRead` region. The narrower entry wins: a `denyRead`
-   * inside a wider `allowRead` still holds, an `allowRead` inside a wider `denyRead` reopens
+   * inside a wider `allowRead` still holds, an `allowRead` inside a wider `denyRead` reopens.
+   * It reopens only a path it names inside the denied region: an entry that reaches into one only
+   * through a symlink is ignored
    */
   allowRead?: readonly string[];
   /**

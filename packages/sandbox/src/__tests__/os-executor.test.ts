@@ -43,6 +43,44 @@ describe('SandboxManager with the os sandbox type', () => {
     expect(result.data.stderr).toContain('<sandbox_violations>');
   });
 
+  it.skipIf(!probe.available)(
+    'never takes the writable root from the cwd of the request',
+    async () => {
+      const result = await manager.execute(
+        { command: ['echo no > escaped.txt'], cwd: base },
+        { type: 'os' }
+      );
+      expect(existsSync(join(base, 'escaped.txt'))).toBe(false);
+      expect(result.success && result.data.exitCode).not.toBe(0);
+    }
+  );
+
+  it('refuses a writable root at the file system root', async () => {
+    const executor = new OsSandboxExecutor();
+    const result = await executor.execute({ command: ['echo hi'] }, { type: 'os', workdir: '/' });
+    await executor.disconnect();
+    expect(result.success).toBe(false);
+    if (!result.success)
+      expect(result.error).toContain('writable root of the os sandbox would be /');
+  });
+
+  it.skipIf(!probe.available)(
+    'does not run a command aborted while the sandbox starts',
+    async () => {
+      const executor = new OsSandboxExecutor();
+      const controller = new AbortController();
+      const execution = executor.execute(
+        { command: ['echo ran > ran.txt'], signal: controller.signal },
+        { type: 'os', workdir: root }
+      );
+      controller.abort();
+      const result = await execution;
+      await executor.disconnect();
+      expect(result.success).toBe(false);
+      expect(existsSync(join(root, 'ran.txt'))).toBe(false);
+    }
+  );
+
   it.skipIf(!probe.available)('runs an argv command with exact arguments', async () => {
     const result = await manager.execute(
       { command: ['/bin/echo', 'a b', '$HOME'] },

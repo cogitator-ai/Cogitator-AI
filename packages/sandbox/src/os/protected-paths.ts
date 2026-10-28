@@ -189,6 +189,8 @@ export async function protectedPaths(
       if (seen.has(name)) continue;
       seen.add(name);
       const info = await lstat(name).catch(() => undefined);
+      if (info?.isFile()) refuseHardLinks(name, info.nlink);
+      if (info?.isDirectory() && basename(name) === 'hooks') await refuseLinkedHooks(name);
       result.push({
         path: name,
         exists: info !== undefined,
@@ -199,6 +201,31 @@ export async function protectedPaths(
     }
   }
   return result;
+}
+
+/**
+ * A protected file with more than one hard link can be changed through a name the sandbox does
+ * not know, one inside a writable root, so a launch refuses it rather than leave it open
+ */
+function refuseHardLinks(path: string, links: number): void {
+  if (links > 1) {
+    throw new Error(
+      `${path} is protected but has ${links} hard links, any of which a sandboxed command could write it through: remove the other links before running commands`
+    );
+  }
+}
+
+/**
+ * The hook scripts directly in a protected `hooks` directory, refused when hard linked. Other
+ * protected directories are not walked: they can be large, and package managers hard link what
+ * they install there
+ */
+async function refuseLinkedHooks(dir: string): Promise<void> {
+  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isFile()) continue;
+    const info = await lstat(join(dir, entry.name)).catch(() => undefined);
+    if (info) refuseHardLinks(join(dir, entry.name), info.nlink);
+  }
 }
 
 /**

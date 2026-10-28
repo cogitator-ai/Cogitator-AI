@@ -41,6 +41,7 @@ import {
   depthOf,
   expandWildcard,
   globSource,
+  isWithin,
   kindOf,
   namesOf,
   resolvePolicyPath,
@@ -444,6 +445,17 @@ export class OsSandbox implements WorkspaceCommandSandbox {
             ...(entry.entryOnly && { entryOnly: true }),
             ...(entry.watched && { watched: true }),
           }));
+    const denyRead = [...resolveAll(fs.denyRead), ...resolveAll(this.policy.credentials?.files)];
+    const allowRead: PolicyPath[] = [];
+    for (const entry of resolveAll(fs.allowRead)) {
+      if (await reopensThroughLink(entry.base ?? entry.path, denyRead)) {
+        this.warnOnce(
+          `allowRead ${entry.entry}: it reaches into a denyRead region only through a symlink, it is ignored`
+        );
+        continue;
+      }
+      allowRead.push(entry);
+    }
     return {
       writable: [
         { entry: '.', path: root },
@@ -451,8 +463,8 @@ export class OsSandbox implements WorkspaceCommandSandbox {
         ...resolveAll(fs.allowWrite),
       ],
       denyWrite: [...resolveAll(fs.denyWrite), ...protectedList],
-      denyRead: [...resolveAll(fs.denyRead), ...resolveAll(this.policy.credentials?.files)],
-      allowRead: resolveAll(fs.allowRead),
+      denyRead,
+      allowRead,
     };
   }
 
@@ -553,6 +565,7 @@ export class OsSandbox implements WorkspaceCommandSandbox {
     for (const entry of restrictions.allowRead) {
       const paths = entry.pattern ? (await expandWildcard(entry)).matches : [entry.path];
       for (const path of paths) {
+        if (entry.pattern && (await reopensThroughLink(path, restrictions.denyRead))) continue;
         const real = await canonicalPath(path);
         if (await kindOf(real)) allowRead.push(real);
       }
@@ -672,4 +685,29 @@ function unavailableError(reason: string): CogitatorError {
     code: ErrorCode.SANDBOX_UNAVAILABLE,
     details: { reason, platform: process.platform },
   });
+}
+
+/**
+ * Whether reading `written` is allowed again only because a symlink on the way leads into a
+ * `denyRead` region the path as written lies outside of. An `allowRead` reopens a denied region
+ * only by naming a path inside it, so a symlink made before the launch, or by an earlier command
+ * in a writable directory, never reopens a deny no entry names
+ */
+async function reopensThroughLink(
+  written: string,
+  denyRead: readonly PolicyPath[]
+): Promise<boolean> {
+  const real = await canonicalPath(written);
+  for (const deny of denyRead) {
+    const denied = deny.base ?? deny.path;
+    const deniedReal = await canonicalPath(denied);
+    if (
+      isWithin(deniedReal, real) &&
+      !isWithin(denied, written) &&
+      !isWithin(deniedReal, written)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
