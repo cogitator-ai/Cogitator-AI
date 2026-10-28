@@ -1,0 +1,111 @@
+---
+title: Headless mode
+description: 'cogitator run -p: one session without a terminal, the answer as text, JSON or stream-json, many turns as stream-json input, kept sessions to resume and fork.'
+---
+
+`cogitator run -p` (`--print`) runs an agent without a terminal: for scripts, CI jobs and other programs that drive Cogitator. Only the answer, or protocol lines, reach stdout. The CLI's own messages and the runtime's logs go to stderr, so stdout can be piped into `jq` or read line by line.
+
+```bash
+cogitator run -p "Name three primary colors"
+git diff | cogitator run -p "Review this diff"
+cogitator run -p --output-format json "Summarize README.md" | jq -r .result
+```
+
+The model, the config file and the `.env` are found the same way as for `cogitator run` (see [CLI](/docs/cli)).
+
+## Options
+
+| Option                     | Default | Description                                                                    |
+| -------------------------- | ------- | ------------------------------------------------------------------------------ |
+| `-p, --print`              | -       | Run headless, the prompt from the argument or stdin                            |
+| `--output-format <format>` | `text`  | `text` (the answer), `json` (one result object), `stream-json` (NDJSON events) |
+| `--input-format <format>`  | `text`  | `stream-json`: turns as NDJSON lines on stdin, needs stream-json output        |
+| `--resume <session-id>`    | -       | Continue a kept session                                                        |
+| `--fork`                   | -       | With `--resume`: continue in a new session forked from it                      |
+| `--session-id <id>`        | new     | The id of the new session (with `--resume` only together with `--fork`)        |
+| `--json-schema <schema>`   | -       | A JSON Schema, inline or a file, the answer must match                         |
+| `--no-session-persistence` | -       | Keep the session in this process only                                          |
+
+Flags that do not go together (a headless flag without `-p`, `--fork` without `--resume`, `-p` with `-i`, a schema that cannot be read) exit with `2` before anything runs.
+
+## Output formats
+
+**text** prints the answer and a newline. With `--json-schema` it prints the structured answer as JSON.
+
+**json** prints one result object:
+
+```json
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "session_id": "thread_6c1f...",
+  "turn_id": "turn_0a3e...",
+  "result": "Red, yellow and blue.",
+  "duration_ms": 914,
+  "total_cost_usd": 0,
+  "usage": { "input_tokens": 34, "output_tokens": 9, "total_tokens": 43 }
+}
+```
+
+`subtype` is `success`, `paused`, `interrupted` or `error`. A paused turn adds `pending_approvals` and `interrupts`, a structured answer `structured_output`, a failure `error` with `message` and `code`.
+
+**stream-json** prints every event of the [stream protocol](/docs/server-adapters) as it happens, one JSON per line, each with `session_id` and `parent_tool_use_id`, and ends each turn with the result line above:
+
+```json
+{"type":"start","messageId":"msg_...","threadId":"s1","session_id":"s1","parent_tool_use_id":null}
+{"type":"text-delta","id":"txt_...","delta":"Red","session_id":"s1","parent_tool_use_id":null}
+{"type":"finish","messageId":"msg_...","status":"completed","session_id":"s1","parent_tool_use_id":null}
+{"type":"result","subtype":"success","session_id":"s1","result":"Red, yellow and blue.", ...}
+```
+
+The events of a subagent, or of an agent used as a tool, carry the id of the tool call that started its run in `parent_tool_use_id`, so a reader can nest them under that call.
+
+## Many turns: stream-json input
+
+With `--input-format stream-json --output-format stream-json` the session reads one message per line from stdin until it ends:
+
+```json
+{"type":"user","message":{"role":"user","content":"Plan the release"}}
+{"type":"user","message":{"role":"user","content":"Skip the changelog"},"delivery":"steer"}
+{"type":"resume","decisions":{"call_1":{"approved":true}}}
+{"type":"interrupt"}
+```
+
+- `user` starts a turn. While a turn goes on it reaches that turn instead: `delivery` is `steer` (after the current step's tool calls, the default), `followUp` (when the agent would stop) or `inject` (context for the next model call). `content` is text, or parts: `{"type":"text","text"}` and images as `{"type":"image","url"}` or `{"type":"image","source":{"type":"base64","media_type","data"}}`.
+- `resume` answers a paused turn: `decisions` by tool call id, `responses` by interrupt id, `defaultDecision` for the rest.
+- `interrupt` stops the turn going on. It ends with an `interrupted` result.
+
+Lines that cannot be read are skipped with a note on stderr. When stdin ends, the turns still queued run, and the process exits with the code of the last one.
+
+## Sessions
+
+Every headless run is a session, its id is the memory thread. Without `memory.adapter` in the config, sessions are kept in SQLite at `~/.cogitator/sessions.db` (`COGITATOR_SESSIONS_DB` names another file), so a later process continues them:
+
+```bash
+cogitator run -p --session-id plan "Draft a release plan" > /dev/null
+cogitator run -p --resume plan "Shorten it to three steps"
+cogitator run -p --resume plan --fork --session-id plan-b "Make it five steps instead"
+```
+
+`--fork` copies the session up to its last entry into a new one, so the original stays as it was. A config with `memory.adapter` keeps sessions in its own store. `--no-session-persistence` keeps the session in the process alone.
+
+## Approvals
+
+A headless run has nobody to ask, so a tool call that needs approval ends the turn paused: exit code `3`, the calls in `pending_approvals`. Answer them with a `resume` line in a stream-json session:
+
+```bash
+echo '{"type":"resume","defaultDecision":{"approved":true}}' |
+  cogitator run -p --resume <session-id> --input-format stream-json --output-format stream-json
+```
+
+For live approvals, drive the agent through the [app-server](/docs/integrations/app-server), which asks with `approval/request`.
+
+## Exit codes
+
+| Code | When                                                                     |
+| ---- | ------------------------------------------------------------------------ |
+| `0`  | The last turn completed                                                  |
+| `1`  | It failed, was interrupted, or its answer does not match `--json-schema` |
+| `2`  | The command line is wrong                                                |
+| `3`  | It was left paused, waiting on approvals or answers                      |
