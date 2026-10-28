@@ -12,6 +12,7 @@ export interface FakeAgentLog {
   cancels: string[];
   modes: string[];
   errors: string[];
+  closed: string[];
 }
 
 /**
@@ -20,7 +21,9 @@ export interface FakeAgentLog {
  * through the client, as the prompt asks (`speak`, `command`, `write <path>`, `read <path>`,
  * `wait`), then answers
  */
-export function fakeAcpAgent(options: { sessionStarts?: Promise<void> } = {}): {
+export function fakeAcpAgent(
+  options: { sessionStarts?: Promise<void> | (() => Promise<void> | undefined) } = {}
+): {
   app: AgentApp;
   log: FakeAgentLog;
 } {
@@ -31,6 +34,7 @@ export function fakeAcpAgent(options: { sessionStarts?: Promise<void> } = {}): {
     cancels: [],
     modes: [],
     errors: [],
+    closed: [],
   };
   const cancelled = new Map<string, () => void>();
   let next = 0;
@@ -42,13 +46,19 @@ export function fakeAcpAgent(options: { sessionStarts?: Promise<void> } = {}): {
   const app = createAgentApp({ name: 'fake-agent' })
     .onRequest('initialize', () => ({
       protocolVersion: 1,
-      agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
+      agentCapabilities: {
+        loadSession: true,
+        promptCapabilities: { image: true },
+        sessionCapabilities: { close: {} },
+      },
       authMethods: [{ id: 'fake', name: 'Fake login' }],
       agentInfo: { name: 'fake-agent', version: '1.0.0' },
     }))
     .onRequest('authenticate', () => ({}))
     .onRequest('session/new', async () => {
-      await options.sessionStarts;
+      await (typeof options.sessionStarts === 'function'
+        ? options.sessionStarts()
+        : options.sessionStarts);
       const sessionId = `fake_${++next}`;
       log.sessions.push(sessionId);
       return {
@@ -63,6 +73,10 @@ export function fakeAcpAgent(options: { sessionStarts?: Promise<void> } = {}): {
       };
     })
     .onRequest('session/load', () => ({}))
+    .onRequest('session/close', ({ params }) => {
+      log.closed.push(params.sessionId);
+      return {};
+    })
     .onRequest('session/set_mode', ({ params }) => {
       log.modes.push(params.modeId);
       return {};

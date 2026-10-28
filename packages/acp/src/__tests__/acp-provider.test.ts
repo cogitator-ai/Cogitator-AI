@@ -261,6 +261,40 @@ describe('AcpAgentProvider', () => {
     await host.close();
   });
 
+  it('keeps the session of the newest start when a cancelled start finishes late', async () => {
+    let releaseFirst = () => undefined as void;
+    const gates = [
+      new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      }),
+    ];
+    const { fake, provider, host, completed, run } = setup(
+      {},
+      { sessionStarts: () => gates.shift() }
+    );
+    const thread = await host.startThread({});
+    const first = await host.startTurn({
+      threadId: thread.id,
+      input: [{ type: 'text', text: 'speak first' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    host.interruptTurn(thread.id, first.id);
+    expect((await completed(first.id)).status).toBe('interrupted');
+
+    await run(thread.id, 'speak second');
+    const kept = (await host.getThread(thread.id)).metadata['acp.agentSessionId'];
+    expect(kept).toBe('fake_1');
+
+    releaseFirst();
+    await waitUntil(() => fake.log.closed.length === 1);
+    expect(fake.log.closed).toEqual(['fake_2']);
+    expect((await host.getThread(thread.id)).metadata['acp.agentSessionId']).toBe('fake_1');
+    await run(thread.id, 'speak third');
+    expect(fake.log.prompts.map((prompt) => prompt.sessionId)).toEqual(['fake_1', 'fake_1']);
+    await provider.close();
+    await host.close();
+  });
+
   it('asks before the agent leaves plan mode and follows the mode picked', async () => {
     const { fake, provider, host, run } = setup();
     const thread = await host.startThread({ permissionMode: 'plan' });

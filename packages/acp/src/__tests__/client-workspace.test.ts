@@ -73,6 +73,8 @@ describe('AcpClientWorkspace', () => {
     expect(files.get(join(dir, 'sub/b.txt'))).toBe('new');
     await expect(workspace.read('/etc/hosts')).rejects.toMatchObject({ code: 'OUTSIDE_ROOT' });
     await expect(workspace.read('missing.txt')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    writeFileSync(join(dir, 'closed.txt'), 'saved but stale');
+    await expect(workspace.readBytes('closed.txt')).rejects.toMatchObject({ code: 'IO' });
     writeFileSync(join(dir, 'bin.dat'), Buffer.from([0, 1, 2, 0]));
     expect([...(await workspace.readBytes('bin.dat'))]).toEqual([0, 1, 2, 0]);
     expect(await workspace.withCwd('sub').read('a.txt')).toBe('unsaved text');

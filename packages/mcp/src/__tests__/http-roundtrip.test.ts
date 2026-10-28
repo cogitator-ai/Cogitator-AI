@@ -162,12 +162,21 @@ describe('MCPServer <-> MCPClient over HTTP', () => {
 
   it('rejects invalid arguments with MCPToolError without retrying', async () => {
     validatedExecute.mockClear();
-    const started = Date.now();
-
-    await expect(client.callTool('add', { a: 'two', b: 3 })).rejects.toBeInstanceOf(MCPToolError);
-
-    expect(validatedExecute).not.toHaveBeenCalled();
-    expect(Date.now() - started).toBeLessThan(150);
+    const slowRetries = await MCPClient.connect({
+      transport: 'http',
+      url: baseUrl,
+      retry: { maxRetries: 3, initialDelay: 2000 },
+    });
+    try {
+      const started = Date.now();
+      await expect(slowRetries.callTool('add', { a: 'two', b: 3 })).rejects.toBeInstanceOf(
+        MCPToolError
+      );
+      expect(validatedExecute).not.toHaveBeenCalled();
+      expect(Date.now() - started).toBeLessThan(1500);
+    } finally {
+      await slowRetries.close();
+    }
   });
 
   it('surfaces tool failures as MCPToolError and executes the tool exactly once', async () => {

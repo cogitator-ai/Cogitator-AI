@@ -132,6 +132,8 @@ export class AcpAgentProvider implements SessionProvider {
   private readonly active = new Map<string, ActiveTurn>();
   private readonly loading = new Set<string>();
   private readonly states = new Map<string, SessionState>();
+  /** The latest session start of each thread, so only it keeps the session it made */
+  private readonly startups = new Map<string, number>();
   private readonly permissions: AcpPermissions;
   private readonly terminals: AcpTerminals;
   private readonly name: string;
@@ -500,11 +502,28 @@ export class AcpAgentProvider implements SessionProvider {
         this.report(error);
       }
     }
+    const startup = (this.startups.get(turn.threadId) ?? 0) + 1;
+    this.startups.set(turn.threadId, startup);
     const created = await agent.request('session/new', { cwd, mcpServers });
+    if (turn.signal.aborted || this.startups.get(turn.threadId) !== startup) {
+      await this.dropSession(connected, created.sessionId);
+      throw new Error('The turn was cancelled while the agent started its session');
+    }
     this.keep(created.sessionId, created);
     connected.sessions.add(created.sessionId);
     await turn.saveMetadata({ [ACP_AGENT_SESSION_KEY]: created.sessionId });
     return created.sessionId;
+  }
+
+  /**
+   * Closes a session the agent made for a turn that no longer needs it: one cancelled while the
+   * session started, or overtaken by a newer start of the same thread. Its id is never kept
+   */
+  private async dropSession(connected: Connected, sessionId: string): Promise<void> {
+    if (!connected.init.agentCapabilities?.sessionCapabilities?.close) return;
+    await connected.connection.agent
+      .request('session/close', { sessionId })
+      .catch((error: unknown) => this.report(error));
   }
 
   private keep(

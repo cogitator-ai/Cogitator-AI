@@ -150,7 +150,9 @@ export class AcpClientWorkspace implements Workspace {
 
   /**
    * The bytes of a file: a binary file's from this machine, a text file's through the editor, so
-   * an edit reads what the editor holds
+   * an edit reads what the editor holds. When the editor cannot read a text file the read fails:
+   * the text on disk may be older than the editor's, and an edit made from it would overwrite
+   * what the editor holds
    */
   async readBytes(path: string, options?: WorkspaceReadOptions): Promise<Uint8Array> {
     if (!this.reads) return this.base.readBytes(path, options);
@@ -161,12 +163,7 @@ export class AcpClientWorkspace implements Workspace {
       if (!WorkspaceError.is(error, 'NOT_FOUND')) throw error;
     }
     if (local && looksBinary(local)) return local;
-    try {
-      return new TextEncoder().encode(await this.read(path, options));
-    } catch (error) {
-      if (local) return local;
-      throw error;
-    }
+    return new TextEncoder().encode(await this.read(path, options));
   }
 
   async write(
