@@ -57,7 +57,7 @@
     "better-sqlite3": "^13.0.3",
     "create-cogitator-app": "workspace:*",
     "express": "^5.2.1",
-    "fastify": "^5.12.5",
+    "fastify": "^5.12.6",
     "hono": "^4.13.12",
     "hyparquet": "1.31.3",
     "ioredis": "^6.0.0",
