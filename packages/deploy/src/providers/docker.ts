@@ -157,7 +157,7 @@ export class DockerProvider implements DeployProvider {
     const buildResult = run(
       'docker',
       ['build', '-f', join(outputDir, 'Dockerfile'), '-t', tag, projectDir],
-      { cwd: projectDir, env }
+      { cwd: projectDir, env: { ...env, DOCKER_BUILDKIT: '1' } }
     );
     if (!buildResult.success) {
       return { success: false, error: `Docker build failed: ${buildResult.error}` };

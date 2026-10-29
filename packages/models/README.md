@@ -120,7 +120,7 @@ interface CacheOptions {
 | `refreshInterval`   | 24 hours                         | Refresh interval in milliseconds     |
 | `fallbackToBuiltin` | `true`                           | Use the offline catalogue on failure |
 
-`initialize()` uses a fresh cache when there is one (and refreshes in the background), otherwise fetches LiteLLM data and OpenRouter's model list, fetched models are merged with the built-in ones, OpenRouter's prices over LiteLLM's for `openrouter/*`. When the LiteLLM fetch fails it falls back to a stale cache, then to the offline catalogue (or throws with `fallbackToBuiltin: false`). When only OpenRouter cannot be fetched, the bundled copy of its list fills in the `openrouter/*` models LiteLLM does not list.
+`initialize()` uses a fresh cache when there is one (and refreshes in the background), otherwise fetches LiteLLM data and OpenRouter's model list, fetched models are merged with the built-in ones, OpenRouter's prices over LiteLLM's for `openrouter/*`. When the LiteLLM fetch fails it falls back to a stale cache, then to the offline catalogue (or throws with `fallbackToBuiltin: false`). When only OpenRouter cannot be fetched, the bundled copy of its list takes its place, over LiteLLM as offline, with a warning, and the catalogue stays fresh in the cache for 15 minutes instead of the whole `ttl`, so the next load asks OpenRouter again.
 
 ### Offline Catalogue
 

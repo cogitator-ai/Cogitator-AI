@@ -806,11 +806,14 @@ interface RefusedCall {
 /**
  * Refuses every approval the run tree waits for, so a small model that calls a tool needing
  * approval at random is answered with a refusal instead of holding the run until it times out.
+ * An approval decided between the poll and the refusal is left alone, `undecided` remembering
+ * it, and fails only when a later poll shows it still waiting.
  */
 async function refuseApprovals(
   base: string,
   runs: readonly RunRecord[],
   refused: RefusedCall[],
+  undecided: Set<string>,
   signal: AbortSignal
 ): Promise<void> {
   const waiting = runs.flatMap((run) =>
@@ -837,7 +840,13 @@ async function refuseApprovals(
       );
     }
     const outcome = (await response.json()) as ApprovalOutcome;
-    if (!outcome.decided) throw new Error(`The approval of ${call.name} was not pending any more`);
+    if (!outcome.decided) {
+      if (undecided.has(approvalId)) {
+        throw new Error(`The approval of ${call.name} still waits, but Studio did not decide it`);
+      }
+      undecided.add(approvalId);
+      continue;
+    }
     refused.push({ approvalId, runId: run.id, tool: call.name, arguments: call.arguments });
   }
 }
@@ -851,12 +860,13 @@ async function waitForRun(
 ): Promise<RunRecord> {
   const deadline = Date.now() + 240_000;
   let status = 'unknown';
+  const undecided = new Set<string>();
   while (Date.now() < deadline) {
     const response = await fetch(`${base}/api/runs/${runId}`, { signal });
     const tree = (await response.json()) as { run: RunRecord; descendants: RunRecord[] };
     status = tree.run.status;
     if (['completed', 'failed', 'stopped'].includes(status)) return tree.run;
-    await refuseApprovals(base, [tree.run, ...tree.descendants], refused, signal);
+    await refuseApprovals(base, [tree.run, ...tree.descendants], refused, undecided, signal);
     await new Promise((resolveWait) => setTimeout(resolveWait, 500));
   }
   throw new Error(`Run ${runId} did not finish within 240 s (last status: ${status})`);

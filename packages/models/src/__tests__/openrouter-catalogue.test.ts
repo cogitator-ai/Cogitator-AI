@@ -7,15 +7,27 @@ import {
   transformOpenRouterData,
   type OpenRouterModelEntry,
 } from '../openrouter-catalogue';
-import { ModelRegistry } from '../registry';
+import { ModelCache } from '../cache';
+import { ModelRegistry, PARTIAL_CATALOGUE_TTL_MS } from '../registry';
 import { OPENROUTER_SNAPSHOT } from '../snapshot';
 import type { LiteLLMModelData } from '../types';
 
+const files = vi.hoisted(() => new Map<string, string>());
+
 vi.mock('fs/promises', () => ({
-  readFile: vi.fn().mockRejectedValue(new Error('ENOENT')),
-  writeFile: vi.fn().mockResolvedValue(undefined),
+  readFile: vi.fn((path: string) => {
+    const content = files.get(path);
+    return content === undefined ? Promise.reject(new Error('ENOENT')) : Promise.resolve(content);
+  }),
+  writeFile: vi.fn((path: string, content: string) => {
+    files.set(path, content);
+    return Promise.resolve();
+  }),
   mkdir: vi.fn().mockResolvedValue(undefined),
-  unlink: vi.fn().mockResolvedValue(undefined),
+  unlink: vi.fn((path: string) => {
+    files.delete(path);
+    return Promise.resolve();
+  }),
 }));
 
 /** A page of OpenRouter's `GET /api/v1/models`, the fields it serves trimmed to a few. */
@@ -137,6 +149,8 @@ async function initializedRegistry(): Promise<ModelRegistry> {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  files.clear();
 });
 
 describe('parseOpenRouterModels', () => {
@@ -271,6 +285,7 @@ describe('ModelRegistry with OpenRouter', () => {
   });
 
   it('falls back to the bundled OpenRouter copy when only OpenRouter cannot be fetched', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     serve({ [LITELLM_URL]: LITELLM, [OPENROUTER_MODELS_URL]: new Error('offline') });
     const registry = await initializedRegistry();
     const bundled = transformOpenRouterData(OPENROUTER_SNAPSHOT.models)[0];
@@ -278,11 +293,18 @@ describe('ModelRegistry with OpenRouter', () => {
     expect(bundled).toBeDefined();
     expect(registry.getModel(`openrouter/${bundled?.id}`)?.pricing).toEqual(bundled?.pricing);
     expect(registry.getPrice('deepseek/deepseek-v4-pro')).toEqual({ input: 1.32, output: 3.96 });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('OpenRouter model list fetch failed'),
+      expect.objectContaining({ message: 'offline' })
+    );
   });
 
-  it('lets a live LiteLLM listing at OpenRouter win over the bundled OpenRouter copy', async () => {
-    const bundled = transformOpenRouterData(OPENROUTER_SNAPSHOT.models)[0];
-    if (!bundled) throw new Error('the bundled OpenRouter copy is empty');
+  it('puts the bundled OpenRouter copy over a live LiteLLM listing at OpenRouter, as offline', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const bundled = transformOpenRouterData(OPENROUTER_SNAPSHOT.models).find(
+      (model) => !model.priceUnknown
+    );
+    if (!bundled) throw new Error('the bundled OpenRouter copy has no priced model');
     serve({
       [LITELLM_URL]: {
         [`openrouter/${bundled.id}`]: {
@@ -294,8 +316,37 @@ describe('ModelRegistry with OpenRouter', () => {
       [OPENROUTER_MODELS_URL]: new Error('offline'),
     });
     const registry = await initializedRegistry();
+    const offline = new ModelRegistry();
 
-    expect(registry.getPrice(`openrouter/${bundled.id}`)).toEqual({ input: 123, output: 456 });
+    expect(registry.getPricing(`openrouter/${bundled.id}`)).toEqual(bundled.pricing);
+    expect(registry.getPricing(`openrouter/${bundled.id}`)).toEqual(
+      offline.getPricing(`openrouter/${bundled.id}`)
+    );
+  });
+
+  it('caches a catalogue with the bundled OpenRouter copy only briefly', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const day = 24 * 60 * 60 * 1000;
+      const cache = { ttl: day, storage: 'file', filePath: '/cache/models.json' } as const;
+      const cachedNow = () => new ModelCache(cache).get();
+
+      serve({ [LITELLM_URL]: LITELLM, [OPENROUTER_MODELS_URL]: new Error('offline') });
+      await new ModelRegistry({ cache }).initialize();
+      expect(await cachedNow()).not.toBeNull();
+      vi.advanceTimersByTime(PARTIAL_CATALOGUE_TTL_MS + 1);
+      expect(await cachedNow()).toBeNull();
+
+      serve({ [LITELLM_URL]: LITELLM, [OPENROUTER_MODELS_URL]: PAGE });
+      const registry = new ModelRegistry({ cache });
+      await registry.initialize();
+      expect(registry.getPrice('openrouter/z-ai/glm-5.3')).toEqual({ input: 0.6, output: 2.2 });
+      vi.advanceTimersByTime(PARTIAL_CATALOGUE_TTL_MS + 1);
+      expect(await cachedNow()).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('prices openrouter/* models offline from the bundled copy', () => {

@@ -27,7 +27,10 @@ beforeEach(() => {
   registryAuthenticated.mockReturnValue(false);
 });
 
-afterEach(() => vi.resetAllMocks());
+afterEach(() => {
+  vi.resetAllMocks();
+  vi.unstubAllEnvs();
+});
 
 const checksByName = (checks: { name: string; passed: boolean }[]) =>
   Object.fromEntries(checks.map((c) => [c.name, c.passed]));
@@ -148,6 +151,24 @@ describe('DockerProvider without a deployment', () => {
   it('refuses to destroy a deployment that does not exist', async () => {
     await expect(new DockerProvider().destroy({}, dir)).rejects.toThrow(
       'No docker deployment found'
+    );
+  });
+
+  it('builds with BuildKit even when the environment turns it off', async () => {
+    vi.stubEnv('DOCKER_BUILDKIT', '0');
+    runMock.mockReturnValue({ success: false, output: '', error: 'stop after the build' });
+    const result = await new DockerProvider().deploy(
+      { target: 'docker', port: 3000 },
+      { files: [{ path: 'Dockerfile', content: 'FROM x' }], outputDir: '.cogitator' },
+      dir
+    );
+
+    expect(result).toEqual({ success: false, error: 'Docker build failed: stop after the build' });
+    expect(runMock).toHaveBeenCalledTimes(1);
+    expect(runMock).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['build']),
+      expect.objectContaining({ env: expect.objectContaining({ DOCKER_BUILDKIT: '1' }) })
     );
   });
 

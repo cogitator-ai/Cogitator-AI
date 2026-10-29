@@ -6,8 +6,8 @@
  * on as it was
  */
 
-import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
-import { watch, type FSWatcher } from 'node:fs';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdirSync, watch, type FSWatcher } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -29,6 +29,7 @@ import {
   type PluginDiagnostic,
   type PluginDisposer,
   type PluginHostEvent,
+  type PluginIdentity,
   type PluginInfo,
   type PluginManifest,
   type PluginMcpServerConfig,
@@ -75,6 +76,7 @@ import { loadPluginSettings, type PluginSettings } from './settings';
 import { PluginCodeSkills, PluginFolderSkills, PLUGIN_SKILL_NAME } from './skills';
 import { defaultPluginsRoot, pluginDataDir, pluginIdFolder, readInstalledPlugins } from './store';
 import {
+  dataFolder,
   pluginEnvironment,
   referencesOptions,
   substitute,
@@ -103,7 +105,7 @@ export interface PluginHostOptions {
    * `permissions.settings`. Unset, no settings file is read
    */
   settings?: PluginSettingsOptions;
-  /** The core's own plugins, loaded at once and never off, without a `dataDir` */
+  /** The core's own plugins, loaded at once and never off. They keep no data folder */
   core?: readonly PluginDefinition[];
   /**
    * The version of Cogitator, for the plugins' `engines.cogitator`, or a function that gives it,
@@ -155,6 +157,8 @@ interface PluginState {
   isolated: boolean;
   /** The plugin of the same name that loads instead of this one */
   shadowedBy?: string;
+  /** Its data folder, once a reference, a process or its code asked for it */
+  dataDir?: string;
 }
 
 /** What a plugin is found as now, put on its state once a generation of it loads */
@@ -1207,10 +1211,28 @@ export class experimental_PluginHost {
   ): PluginVariables {
     return {
       ...(state.candidate.dir !== undefined && { root: state.candidate.dir }),
-      data: pluginDataDir(this.installedRoot, state.candidate.id),
+      data: this.dataFolderOf(state),
       projectDir: this.root,
       options,
       secrets,
+    };
+  }
+
+  /**
+   * The plugin's data folder as a function that works it out under `installedRoot` and creates
+   * it on its first call, so a plugin that never uses its folder does not make the host look up
+   * the default one (the home folder, which Deno without `--allow-sys` refuses)
+   */
+  private dataFolderOf(state: PluginState): () => string {
+    let folder: string | undefined;
+    return () => {
+      if (folder === undefined) {
+        const path = pluginDataDir(this.installedRoot, state.candidate.id);
+        mkdirSync(path, { recursive: true, mode: 0o700 });
+        folder = path;
+        state.dataDir = path;
+      }
+      return folder;
     };
   }
 
@@ -1291,7 +1313,6 @@ export class experimental_PluginHost {
     const options = this.optionsOf(state);
     const secrets = await this.secretsOf(state, generation.replacing);
     const variables = this.variablesOf(state, options, secrets);
-    if (variables.data) await mkdir(variables.data, { recursive: true, mode: 0o700 });
     const permissions = this.permissionsOf(state, variables);
     const context = this.contextOf(state, generation, variables, permissions);
     const layout = candidate.layout;
@@ -1307,7 +1328,7 @@ export class experimental_PluginHost {
           name: state.manifest.name,
           ...(state.manifest.version !== undefined && { version: state.manifest.version }),
           root: await realpath(layout.root),
-          dataDir: await realpath(variables.data ?? layout.root),
+          dataDir: await realpath(dataFolder(variables) ?? layout.root),
         },
         entry: layout.main,
         options,
@@ -1519,15 +1540,23 @@ export class experimental_PluginHost {
         if (set.panels.get(panel.id) === entry) set.panels.delete(panel.id);
       });
     };
+    const identity: PluginIdentity = {
+      id,
+      name: pluginName,
+      ...(state.manifest.version !== undefined && { version: state.manifest.version }),
+      ...(candidate.dir !== undefined && { root: candidate.dir }),
+      isolated: candidate.layout?.main !== undefined,
+    };
     const context: InternalContext = {
-      plugin: {
-        id,
-        name: pluginName,
-        ...(state.manifest.version !== undefined && { version: state.manifest.version }),
-        ...(candidate.dir !== undefined && { root: candidate.dir }),
-        ...(variables.data !== undefined && { dataDir: variables.data }),
-        isolated: candidate.layout?.main !== undefined,
-      },
+      plugin:
+        variables.data === undefined
+          ? identity
+          : {
+              ...identity,
+              get dataDir() {
+                return dataFolder(variables);
+              },
+            },
       options: Object.freeze({ ...variables.options }),
       secret: async (key) => {
         if (!sensitive.has(key)) {
@@ -1907,6 +1936,13 @@ export class experimental_PluginHost {
       routines: set ? [...set.routines.keys()] : [],
     };
     const { manifest, candidate } = state;
+    const dataDir =
+      candidate.origin === 'core'
+        ? undefined
+        : (state.dataDir ??
+          (this.installedPluginsRoot === undefined
+            ? undefined
+            : pluginDataDir(this.installedPluginsRoot, candidate.id)));
     return {
       id: candidate.id,
       name: manifest.name,
@@ -1916,7 +1952,7 @@ export class experimental_PluginHost {
       origin: candidate.origin,
       format: state.format,
       ...(candidate.dir !== undefined && { root: candidate.dir }),
-      dataDir: pluginDataDir(this.installedRoot, candidate.id),
+      ...(dataDir !== undefined && { dataDir }),
       enabled: state.enabled,
       enabledBy: state.enabledBy,
       status: state.status,

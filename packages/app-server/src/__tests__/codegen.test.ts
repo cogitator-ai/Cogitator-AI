@@ -97,4 +97,23 @@ describe('codegen', () => {
     client.close();
     await expect(failing).rejects.toThrow('closed');
   });
+
+  it('rejects waiting and later requests with the reason it was closed with', async () => {
+    let closes = 0;
+    const client = new AppServerClient({
+      send: () => undefined,
+      onLine: () => undefined,
+      close: () => {
+        closes++;
+      },
+    });
+    const waiting = client.threadList();
+    const reason = new Error('The server exited with code 1');
+    client.close(reason);
+    client.close(new Error('a second reason'));
+    await expect(waiting).rejects.toBe(reason);
+    await expect(client.threadList()).rejects.toBe(reason);
+    expect(client.closed).toBe(true);
+    expect(closes).toBe(1);
+  });
 });

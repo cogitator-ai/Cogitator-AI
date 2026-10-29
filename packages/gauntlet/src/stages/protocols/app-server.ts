@@ -256,6 +256,11 @@ export const appServerStage: StageDefinition = {
         }
         const secondExit = await second.stop();
         evidence('secondExit', secondExit);
+        if (secondExit !== 0) {
+          throw new Error(
+            `The second server exited ${secondExit}: ${excerpt(second.stderr(), 400)}`
+          );
+        }
       }
     );
   },

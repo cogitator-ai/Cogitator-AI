@@ -60,6 +60,29 @@ describe('what the runtime reads without being asked', () => {
     await cog.close();
   });
 
+  it('lists the core and code plugins with nothing installed without the home folder', async () => {
+    const actual = await vi.importActual<typeof import('node:os')>('node:os');
+    const homedir = vi.fn((): string => {
+      throw new Error('Requires sys access to "homedir", run again with the --allow-sys flag');
+    });
+    vi.doMock('node:os', () => ({ ...actual, default: { ...actual, homedir }, homedir }));
+    vi.resetModules();
+    const { Cogitator } = await import('../runtime');
+
+    const cog = new Cogitator({
+      experimental_plugins: { plugins: [{ name: 'plain' }], installed: false, settings: false },
+    });
+    await cog.experimental_plugins.load();
+    const listed = cog.experimental_plugins.list();
+
+    expect(listed.map((info) => [info.origin, info.status, info.dataDir])).toEqual([
+      ['core', 'active', undefined],
+      ['code', 'active', undefined],
+    ]);
+    expect(homedir).not.toHaveBeenCalled();
+    await cog.close();
+  });
+
   it('takes durable.owner over the host name', async () => {
     const { Cogitator } = await import('../runtime');
 

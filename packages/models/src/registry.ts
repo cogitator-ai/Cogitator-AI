@@ -69,21 +69,40 @@ function offlineModels(): ModelInfo[] {
 }
 
 /**
- * The current catalogue: LiteLLM's with OpenRouter's model list over it, so `openrouter/*` models
- * carry the price OpenRouter bills. Fails when LiteLLM cannot be fetched. When only OpenRouter
- * cannot, its bundled copy fills in the models LiteLLM does not list.
+ * How long a catalogue whose OpenRouter models came from the bundled copy stays fresh in the
+ * cache (at most the cache's own `ttl`), so the next load soon asks OpenRouter again.
  */
-async function fetchCatalogue(): Promise<ModelInfo[]> {
+export const PARTIAL_CATALOGUE_TTL_MS = 15 * 60 * 1000;
+
+/** A catalogue fetched now, and whether OpenRouter's list in it is the bundled copy. */
+interface FetchedCatalogue {
+  models: ModelInfo[];
+  openRouterBundled: boolean;
+}
+
+/**
+ * The current catalogue: LiteLLM's with OpenRouter's model list over it, so `openrouter/*` models
+ * carry the price OpenRouter bills, as offline. Fails when LiteLLM cannot be fetched. When only
+ * OpenRouter cannot, its bundled copy takes the place of the live list, with a warning.
+ */
+async function fetchCatalogue(): Promise<FetchedCatalogue> {
   const [litellm, openRouter] = await Promise.all([
     fetchLiteLLMData(),
-    fetchOpenRouterData().catch(() => null),
+    fetchOpenRouterData().catch((error: unknown) => {
+      console.warn(
+        '[ModelRegistry] OpenRouter model list fetch failed, using its bundled copy:',
+        error
+      );
+      return null;
+    }),
   ]);
-  const fetched = transformLiteLLMData(litellm);
-  return mergeCatalogue(
-    openRouter
-      ? [...fetched, ...transformOpenRouterData(openRouter)]
-      : [...offlineOpenRouterModels(), ...fetched]
-  );
+  return {
+    models: mergeCatalogue([
+      ...transformLiteLLMData(litellm),
+      ...(openRouter ? transformOpenRouterData(openRouter) : offlineOpenRouterModels()),
+    ]),
+    openRouterBundled: openRouter === null,
+  };
 }
 
 /**
@@ -206,10 +225,10 @@ export class ModelRegistry {
 
   async refresh(): Promise<void> {
     try {
-      const allModels = await fetchCatalogue();
+      const catalogue = await fetchCatalogue();
 
-      await this.cache.set(allModels);
-      this.loadModels(allModels);
+      await this.store(catalogue);
+      this.loadModels(catalogue.models);
       this.initialized = true;
     } catch (error) {
       const stale = await this.cache.getStale();
@@ -428,11 +447,22 @@ export class ModelRegistry {
     if (!this.loaded) this.loadModels(offlineModels());
   }
 
+  /**
+   * Caches a fetched catalogue, for {@link PARTIAL_CATALOGUE_TTL_MS} only when its OpenRouter
+   * models are the bundled copy, so they are not kept as fresh for the whole `ttl`.
+   */
+  private store(catalogue: FetchedCatalogue): Promise<void> {
+    return this.cache.set(
+      catalogue.models,
+      catalogue.openRouterBundled ? { ttl: PARTIAL_CATALOGUE_TTL_MS } : {}
+    );
+  }
+
   private refreshInBackground(): void {
     void fetchCatalogue()
-      .then(async (allModels) => {
-        await this.cache.set(allModels);
-        this.loadModels(allModels);
+      .then(async (catalogue) => {
+        await this.store(catalogue);
+        this.loadModels(catalogue.models);
       })
       .catch((error) => {
         console.warn('[ModelRegistry] Background refresh failed:', error);

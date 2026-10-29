@@ -33,9 +33,12 @@ import { CORE, excerpt } from './shared.js';
 
 const FIXTURE = protocolFixture('acp-agent.ts');
 
-/** The commands the permission rules decide, so no person is asked about them. */
+/** The command the allow rule lets run without asking the client. */
 const ALLOWED_COMMAND = 'pwd';
-const REFUSED_FILE = 'refused.txt';
+/** The file `touch` would make, which the deny rule refuses without asking the client. */
+const MARKER_FILE = 'marker.txt';
+/** A file next to the workspace root, which a read of the agent must not reach. */
+const NEIGHBOUR_FILE = 'neighbour.txt';
 
 /**
  * The workspace the provider serves the agent's files and terminals from, recording what it
@@ -115,13 +118,29 @@ function launch(
   const close = async () => {
     if (closed) return;
     closed = true;
-    wired.client.close();
-    await provider.close();
-    await host.close();
-    await cogitator.close();
+    await closeInTurn([
+      () => wired.client.close(),
+      () => provider.close(),
+      () => host.close(),
+      () => cogitator.close(),
+    ]);
   };
   ctx.onCleanup(close);
   return { provider, host, wired, turns, asked, close };
+}
+
+/** Runs every step of a shutdown even when one throws, then throws what failed. */
+async function closeInTurn(steps: ReadonlyArray<() => unknown>): Promise<void> {
+  const errors: unknown[] = [];
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, 'Closing the ACP launch failed');
 }
 
 async function initialize(run: Launch) {
@@ -142,19 +161,11 @@ async function prompt(run: Launch, threadId: string, text: string) {
   return { done, calls: run.turns.toolCalls(turn.id), events: run.turns.events(turn.id) };
 }
 
-/** Whether a call ended refused: failed, or answered with the refusal as its result. */
-function refused(call: ToolCallSeen): boolean {
-  return (
-    call.failed ||
-    /denied|refused|rejected|not allowed|outside/i.test(JSON.stringify(call.result ?? null))
-  );
-}
-
 function describeCalls(calls: readonly ToolCallSeen[]) {
   return calls.map((call) => ({
     name: call.name,
     args: excerpt(call.args, 120),
-    refused: refused(call),
+    failed: call.failed,
     result: excerpt(JSON.stringify(call.result ?? null), 160),
   }));
 }
@@ -182,7 +193,7 @@ export const acpStage: StageDefinition = {
     await mkdir(root, { recursive: true });
     const realRoot = realpathSync(root);
     await writeFile(join(realRoot, 'notes.txt'), `Codeword: ${codeword}\n`);
-    await writeFile(join(ctx.tmpDir, 'outside.txt'), `Outside codeword: ${outsideWord}\n`);
+    await writeFile(join(ctx.tmpDir, NEIGHBOUR_FILE), `Neighbour codeword: ${outsideWord}\n`);
     const workspace = new RecordingWorkspace({ root: realRoot });
     await workspace.start();
     ctx.onCleanup(() => workspace.dispose());
@@ -239,17 +250,28 @@ export const acpStage: StageDefinition = {
         const { done, calls } = await prompt(
           first,
           thread.id,
-          `Use run_command twice: first run the command \`${ALLOWED_COMMAND}\`, then run the command \`touch ${REFUSED_FILE}\`. Tell me what each one returned.`
+          `Use run_command twice: first run the command \`${ALLOWED_COMMAND}\`, then run the command \`touch ${MARKER_FILE}\`. Tell me what each one returned.`
         );
         const allowed = calls.find((call) => call.args.includes(ALLOWED_COMMAND) && !call.failed);
         const touch = calls.find((call) => call.args.includes('touch'));
+        const asked = first.asked.filter((ask) => ask.turnId === done.id);
+        const askedAbout = (command: string) =>
+          asked.some((ask) => JSON.stringify(ask.toolCall.arguments).includes(command));
         evidence('toolCalls', describeCalls(calls));
         evidence('terminalCommands', workspace.commands);
         evidence(
           'clientAsked',
-          first.asked.map((ask) => ask.toolCall.toolName)
+          asked.map((ask) => ({
+            tool: ask.toolCall.toolName,
+            args: excerpt(JSON.stringify(ask.toolCall.arguments), 120),
+          }))
         );
         evidence('output', excerpt(done.output ?? ''));
+        if (askedAbout(ALLOWED_COMMAND)) {
+          throw new Error(
+            `The client was asked about ${ALLOWED_COMMAND}, the allow rule left it open`
+          );
+        }
         if (!workspace.commands.some((command) => command.includes(ALLOWED_COMMAND))) {
           throw new Error(`${ALLOWED_COMMAND} did not run in a terminal of the client workspace`);
         }
@@ -257,12 +279,17 @@ export const acpStage: StageDefinition = {
           throw new Error(`The ${ALLOWED_COMMAND} call has no result naming the workspace`);
         }
         if (!touch) throw new Error('The agent never asked to run touch');
-        if (!refused(touch)) throw new Error('The touch call was not refused');
+        if (askedAbout('touch')) {
+          throw new Error('The client was asked about touch, the deny rule did not decide it');
+        }
+        if (!touch.failed) {
+          throw new Error('The touch call did not fail although a deny rule refuses it');
+        }
         if (workspace.commands.some((command) => command.includes('touch'))) {
           throw new Error('touch reached a terminal although a deny rule refuses it');
         }
-        if (existsSync(join(realRoot, REFUSED_FILE))) {
-          throw new Error(`${REFUSED_FILE} exists, the refused command ran`);
+        if (existsSync(join(realRoot, MARKER_FILE))) {
+          throw new Error(`${MARKER_FILE} exists, the refused command ran`);
         }
       }
     );
@@ -272,13 +299,13 @@ export const acpStage: StageDefinition = {
       const { done, calls } = await prompt(
         first,
         thread.id,
-        'Read the file ../outside.txt with read_file and tell me what it says.'
+        `Read the file ../${NEIGHBOUR_FILE} with read_file and tell me what it says.`
       );
       const reads = workspace.reads.slice(before);
       evidence('toolCalls', describeCalls(calls));
       evidence('workspaceReads', reads);
       evidence('output', excerpt(done.output ?? ''));
-      if (calls.length === 0) throw new Error('The agent never tried to read ../outside.txt');
+      if (calls.length === 0) throw new Error(`The agent never tried to read ../${NEIGHBOUR_FILE}`);
       if (reads.some((read) => read.ok && !inside(read.path))) {
         throw new Error('The client workspace read a file outside its root');
       }
@@ -288,7 +315,15 @@ export const acpStage: StageDefinition = {
       if ((done.output ?? '').includes(outsideWord)) {
         throw new Error('The answer carries the text of the file outside the root');
       }
-      if (!calls.some(refused)) throw new Error('No read of the agent was refused');
+      const reading = calls.filter((call) => call.args.includes(NEIGHBOUR_FILE));
+      if (reading.length === 0) {
+        throw new Error(`No tool call of the agent names ../${NEIGHBOUR_FILE}`);
+      }
+      if (!reading.every((call) => call.failed)) {
+        throw new Error(
+          `A read of ../${NEIGHBOUR_FILE} did not fail although it is outside the root`
+        );
+      }
     });
 
     await ctx.check('session/load after a restart brings the thread back', async (evidence) => {

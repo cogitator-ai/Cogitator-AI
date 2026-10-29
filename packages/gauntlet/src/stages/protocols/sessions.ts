@@ -82,11 +82,16 @@ export interface WiredClient {
 export interface StdioFixture extends WiredClient {
   /** The tail of what the process wrote to stderr. */
   stderr(): string;
-  /** Closes the client's end and resolves once the process exited, killing it after `ms`. */
+  /**
+   * Closes the client's end and resolves once the process exited, killing it after `ms`. A process
+   * that goes away on its own closes the client, its requests rejecting with the exit and stderr.
+   */
   stop(ms?: number): Promise<number | null>;
 }
 
 const STDERR_LIMIT = 6_000;
+/** How much of the stderr the error of a fixture that went away carries. */
+const STDERR_TAIL = 1_500;
 
 /** Spawns `fixture` and drives it with the generated client over its stdin and stdout. */
 export function spawnAppServerFixture(
@@ -103,12 +108,26 @@ export function spawnAppServerFixture(
   child.stderr.on('data', (chunk: Buffer) => {
     stderr = (stderr + chunk.toString()).slice(-STDERR_LIMIT);
   });
-  const exited = new Promise<number | null>((resolve) => child.once('exit', resolve));
+  let spawnError: Error | undefined;
+  const exited = new Promise<number | null>((resolve) => {
+    child.once('close', (code) => resolve(code));
+    child.on('error', (error) => {
+      if (child.pid !== undefined) {
+        ctx.log(`app-server fixture: ${error.message}`);
+        return;
+      }
+      spawnError ??= error;
+      resolve(null);
+    });
+  });
+  child.stdin.on('error', (error) => {
+    ctx.log(`app-server fixture stdin: ${error.message}`);
+  });
   const lines = createInterface({ input: child.stdout });
   const wire: WireEntry[] = [];
   const client = new AppServerClient({
     send: (line) => {
-      child.stdin.write(`${line}\n`);
+      if (child.stdin.writable) child.stdin.write(`${line}\n`);
     },
     onLine: (callback) => {
       lines.on('line', (line) => {
@@ -120,6 +139,17 @@ export function spawnAppServerFixture(
     close: () => {
       child.stdin.end();
     },
+  });
+  void exited.then((code) => {
+    const how = spawnError
+      ? `could not run (${spawnError.message})`
+      : code !== null
+        ? `exited with code ${code}`
+        : `was killed by ${child.signalCode ?? 'a signal'}`;
+    const tail = stderr.trim().slice(-STDERR_TAIL);
+    client.close(
+      new Error(`The app-server fixture ${how}${tail === '' ? '' : `, its stderr ends: ${tail}`}`)
+    );
   });
   const stop = async (ms = 20_000): Promise<number | null> => {
     client.close();

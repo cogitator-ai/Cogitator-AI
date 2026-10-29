@@ -1,13 +1,18 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { ErrorCode, type PluginDefinition, type PluginHostEvent } from '@cogitator-ai/types';
+import {
+  ErrorCode,
+  type PluginContext,
+  type PluginDefinition,
+  type PluginHostEvent,
+} from '@cogitator-ai/types';
 import { experimental_PluginHost } from '../plugins/host';
 import { experimental_definePlugin } from '../plugins/define';
 import { experimental_memorySecretStore } from '../plugins/secrets';
-import { writeInstalledPlugins } from '../plugins/store';
+import { pluginDataDir, writeInstalledPlugins } from '../plugins/store';
 import { tool } from '../tool';
 
 const echo = (name: string) =>
@@ -979,6 +984,51 @@ describe('plugin lifecycle', () => {
       status: 'failed',
       error: 'The plugin works with Cogitator >=1.0.0, this is 0.70.0',
     });
+    await plugins.dispose();
+  });
+
+  it('gives a plugin its data folder on first read and the core plugins none', async () => {
+    const pluginsRoot = join(base, 'default-plugins');
+    vi.stubEnv('COGITATOR_PLUGINS_DIR', pluginsRoot);
+    const contexts = new Map<string, PluginContext>();
+    const remember = (name: string): PluginDefinition => ({
+      name,
+      activate(context) {
+        contexts.set(name, context);
+      },
+    });
+    const plugins = new experimental_PluginHost({
+      root: base,
+      core: [remember('builtin')],
+      config: { plugins: [remember('lazy')], installed: false },
+    });
+    try {
+      await plugins.load();
+      const dataDir = pluginDataDir(pluginsRoot, 'lazy@code');
+
+      expect(plugins.list().map((info) => [info.id, info.dataDir])).toEqual([
+        ['builtin@builtin', undefined],
+        ['lazy@code', undefined],
+      ]);
+      expect(contexts.get('builtin')?.plugin.dataDir).toBeUndefined();
+      expect(existsSync(pluginsRoot)).toBe(false);
+
+      expect(contexts.get('lazy')?.plugin.dataDir).toBe(dataDir);
+      expect(existsSync(dataDir)).toBe(true);
+      expect(plugins.get('lazy@code')?.dataDir).toBe(dataDir);
+      expect(plugins.get('builtin@builtin')?.dataDir).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      await plugins.dispose();
+    }
+  });
+
+  it('lists the data folders under a configured folder of installed plugins', async () => {
+    const plugins = host([{ name: 'known' }]);
+    await plugins.load();
+    expect(plugins.get('known@code')?.dataDir).toBe(
+      pluginDataDir(join(base, '.plugins'), 'known@code')
+    );
     await plugins.dispose();
   });
 

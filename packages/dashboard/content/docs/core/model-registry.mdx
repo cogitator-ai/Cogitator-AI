@@ -130,7 +130,7 @@ await registry.initialize();
 
 ### Methods
 
-`initialize()` loads a fresh cache if there is one (and refreshes it in the background), otherwise fetches LiteLLM data and OpenRouter's model list, on failure it falls back to a stale cache, then to the offline catalogue (or throws when `fallbackToBuiltin` is `false`). When only OpenRouter cannot be fetched, its bundled copy fills in the `openrouter/*` models. Lookups before `initialize()` use the offline catalogue without counting as initialization, so a later `initialize()` still loads the full catalogue. Overlapping `initialize()` calls share one load.
+`initialize()` loads a fresh cache if there is one (and refreshes it in the background), otherwise fetches LiteLLM data and OpenRouter's model list, on failure it falls back to a stale cache, then to the offline catalogue (or throws when `fallbackToBuiltin` is `false`). When only OpenRouter cannot be fetched, its bundled copy takes its place, over LiteLLM as offline, with a warning, and the catalogue stays fresh in the cache for 15 minutes instead of the whole `ttl`, so the next load asks OpenRouter again. Lookups before `initialize()` use the offline catalogue without counting as initialization, so a later `initialize()` still loads the full catalogue. Overlapping `initialize()` calls share one load.
 
 ```typescript
 registry.getModel('gpt-6.1-sol');
