@@ -1,5 +1,23 @@
 # @cogitator-ai/cli
 
+## 0.18.1
+
+### Patch Changes
+
+- Updated dependencies [[`25087c3`](https://github.com/cogitator-ai/Cogitator-AI/commit/25087c3b0cac1340a9a3a9d9823045ed0c5a580c), [`25087c3`](https://github.com/cogitator-ai/Cogitator-AI/commit/25087c3b0cac1340a9a3a9d9823045ed0c5a580c)]:
+  - @cogitator-ai/server-shared@0.17.0
+  - @cogitator-ai/types@0.89.0
+  - @cogitator-ai/core@0.78.0
+  - @cogitator-ai/app-server@0.3.1
+  - @cogitator-ai/mcp@19.10.0
+  - @cogitator-ai/studio@0.10.0
+  - @cogitator-ai/acp@0.2.1
+  - @cogitator-ai/channels@0.21.5
+  - @cogitator-ai/config@0.36.5
+  - @cogitator-ai/deploy@0.7.17
+  - @cogitator-ai/memory@0.29.7
+  - @cogitator-ai/evals@0.14.0
+
 ## 0.18.0
 
 ### Minor Changes
