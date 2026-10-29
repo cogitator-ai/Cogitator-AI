@@ -107,7 +107,8 @@ async function fetchCatalogue(): Promise<FetchedCatalogue> {
 
 /**
  * The built-in models with `fetched` catalogue models over them, their prices and limits taken
- * from the catalogue. A model `fetched` lists twice takes the later listing's price.
+ * from the catalogue. A model `fetched` lists twice takes the later listing's price, unless that
+ * listing has none: then the earlier price stays, and whether it is known goes with it.
  */
 function mergeCatalogue(fetched: ModelInfo[]): ModelInfo[] {
   const modelMap = new Map<string, ModelInfo>();
@@ -121,10 +122,13 @@ function mergeCatalogue(fetched: ModelInfo[]): ModelInfo[] {
     const existing = modelMap.get(key);
     if (existing) {
       const aliases = [...new Set([...(existing.aliases ?? []), ...(model.aliases ?? [])])];
+      const { priceUnknown: _earlier, ...rest } = existing;
+      const priced = model.priceUnknown ? existing : model;
       modelMap.set(key, {
-        ...existing,
+        ...rest,
         ...(model.catalogId !== undefined && { catalogId: model.catalogId }),
-        pricing: model.priceUnknown ? existing.pricing : model.pricing,
+        pricing: priced.pricing,
+        ...(priced.priceUnknown === true && { priceUnknown: true }),
         contextWindow: model.contextWindow ?? existing.contextWindow,
         maxOutputTokens: model.maxOutputTokens ?? existing.maxOutputTokens,
         capabilities: mergeCapabilities(existing.capabilities, model.capabilities),

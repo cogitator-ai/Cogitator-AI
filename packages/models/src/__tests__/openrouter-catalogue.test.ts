@@ -274,6 +274,30 @@ describe('ModelRegistry with OpenRouter', () => {
     expect(registry.getModel('deepseek-v4-pro')?.provider).toBe('deepseek');
   });
 
+  it('takes the price availability of the listing whose price it takes', async () => {
+    serve({
+      [LITELLM_URL]: {
+        ...LITELLM,
+        'openrouter/deepseek/deepseek-v4-pro': { litellm_provider: 'openrouter', mode: 'chat' },
+        'openrouter/openrouter/auto': {
+          litellm_provider: 'openrouter',
+          mode: 'chat',
+          input_cost_per_token: 0.000001,
+          output_cost_per_token: 0.000002,
+        },
+      },
+      [OPENROUTER_MODELS_URL]: PAGE,
+    });
+    const registry = await initializedRegistry();
+
+    expect(registry.getModel('openrouter/deepseek/deepseek-v4-pro')?.priceUnknown).toBeUndefined();
+    expect(registry.getPrice('openrouter/deepseek/deepseek-v4-pro')).toEqual({
+      input: 0.888966,
+      output: 1.777932,
+    });
+    expect(registry.getPrice('openrouter/openrouter/auto')).toEqual({ input: 1, output: 2 });
+  });
+
   it('reads OpenRouter vendor z-ai as provider zai', async () => {
     serve({ [LITELLM_URL]: LITELLM, [OPENROUTER_MODELS_URL]: PAGE });
     const registry = await initializedRegistry();
