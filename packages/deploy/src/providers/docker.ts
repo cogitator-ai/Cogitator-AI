@@ -105,6 +105,20 @@ export class DockerProvider implements DeployProvider {
           : 'Docker Compose v2 plugin is not available',
         fix: composeAvailable ? undefined : 'Install it: https://docs.docker.com/compose/install/',
       });
+
+      const buildKitAvailable = run('docker', ['buildx', 'version'], {
+        timeout: PREFLIGHT_TIMEOUT_MS,
+      }).success;
+      checks.push({
+        name: 'Docker BuildKit available',
+        passed: buildKitAvailable,
+        message: buildKitAvailable
+          ? 'Docker BuildKit (buildx) is available'
+          : 'Docker BuildKit (buildx) is not available, the Dockerfile caches installs with RUN --mount=type=cache',
+        fix: buildKitAvailable
+          ? undefined
+          : 'Install the buildx plugin: https://docs.docker.com/go/buildx/',
+      });
     }
 
     if (config.registry) {
@@ -143,7 +157,7 @@ export class DockerProvider implements DeployProvider {
     const buildResult = run(
       'docker',
       ['build', '-f', join(outputDir, 'Dockerfile'), '-t', tag, projectDir],
-      { cwd: projectDir, env }
+      { cwd: projectDir, env: { ...env, DOCKER_BUILDKIT: '1' } }
     );
     if (!buildResult.success) {
       return { success: false, error: `Docker build failed: ${buildResult.error}` };

@@ -6,6 +6,7 @@ import {
   initializeModels,
   shutdownModels,
 } from '../registry';
+import { OPENROUTER_MODELS_URL } from '../openrouter-catalogue';
 import type { LiteLLMModelData } from '../types';
 
 vi.mock('fs/promises', () => ({
@@ -107,8 +108,13 @@ const REVERSED: LiteLLMModelData = Object.fromEntries(Object.entries(CATALOGUE).
 
 const originalFetch = globalThis.fetch;
 
+/** Serves `data` as the LiteLLM catalogue and an empty OpenRouter list, so LiteLLM's prices stand. */
 function serveCatalogue(data: LiteLLMModelData): void {
-  globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(data) });
+  globalThis.fetch = vi.fn((input: string | URL | Request) => {
+    const body =
+      String(input) === OPENROUTER_MODELS_URL ? { data: [], links: { next: null } } : data;
+    return Promise.resolve(new Response(JSON.stringify(body)));
+  });
 }
 
 async function registryFor(data: LiteLLMModelData): Promise<ModelRegistry> {
@@ -212,7 +218,11 @@ describe('offline catalogue', () => {
     const registry = new ModelRegistry();
 
     expect(registry.getModel('openai/gpt-6-luna')?.id).toBe('gpt-6-luna');
-    expect(registry.getModel('openrouter/openai/gpt-6-luna')?.id).toBe('gpt-6-luna');
+    expect(registry.getModel('openrouter/openai/gpt-6-luna')).toMatchObject({
+      id: 'openai/gpt-6-luna',
+      provider: 'openrouter',
+      catalogId: 'openrouter/openai/gpt-6-luna',
+    });
     expect(registry.getModel('openrouter/deepseek/no-such-model')).toBeNull();
   });
 

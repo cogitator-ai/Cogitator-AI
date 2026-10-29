@@ -62,10 +62,18 @@ export class RequirementProbe {
         return process.env[requirement.name]
           ? undefined
           : `${requirement.name} is not set${requirement.why ? ` (${requirement.why})` : ''}`;
-      case 'docker':
+      case 'docker': {
+        if (requirement.buildkit) {
+          const daemon = await this.missing({ kind: 'docker' });
+          if (daemon) return daemon;
+          return (await commandWorks('docker', ['buildx', 'version']))
+            ? undefined
+            : 'BuildKit (buildx) is not installed';
+        }
         return (await commandWorks('docker', ['info', '--format', '{{.ServerVersion}}']))
           ? undefined
           : 'Docker daemon is not reachable';
+      }
       case 'bun':
         return (await commandWorks('bun', ['--version'])) ? undefined : 'Bun is not installed';
       case 'deno':

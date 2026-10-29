@@ -288,7 +288,10 @@ export interface PluginIdentity {
   version?: string;
   /** The plugin's folder, unset for one in code */
   root?: string;
-  /** Its own folder that lasts across updates, `${CLAUDE_PLUGIN_DATA}` */
+  /**
+   * Its own folder that lasts across updates, `${CLAUDE_PLUGIN_DATA}`, created when first read.
+   * Unset for the core's own plugins
+   */
   dataDir?: string;
   /** Whether it runs in a process of its own */
   isolated: boolean;
@@ -392,6 +395,10 @@ export interface PluginInfo {
   /** The manifest's format: Claude Code's, Cogitator's extension over it, or code */
   format: 'claude' | 'cogitator' | 'code';
   root?: string;
+  /**
+   * Its data folder, given once the host knows the folder of installed plugins or the plugin
+   * asked for it. Unset for the core's own plugins
+   */
   dataDir?: string;
   enabled: boolean;
   /** What decided `enabled`: a settings layer, or the plugin's `defaultEnabled` */

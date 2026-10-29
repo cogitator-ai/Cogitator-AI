@@ -34,6 +34,29 @@ function sameKeys(actual: Document | undefined, expected: Document): boolean {
   return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
+/** Thread listing by agent and by recency, both paged by `updatedAt` then `_id`. */
+const THREAD_INDEXES: Record<string, Document> = {
+  agentId_1_updatedAt_1__id_1: { agentId: 1, updatedAt: 1, _id: 1 },
+  updatedAt_1__id_1: { updatedAt: 1, _id: 1 },
+};
+
+/** Entries in thread order (`seq` breaks ties of one timestamp) and the branch tree by parent. */
+const ENTRY_INDEXES: Record<string, Document> = {
+  threadId_1_createdAt_1_seq_1: { threadId: 1, createdAt: 1, seq: 1 },
+  threadId_1_parentId_1: { threadId: 1, parentId: 1 },
+};
+
+/** `collection.index` for every expected index that is absent or has other keys. */
+function missingIndexes(
+  collection: string,
+  actual: Record<string, Document>,
+  expected: Record<string, Document>
+): string[] {
+  return Object.entries(expected)
+    .filter(([name, keys]) => !sameKeys(actual[name], keys))
+    .map(([name]) => `${collection}.${name}`);
+}
+
 /**
  * MongoDB as the thread store: built from config the way users do, in a database of its own
  * that is dropped when the run ends, and inspected with the driver directly.
@@ -74,16 +97,12 @@ export const memoryMongodbStage: StageDefinition = {
       evidence('database', database);
       evidence('threadIndexes', threadIndexes);
       evidence('entryIndexes', entryIndexes);
-      if (!sameKeys(threadIndexes.agentId_1, { agentId: 1 })) {
-        throw new Error(
-          `The threads collection lacks the agentId index: ${Object.keys(threadIndexes).join(', ')}`
-        );
-      }
-      if (!sameKeys(entryIndexes.threadId_1_createdAt_1, { threadId: 1, createdAt: 1 })) {
-        throw new Error(
-          `The entries collection lacks the threadId, createdAt index: ${Object.keys(entryIndexes).join(', ')}`
-        );
-      }
+      const missing = [
+        ...missingIndexes('threads', threadIndexes, THREAD_INDEXES),
+        ...missingIndexes('entries', entryIndexes, ENTRY_INDEXES),
+      ];
+      if (missing.length)
+        throw new Error(`Indexes missing or with other keys: ${missing.join(', ')}`);
     });
 
     await exerciseThreadStore(ctx, 'mongodb', adapter);
@@ -247,8 +266,9 @@ export const memoryMongodbStage: StageDefinition = {
         if (store.provider !== 'mongodb')
           throw new Error(`The runtime built a ${store.provider} store`);
         if (count !== 1) throw new Error(`The runtime store wrote ${count} entries to MongoDB`);
-        if (!indexes.threadId_1_createdAt_1) {
-          throw new Error('The runtime store did not build its indexes');
+        const missing = missingIndexes('entries', indexes, ENTRY_INDEXES);
+        if (missing.length) {
+          throw new Error(`The runtime store did not build its indexes: ${missing.join(', ')}`);
         }
       }
     );

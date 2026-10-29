@@ -1,5 +1,10 @@
 import { Agent, tool } from '@cogitator-ai/core';
-import { Gateway, createHookRegistry, webchatChannel } from '@cogitator-ai/channels';
+import {
+  Gateway,
+  createHookRegistry,
+  defaultThreadKey,
+  webchatChannel,
+} from '@cogitator-ai/channels';
 import { InMemoryAdapter } from '@cogitator-ai/memory';
 import type { HookName } from '@cogitator-ai/types';
 import { z } from 'zod';
@@ -143,7 +148,11 @@ const webchatStage: StageDefinition = {
       }
       return connected.clientId;
     });
-    const threadId = `webchat:${clientId}`;
+    const threadId = defaultThreadKey({
+      channelType: 'webchat',
+      channelId: clientId,
+      userId: clientId,
+    });
 
     const turn = async (text: string, id: string, turnNumber: number) => {
       client.sendJson({ text, id });
@@ -210,8 +219,12 @@ const webchatStage: StageDefinition = {
       if (session?.messageCount !== 2) {
         throw new Error(`The session counts ${session?.messageCount} messages, expected 2`);
       }
-      if (seen.filter((record) => record.hook === 'session:created').length !== 1) {
+      const created = seen.filter((record) => record.hook === 'session:created');
+      if (created.length !== 1) {
         throw new Error('Expected exactly one session:created hook');
+      }
+      if (created[0]?.threadId !== threadId) {
+        throw new Error(`The session was created on ${created[0]?.threadId}, expected ${threadId}`);
       }
     });
   },

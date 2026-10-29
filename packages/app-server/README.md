@@ -61,6 +61,7 @@ const client = new AppServerClient({
   onLine: (callback) => lines.on('line', callback),
   close: () => child.stdin.end(),
 });
+child.once('exit', (code) => client.close(new Error(`The app-server exited with code ${code}`)));
 
 await client.initialize({
   protocolVersion: APP_SERVER_PROTOCOL_VERSION,

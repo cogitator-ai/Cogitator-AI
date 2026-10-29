@@ -3,10 +3,12 @@ import type { ModelInfo, CacheOptions } from './types';
 import { ModelInfoSchema } from './types';
 
 /** Bumped whenever the cached model shape changes, so older cache files are refetched. */
-export const CACHE_VERSION = '2.1.0';
+export const CACHE_VERSION = '2.2.0';
 const CacheEntrySchema = z.object({
   models: z.array(ModelInfoSchema),
   timestamp: z.number().finite(),
+  /** How long this entry stays fresh, when shorter than the cache's `ttl` */
+  ttl: z.number().positive().finite().optional(),
   version: z.literal(CACHE_VERSION),
 });
 
@@ -41,10 +43,15 @@ export class ModelCache {
     return entry?.models ?? null;
   }
 
-  async set(models: ModelInfo[]): Promise<void> {
+  /**
+   * Stores `models` as the current entry. `ttl` keeps it fresh for less than the cache's own
+   * `ttl`, as for a catalogue part of which came from a bundled copy.
+   */
+  async set(models: ModelInfo[], options: { ttl?: number } = {}): Promise<void> {
     const entry: CacheEntry = {
       models,
       timestamp: Date.now(),
+      ...(options.ttl !== undefined && { ttl: options.ttl }),
       version: CACHE_VERSION,
     };
 
@@ -68,7 +75,8 @@ export class ModelCache {
 
   isStale(entry: CacheEntry): boolean {
     const age = Date.now() - entry.timestamp;
-    return age > this.options.ttl || entry.version !== CACHE_VERSION;
+    const ttl = Math.min(entry.ttl ?? this.options.ttl, this.options.ttl);
+    return age > ttl || entry.version !== CACHE_VERSION;
   }
 
   private async getEntry(): Promise<CacheEntry | null> {

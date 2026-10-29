@@ -1,8 +1,9 @@
 import type { ModelInfo, ModelFilter, ModelPricing, RegistryOptions, ProviderInfo } from './types';
 import { ModelCache } from './cache';
 import { fetchLiteLLMData, normalizeProviderId, transformLiteLLMData } from './fetcher';
+import { fetchOpenRouterData, transformOpenRouterData } from './openrouter-catalogue';
 import { BUILTIN_MODELS, BUILTIN_PROVIDERS } from './providers/index';
-import { LITELLM_SNAPSHOT } from './snapshot';
+import { LITELLM_SNAPSHOT, OPENROUTER_SNAPSHOT } from './snapshot';
 
 /** Providers a bare model name prefers, first-party APIs and the major clouds first. */
 const PREFERRED_PROVIDERS: readonly string[] = BUILTIN_PROVIDERS.map((provider) => provider.id);
@@ -46,17 +47,69 @@ function compareCandidates(name: string, a: ModelInfo, b: ModelInfo): number {
 }
 
 let offline: ModelInfo[] | null = null;
+let offlineOpenRouter: ModelInfo[] | null = null;
+
+/** The `openrouter/*` models of the copy of OpenRouter's model list bundled with the package. */
+function offlineOpenRouterModels(): ModelInfo[] {
+  offlineOpenRouter ??= transformOpenRouterData(OPENROUTER_SNAPSHOT.models);
+  return offlineOpenRouter;
+}
 
 /**
  * The models the registry knows without the network: the built-in ones, priced and sized from
- * the copy of the LiteLLM catalogue bundled with the package, and the rest of that copy.
+ * the copies of the LiteLLM catalogue and of OpenRouter's model list bundled with the package,
+ * and the rest of those copies.
  */
 function offlineModels(): ModelInfo[] {
-  offline ??= mergeCatalogue(transformLiteLLMData(LITELLM_SNAPSHOT.models));
+  offline ??= mergeCatalogue([
+    ...transformLiteLLMData(LITELLM_SNAPSHOT.models),
+    ...offlineOpenRouterModels(),
+  ]);
   return offline;
 }
 
-/** The built-in models with `fetched` catalogue models over them, their prices and limits taken from the catalogue. */
+/**
+ * How long a catalogue whose OpenRouter models came from the bundled copy stays fresh in the
+ * cache (at most the cache's own `ttl`), so the next load soon asks OpenRouter again.
+ */
+export const PARTIAL_CATALOGUE_TTL_MS = 15 * 60 * 1000;
+
+/** A catalogue fetched now, and whether OpenRouter's list in it is the bundled copy. */
+interface FetchedCatalogue {
+  models: ModelInfo[];
+  openRouterBundled: boolean;
+}
+
+/**
+ * The current catalogue: LiteLLM's with OpenRouter's model list over it, so `openrouter/*` models
+ * carry the price OpenRouter bills, as offline. Fails when LiteLLM cannot be fetched. When only
+ * OpenRouter cannot, its bundled copy takes the place of the live list, with a warning.
+ */
+async function fetchCatalogue(): Promise<FetchedCatalogue> {
+  const [litellm, openRouter] = await Promise.all([
+    fetchLiteLLMData(),
+    fetchOpenRouterData().catch((error: unknown) => {
+      console.warn(
+        '[ModelRegistry] OpenRouter model list fetch failed, using its bundled copy:',
+        error
+      );
+      return null;
+    }),
+  ]);
+  return {
+    models: mergeCatalogue([
+      ...transformLiteLLMData(litellm),
+      ...(openRouter ? transformOpenRouterData(openRouter) : offlineOpenRouterModels()),
+    ]),
+    openRouterBundled: openRouter === null,
+  };
+}
+
+/**
+ * The built-in models with `fetched` catalogue models over them, their prices and limits taken
+ * from the catalogue. A model `fetched` lists twice takes the later listing's price, unless that
+ * listing has none: then the earlier price stays, and whether it is known goes with it.
+ */
 function mergeCatalogue(fetched: ModelInfo[]): ModelInfo[] {
   const modelMap = new Map<string, ModelInfo>();
 
@@ -69,10 +122,13 @@ function mergeCatalogue(fetched: ModelInfo[]): ModelInfo[] {
     const existing = modelMap.get(key);
     if (existing) {
       const aliases = [...new Set([...(existing.aliases ?? []), ...(model.aliases ?? [])])];
+      const { priceUnknown: _earlier, ...rest } = existing;
+      const priced = model.priceUnknown ? existing : model;
       modelMap.set(key, {
-        ...existing,
+        ...rest,
         ...(model.catalogId !== undefined && { catalogId: model.catalogId }),
-        pricing: model.priceUnknown ? existing.pricing : model.pricing,
+        pricing: priced.pricing,
+        ...(priced.priceUnknown === true && { priceUnknown: true }),
         contextWindow: model.contextWindow ?? existing.contextWindow,
         maxOutputTokens: model.maxOutputTokens ?? existing.maxOutputTokens,
         capabilities: mergeCapabilities(existing.capabilities, model.capabilities),
@@ -129,10 +185,11 @@ export class ModelRegistry {
   }
 
   /**
-   * Loads the model catalogue: from the cache when it is fresh, otherwise from LiteLLM, falling
-   * back to the offline catalogue when both fail and `fallbackToBuiltin` is set: the built-in
-   * models and the copy of the LiteLLM catalogue bundled with the package
-   * (`LITELLM_SNAPSHOT.fetchedAt` says how old it is). Lookups made before it use the offline
+   * Loads the model catalogue: from the cache when it is fresh, otherwise from LiteLLM and
+   * OpenRouter's model list, falling back to the offline catalogue when both fail and
+   * `fallbackToBuiltin` is set: the built-in models and the copies of the LiteLLM catalogue and
+   * OpenRouter's list bundled with the package (`LITELLM_SNAPSHOT.fetchedAt` and
+   * `OPENROUTER_SNAPSHOT.fetchedAt` say how old they are). Lookups made before it use the offline
    * catalogue without counting as initialization, so calling it later still loads the current
    * one. Overlapping calls share one load.
    */
@@ -172,13 +229,10 @@ export class ModelRegistry {
 
   async refresh(): Promise<void> {
     try {
-      const data = await fetchLiteLLMData();
-      const models = transformLiteLLMData(data);
+      const catalogue = await fetchCatalogue();
 
-      const allModels = mergeCatalogue(models);
-
-      await this.cache.set(allModels);
-      this.loadModels(allModels);
+      await this.store(catalogue);
+      this.loadModels(catalogue.models);
       this.initialized = true;
     } catch (error) {
       const stale = await this.cache.getStale();
@@ -397,13 +451,22 @@ export class ModelRegistry {
     if (!this.loaded) this.loadModels(offlineModels());
   }
 
+  /**
+   * Caches a fetched catalogue, for {@link PARTIAL_CATALOGUE_TTL_MS} only when its OpenRouter
+   * models are the bundled copy, so they are not kept as fresh for the whole `ttl`.
+   */
+  private store(catalogue: FetchedCatalogue): Promise<void> {
+    return this.cache.set(
+      catalogue.models,
+      catalogue.openRouterBundled ? { ttl: PARTIAL_CATALOGUE_TTL_MS } : {}
+    );
+  }
+
   private refreshInBackground(): void {
-    void fetchLiteLLMData()
-      .then(async (data) => {
-        const models = transformLiteLLMData(data);
-        const allModels = mergeCatalogue(models);
-        await this.cache.set(allModels);
-        this.loadModels(allModels);
+    void fetchCatalogue()
+      .then(async (catalogue) => {
+        await this.store(catalogue);
+        this.loadModels(catalogue.models);
       })
       .catch((error) => {
         console.warn('[ModelRegistry] Background refresh failed:', error);

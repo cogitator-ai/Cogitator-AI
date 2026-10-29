@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   experimental_validatePlugin,
   readPluginLayout,
@@ -372,6 +372,24 @@ describe('plugin variables', () => {
     expect(substitute('${user_config.unset} ${OTHER}', variables, 'value')).toBe(
       '${user_config.unset} ${OTHER}'
     );
+  });
+
+  it('works a lazy data folder out only for a reference to it', () => {
+    const data = vi.fn(() => '/data/lazy');
+    const lazy: PluginVariables = { root: '/plugins/lazy', data, options: {}, secrets: {} };
+
+    expect(substitute('${CLAUDE_PLUGIN_ROOT}/bin ${OTHER}', lazy, 'value')).toBe(
+      '/plugins/lazy/bin ${OTHER}'
+    );
+    expect(data).not.toHaveBeenCalled();
+    expect(substitute('${CLAUDE_PLUGIN_DATA}/cache', lazy, 'value')).toBe('/data/lazy/cache');
+    expect(pluginEnvironment(lazy, false)).toEqual({
+      CLAUDE_PLUGIN_ROOT: '/plugins/lazy',
+      COGITATOR_PLUGIN_ROOT: '/plugins/lazy',
+      CLAUDE_PLUGIN_DATA: '/data/lazy',
+      COGITATOR_PLUGIN_DATA: '/data/lazy',
+    });
+    expect(data).toHaveBeenCalledTimes(2);
   });
 
   it('gives hooks the option variables and MCP servers their paths', () => {

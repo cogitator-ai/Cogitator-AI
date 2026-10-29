@@ -5,7 +5,7 @@ description: Dynamic model registry with pricing, capabilities, and multi-provid
 
 ## Overview
 
-The `@cogitator-ai/models` package provides a dynamic model registry that tracks pricing, context windows, and capabilities for LLM models across all major providers. It fetches data from [LiteLLM](https://github.com/BerriAI/litellm) and works offline from built-in models and a copy of the LiteLLM catalogue bundled with the package.
+The `@cogitator-ai/models` package provides a dynamic model registry that tracks pricing, context windows, and capabilities for LLM models across all major providers. It fetches data from [LiteLLM](https://github.com/BerriAI/litellm) and OpenRouter's [public model list](https://openrouter.ai/api/v1/models), and works offline from built-in models and copies of both bundled with the package.
 
 ```typescript
 import { initializeModels, getModel, getPrice, listModels } from '@cogitator-ai/models';
@@ -24,14 +24,15 @@ Model ids are matched case-insensitively and `aliases` resolve too (`claude-sonn
 
 ### Provider-qualified ids
 
-The same model is often sold by several providers at different prices, so the registry keeps one entry per provider. Each entry's `id` is the model's name at that provider, `provider` is the registry's provider id, and `catalogId` is the key LiteLLM lists it under:
+The same model is often sold by several providers at different prices, so the registry keeps one entry per provider. Each entry's `id` is the model's name at that provider, `provider` is the registry's provider id, and `catalogId` is the key its catalogue lists it under (`openrouter/<id>` for a model of OpenRouter's list):
 
 ```typescript
 await initializeModels();
 
 getModel('openrouter/deepseek/deepseek-v4-pro');
 // { id: 'deepseek/deepseek-v4-pro', provider: 'openrouter',
-//   catalogId: 'openrouter/deepseek/deepseek-v4-pro', pricing: { input: 0.2088, output: 0.4176 }, ... }
+//   catalogId: 'openrouter/deepseek/deepseek-v4-pro',
+//   pricing: { input: 0.888966, output: 1.777932, inputCached: 0.0740805 }, ... }
 
 getModel('azure_ai/deepseek-v4-pro')?.provider; // 'azure', at Azure's price
 getModel('google/gemini-3.8-flash')?.id; // 'gemini-3.8-flash' (also found as gemini/gemini-3.8-flash)
@@ -39,7 +40,7 @@ getModel('google/gemini-3.8-flash')?.id; // 'gemini-3.8-flash' (also found as ge
 
 A lookup resolves in this order:
 
-1. A provider-qualified id finds that provider's entry. Both Cogitator model strings (`openai/gpt-6.1-sol`, `google/gemini-3.8-flash`, `openrouter/deepseek/deepseek-v4-pro`) and LiteLLM keys (`gemini/...`, `azure_ai/...`) work.
+1. A provider-qualified id finds that provider's entry. Both Cogitator model strings (`openai/gpt-6.1-sol`, `google/gemini-3.8-flash`, `openrouter/deepseek/deepseek-v4-pro`) and LiteLLM keys (`gemini/...`, `azure_ai/...`) work. `openrouter/*` models are priced from OpenRouter's own model list, as OpenRouter bills them, not at the vendor's direct price, and OpenRouter's vendor names `z-ai` and `x-ai` are read as the providers `zai` and `xai`.
 2. When that provider does not list the model, the prefix is dropped and the rest is looked up, so `openai/deepseek/deepseek-v4-pro` (an OpenAI-compatible server) is priced as `deepseek/deepseek-v4-pro`.
 3. A bare name (`deepseek-v4-pro`) picks one listing by fixed rules, never by catalogue order: active models before deprecated ones, the vendor's own listing (a built-in model or an unprefixed LiteLLM key) before resellers, then the providers in `BUILTIN_PROVIDERS` order, then the shorter id, then alphabetically.
 
@@ -68,7 +69,7 @@ Cache reads and writes are charged at `inputCached` / `inputCacheWrite` where th
 
 ### Offline Catalogue
 
-Without the network the registry still knows the built-in models and every model of the LiteLLM catalogue copy bundled with the package (`LITELLM_SNAPSHOT`, MIT licensed like LiteLLM), so DeepSeek, Mistral, Bedrock and the rest are priced before `initializeModels()` and when both the fetch and the cache fail. The built-in models take their prices and limits from the copy, as they do from fetched data. `LITELLM_SNAPSHOT.fetchedAt` says how old it is, and `pnpm --filter @cogitator-ai/models snapshot` refreshes it in the repository.
+Without the network the registry still knows the built-in models, every model of the LiteLLM catalogue copy bundled with the package (`LITELLM_SNAPSHOT`, MIT licensed like LiteLLM) and the priced text models of the bundled copy of OpenRouter's model list (`OPENROUTER_SNAPSHOT`), so DeepSeek, Mistral, Bedrock, OpenRouter and the rest are priced before `initializeModels()` and when both the fetch and the cache fail. The built-in models take their prices and limits from the copies, as they do from fetched data. `LITELLM_SNAPSHOT.fetchedAt` and `OPENROUTER_SNAPSHOT.fetchedAt` say how old they are, and `pnpm --filter @cogitator-ai/models snapshot` refreshes both in the repository.
 
 ```typescript
 import { getPricing, LITELLM_SNAPSHOT } from '@cogitator-ai/models';
@@ -129,7 +130,7 @@ await registry.initialize();
 
 ### Methods
 
-`initialize()` loads a fresh cache if there is one (and refreshes it in the background), otherwise fetches LiteLLM data, on failure it falls back to a stale cache, then to the offline catalogue (or throws when `fallbackToBuiltin` is `false`). Lookups before `initialize()` use the offline catalogue without counting as initialization, so a later `initialize()` still loads the full catalogue. Overlapping `initialize()` calls share one load.
+`initialize()` loads a fresh cache if there is one (and refreshes it in the background), otherwise fetches LiteLLM data and OpenRouter's model list, on failure it falls back to a stale cache, then to the offline catalogue (or throws when `fallbackToBuiltin` is `false`). When only OpenRouter cannot be fetched, its bundled copy takes its place, over LiteLLM as offline, with a warning, and the catalogue stays fresh in the cache for 15 minutes instead of the whole `ttl`, so the next load asks OpenRouter again. Lookups before `initialize()` use the offline catalogue without counting as initialization, so a later `initialize()` still loads the full catalogue. Overlapping `initialize()` calls share one load.
 
 ```typescript
 registry.getModel('gpt-6.1-sol');
@@ -181,7 +182,7 @@ The registry includes provider entries (`BUILTIN_PROVIDERS`) for 16 providers:
 
 OpenAI (`openai`), Anthropic (`anthropic`), Google (`google`), Ollama (`ollama`), Azure OpenAI (`azure`), AWS Bedrock (`aws`), Mistral AI (`mistral`), Cohere (`cohere`), Groq (`groq`), Together AI (`together`), Fireworks AI (`fireworks`), DeepInfra (`deepinfra`), Perplexity (`perplexity`), Replicate (`replicate`), xAI (`xai`), OpenRouter (`openrouter`).
 
-Built-in model data covers OpenAI, Anthropic, Google and the decision models of OpenRouter. Models of the other providers, and additional providers, come from LiteLLM data, the bundled copy until the catalogue is fetched. `getProvider(id).models` lists the model ids loaded for a provider.
+Built-in model data covers OpenAI, Anthropic, Google and the decision models of OpenRouter. Models of the other providers, and additional providers, come from LiteLLM data and, for `openrouter`, from OpenRouter's model list, the bundled copies until the catalogues are fetched. `getProvider(id).models` lists the model ids loaded for a provider.
 
 ## Built-in Models
 
@@ -243,6 +244,19 @@ import { fetchLiteLLMData, transformLiteLLMData } from '@cogitator-ai/models';
 const rawData = await fetchLiteLLMData();
 const models = transformLiteLLMData(rawData);
 ```
+
+## OpenRouter Integration
+
+OpenRouter's model list (`GET https://openrouter.ai/api/v1/models`, no API key) is fetched and transformed the same way:
+
+```typescript
+import { fetchOpenRouterData, transformOpenRouterData } from '@cogitator-ai/models';
+
+const entries = await fetchOpenRouterData();
+const models = transformOpenRouterData(entries);
+```
+
+Each model gets provider `openrouter` and `catalogId` `openrouter/<id>`. Routers whose price depends on the model they pick (`openrouter/auto`) carry `priceUnknown: true`, models past their `expiration_date` are deprecated, and models that do not answer in text are left out. Time and prompt-size price overrides are not applied, the base price is used.
 
 ## Zod Schemas
 

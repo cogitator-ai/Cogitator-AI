@@ -1,10 +1,11 @@
 import { Agent, tool } from '@cogitator-ai/core';
-import { PostgresAdapter, unwrap } from '@cogitator-ai/memory';
+import { PostgresAdapter, unwrap, withoutTurnContext } from '@cogitator-ai/memory';
 import type {
   FactAdapter,
   EmbeddingAdapter,
   MemoryAdapter,
   MemoryConfig,
+  Message,
 } from '@cogitator-ai/types';
 import { z } from 'zod';
 import type { StageDefinition } from '../../runner/types.js';
@@ -26,9 +27,19 @@ function hasEmbeddings(adapter: MemoryAdapter): adapter is MemoryAdapter & Embed
 }
 
 /**
+ * Where the context builder puts facts and semantic context: the turn context in front of the
+ * input, the last user message, so the system prompt and the prompt cache it opens stay stable.
+ */
+function promptParts(messages: readonly Message[]): { system: string; turnContext: string } {
+  const system = textOf(messages.find((message) => message.role === 'system')?.content);
+  const input = textOf(messages.filter((message) => message.role === 'user').at(-1)?.content);
+  return { system, turnContext: input.slice(0, input.length - withoutTurnContext(input).length) };
+}
+
+/**
  * An agent on a Postgres-backed runtime: a tool result from one run is recalled by a fresh
  * runtime in the next run of the same thread, a stored fact and a stored document reach the
- * prompt through the context builder, and the thread is read back from Postgres directly.
+ * turn context through the context builder, and the thread is read back from Postgres directly.
  */
 export const memoryAgentStage: StageDefinition = {
   id: 'memory-agent',
@@ -157,20 +168,23 @@ export const memoryAgentStage: StageDefinition = {
           signal: ctx.signal,
           onMemoryError,
         });
-        const system = textOf(run.messages.find((message) => message.role === 'system')?.content);
+        const { system, turnContext } = promptParts(run.messages);
         const replayed = run.messages.some((message) =>
           textOf(message.content).includes('look up my locker code')
         );
         evidence('output', run.output.slice(0, 200));
         evidence('historyReplayed', replayed);
-        evidence('factsInPrompt', system.includes(tea));
+        evidence('factsInTurnContext', turnContext.includes(tea));
+        evidence('factsInSystem', system.includes(tea));
         evidence(
           'toolCallsAgain',
           run.toolCalls.map((call) => call.name)
         );
         if (!replayed) throw new Error('The first run was not loaded into the prompt');
-        if (!system.includes(tea))
-          throw new Error('The context builder did not put the stored fact into the system prompt');
+        if (!turnContext.includes(tea))
+          throw new Error('The context builder did not put the stored fact into the turn context');
+        if (system.includes(tea))
+          throw new Error('The stored fact leaked into the system prompt, which must stay stable');
         if (!run.output.includes(lockerCode))
           throw new Error(`The answer lacks the code ${lockerCode}: ${run.output}`);
         if (!run.output.toLowerCase().includes('oolong'))
@@ -193,14 +207,19 @@ export const memoryAgentStage: StageDefinition = {
         signal: ctx.signal,
         onMemoryError,
       });
-      const system = textOf(run.messages.find((message) => message.role === 'system')?.content);
-      evidence('contextInPrompt', system.includes(wifiPassword));
+      const { system, turnContext } = promptParts(run.messages);
+      evidence('contextInTurnContext', turnContext.includes(wifiPassword));
+      evidence('contextInSystem', system.includes(wifiPassword));
       evidence('output', run.output.slice(0, 200));
-      if (!system.includes(wifiPassword)) {
+      if (!turnContext.includes(wifiPassword)) {
         throw new Error(
-          `The handbook entry did not reach the prompt (similarity ${best?.score.toFixed(3) ?? 'n/a'}, the context builder only takes hits at 0.7 or more)`
+          `The handbook entry did not reach the turn context (similarity ${best?.score.toFixed(3) ?? 'n/a'}, the context builder only takes hits at 0.7 or more)`
         );
       }
+      if (system.includes(wifiPassword))
+        throw new Error(
+          'The semantic context leaked into the system prompt, which must stay stable'
+        );
       if (!run.output.includes(wifiPassword))
         throw new Error(`The answer lacks the password: ${run.output}`);
     });

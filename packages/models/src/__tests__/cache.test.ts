@@ -60,6 +60,25 @@ describe('ModelCache', () => {
       expect(result).toBeNull();
     });
 
+    it('keeps an entry set with a shorter ttl fresh only that long', async () => {
+      const cache = new ModelCache({ storage: 'memory', ttl: 10_000 });
+      await cache.set([mockModel], { ttl: 1000 });
+
+      vi.advanceTimersByTime(500);
+      expect(await cache.get()).toHaveLength(1);
+      vi.advanceTimersByTime(1000);
+      expect(await cache.get()).toBeNull();
+      expect(await cache.getStale()).toHaveLength(1);
+    });
+
+    it('never keeps an entry longer than its own ttl', async () => {
+      const cache = new ModelCache({ storage: 'memory', ttl: 1000 });
+      await cache.set([mockModel], { ttl: 60_000 });
+
+      vi.advanceTimersByTime(2000);
+      expect(await cache.get()).toBeNull();
+    });
+
     it('getStale returns models even if expired', async () => {
       const cache = new ModelCache({ storage: 'memory', ttl: 1000 });
       await cache.set([mockModel]);

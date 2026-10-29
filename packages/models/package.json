@@ -31,7 +31,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test:watch": "vitest",
     "clean": "rm -rf dist",
-    "snapshot": "tsx scripts/update-litellm-snapshot.ts"
+    "snapshot": "tsx scripts/update-litellm-snapshot.ts && tsx scripts/update-openrouter-snapshot.ts"
   },
   "engines": {
     "node": ">=22.12.0"

@@ -10,8 +10,11 @@ import type { PluginMcpServerConfig, PluginOptionValue } from '@cogitator-ai/typ
 export interface PluginVariables {
   /** The folder of the loaded version */
   root?: string;
-  /** The folder that lasts across updates */
-  data?: string;
+  /**
+   * The folder that lasts across updates, or a function that works it out when a reference or a
+   * process first needs it (so a plugin that never uses it never asks where it lives)
+   */
+  data?: string | (() => string);
   /** The project root, for `${CLAUDE_PROJECT_DIR}` (left as written without one) */
   projectDir?: string;
   /** Option values that are not secrets */
@@ -29,20 +32,36 @@ export type SecretUse = 'value' | 'placeholder' | 'refuse';
 
 const USER_CONFIG = /\$\{user_config\.([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
+const PATH_VARIABLES = ['PLUGIN_ROOT', 'PLUGIN_DATA', 'PROJECT_DIR'] as const;
+
+/** The data folder of `variables`, worked out now when it is given as a function */
+export function dataFolder(variables: PluginVariables): string | undefined {
+  return typeof variables.data === 'function' ? variables.data() : variables.data;
+}
+
+/** The value of one path variable (`CLAUDE_PLUGIN_DATA` or `COGITATOR_PLUGIN_DATA`, ...) */
+function pathVariable(variables: PluginVariables, name: string): string | undefined {
+  const match = /^(?:CLAUDE|COGITATOR)_(PLUGIN_ROOT|PLUGIN_DATA|PROJECT_DIR)$/.exec(name);
+  switch (match?.[1]) {
+    case 'PLUGIN_ROOT':
+      return variables.root;
+    case 'PLUGIN_DATA':
+      return dataFolder(variables);
+    case 'PROJECT_DIR':
+      return variables.projectDir;
+    default:
+      return undefined;
+  }
+}
+
 /** The path variables of `variables`, by name */
 export function pathVariables(variables: PluginVariables): Record<string, string> {
   const values: Record<string, string> = {};
-  if (variables.root !== undefined) {
-    values.CLAUDE_PLUGIN_ROOT = variables.root;
-    values.COGITATOR_PLUGIN_ROOT = variables.root;
-  }
-  if (variables.data !== undefined) {
-    values.CLAUDE_PLUGIN_DATA = variables.data;
-    values.COGITATOR_PLUGIN_DATA = variables.data;
-  }
-  if (variables.projectDir !== undefined) {
-    values.CLAUDE_PROJECT_DIR = variables.projectDir;
-    values.COGITATOR_PROJECT_DIR = variables.projectDir;
+  for (const suffix of PATH_VARIABLES) {
+    const value = pathVariable(variables, `CLAUDE_${suffix}`);
+    if (value === undefined) continue;
+    values[`CLAUDE_${suffix}`] = value;
+    values[`COGITATOR_${suffix}`] = value;
   }
   return values;
 }
@@ -62,9 +81,9 @@ export function referencesOptions(text: string): boolean {
  * option that is not set stays as written. With `secrets: 'refuse'` a reference to a secret throws
  */
 export function substitute(text: string, variables: PluginVariables, secrets: SecretUse): string {
-  const paths = pathVariables(variables);
-  const withPaths = text.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (all, name: string) =>
-    Object.hasOwn(paths, name) ? (paths[name] ?? all) : all
+  const withPaths = text.replace(
+    /\$\{([A-Z_][A-Z0-9_]*)\}/g,
+    (all, name: string) => pathVariable(variables, name) ?? all
   );
   return withPaths.replace(USER_CONFIG, (all, key: string) => {
     if (Object.hasOwn(variables.secrets, key)) {

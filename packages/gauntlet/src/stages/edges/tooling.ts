@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConfig } from '@cogitator-ai/config';
 import { Deployer } from '@cogitator-ai/deploy';
-import { startStudio, type RunRecord } from '@cogitator-ai/studio';
+import { startStudio, type ApprovalOutcome, type RunRecord } from '@cogitator-ai/studio';
 import type { GeneratedArtifacts } from '@cogitator-ai/types';
 import {
   PRESETS,
@@ -652,7 +652,7 @@ const deployDocker: StageDefinition = {
     'The production Dockerfile of the scaffolded API project builds with the workspace packages vendored in, the container serves the agent API as an unprivileged user, and its own HEALTHCHECK passes.',
   packages: [DEPLOY],
   needs: ['scaffold'],
-  requires: [{ kind: 'docker' }],
+  requires: [{ kind: 'docker', buildkit: true }],
   timeoutMs: 600_000,
   async run(ctx) {
     const source = projectDir(ctx, 'api-server');
@@ -795,15 +795,81 @@ const deployDocker: StageDefinition = {
   },
 };
 
-async function waitForRun(base: string, runId: string, signal: AbortSignal): Promise<RunRecord> {
+/** A tool call of a Studio run that waited for approval and was refused. */
+interface RefusedCall {
+  approvalId: string;
+  runId: string;
+  tool: string;
+  arguments: unknown;
+}
+
+/**
+ * Refuses every approval the run tree waits for, so a small model that calls a tool needing
+ * approval at random is answered with a refusal instead of holding the run until it times out.
+ * An approval decided between the poll and the refusal is left alone, `undecided` remembering
+ * it, and fails only when a later poll shows it still waiting.
+ */
+async function refuseApprovals(
+  base: string,
+  runs: readonly RunRecord[],
+  refused: RefusedCall[],
+  undecided: Set<string>,
+  signal: AbortSignal
+): Promise<void> {
+  const waiting = runs.flatMap((run) =>
+    run.toolCalls.flatMap((call) =>
+      call.approval?.status === 'waiting' &&
+      !refused.some((entry) => entry.approvalId === call.approval?.id)
+        ? [{ run, call, approvalId: call.approval.id }]
+        : []
+    )
+  );
+  for (const { run, call, approvalId } of waiting) {
+    const response = await fetch(`${base}/api/approvals/${encodeURIComponent(approvalId)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        approved: false,
+        reason: 'Tools are not allowed in this conversation, answer in words.',
+      }),
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Refusing ${call.name} answered ${response.status}: ${await response.text()}`
+      );
+    }
+    const outcome = (await response.json()) as ApprovalOutcome;
+    if (!outcome.decided) {
+      if (undecided.has(approvalId)) {
+        throw new Error(`The approval of ${call.name} still waits, but Studio did not decide it`);
+      }
+      undecided.add(approvalId);
+      continue;
+    }
+    refused.push({ approvalId, runId: run.id, tool: call.name, arguments: call.arguments });
+  }
+}
+
+/** Polls a Studio run until it ends, refusing the approvals it waits for on the way. */
+async function waitForRun(
+  base: string,
+  runId: string,
+  signal: AbortSignal,
+  refused: RefusedCall[] = []
+): Promise<RunRecord> {
   const deadline = Date.now() + 240_000;
+  let status = 'unknown';
+  const undecided = new Set<string>();
   while (Date.now() < deadline) {
     const response = await fetch(`${base}/api/runs/${runId}`, { signal });
-    const tree = (await response.json()) as { run: RunRecord };
-    if (['completed', 'failed', 'stopped'].includes(tree.run.status)) return tree.run;
+    const tree = (await response.json()) as { run: RunRecord; descendants: RunRecord[] };
+    status = tree.run.status;
+    if (['completed', 'failed', 'stopped'].includes(status)) return tree.run;
+    await refuseApprovals(base, [tree.run, ...tree.descendants], refused, undecided, signal);
     await new Promise((resolveWait) => setTimeout(resolveWait, 500));
   }
-  throw new Error(`Run ${runId} did not finish within 240 s`);
+  throw new Error(`Run ${runId} did not finish within 240 s (last status: ${status})`);
 }
 
 /** Proves generated projects run on a small local model, from the terminal and in Cogitator Studio. */
@@ -870,9 +936,15 @@ const localModelStage: StageDefinition = {
       if (started.status !== 202)
         throw new Error(`/api/chat answered ${started.status}: ${await started.text()}`);
       const { runId } = (await started.json()) as { runId: string };
-      const run = await waitForRun(base, runId, ctx.signal);
+      const refused: RefusedCall[] = [];
+      const run = await waitForRun(base, runId, ctx.signal, refused);
       const llm = run.spans.filter((span) => span.kind === 'llm');
       evidence('status', run.status);
+      evidence(
+        'toolCalls',
+        run.toolCalls.map((call) => ({ name: call.name, approval: call.approval?.status ?? null }))
+      );
+      if (refused.length > 0) evidence('refusedApprovals', refused);
       evidence('output', excerpt(run.output ?? run.error ?? '', 200));
       evidence('modelCalls', llm.length);
       evidence('tokens', run.usage);

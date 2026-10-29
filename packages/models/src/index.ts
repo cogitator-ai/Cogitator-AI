@@ -38,7 +38,21 @@ export { ModelCache } from './cache';
 
 export { fetchLiteLLMData, transformLiteLLMData } from './fetcher';
 
-export { LITELLM_SNAPSHOT, type LiteLLMSnapshot } from './snapshot';
+export {
+  OPENROUTER_MODELS_URL,
+  OpenRouterModelEntrySchema,
+  fetchOpenRouterData,
+  parseOpenRouterModels,
+  transformOpenRouterData,
+  type OpenRouterModelEntry,
+} from './openrouter-catalogue';
+
+export {
+  LITELLM_SNAPSHOT,
+  OPENROUTER_SNAPSHOT,
+  type LiteLLMSnapshot,
+  type OpenRouterSnapshot,
+} from './snapshot';
 
 export {
   BUILTIN_MODELS,

@@ -1,6 +1,6 @@
 # @cogitator-ai/models
 
-Dynamic model registry with pricing information for Cogitator. Fetches up-to-date model data from LiteLLM and works offline from built-in models and a bundled copy of the LiteLLM catalogue.
+Dynamic model registry with pricing information for Cogitator. Fetches up-to-date model data from LiteLLM and OpenRouter's public model list, and works offline from built-in models and bundled copies of both.
 
 ## Installation
 
@@ -12,12 +12,12 @@ pnpm add @cogitator-ai/models
 
 ## Features
 
-- **Dynamic Data** - Fetches latest model info from LiteLLM
+- **Dynamic Data** - Fetches latest model info from LiteLLM, and `openrouter/*` prices from OpenRouter's own model list
 - **Pricing Information** - Input, output and prompt-cache costs per million tokens, `calculateCost()` prices token usage, `ModelPricer` puts prices of your own over the registry
 - **Capability Tracking** - Vision, tools, streaming, JSON mode support
 - **Multi-Provider** - OpenAI, Anthropic, Google, Ollama, Azure, AWS, and more
 - **Caching** - Memory or file-based cache with configurable TTL
-- **Offline Catalogue** - Built-in models and a bundled LiteLLM snapshot when external data is unavailable
+- **Offline Catalogue** - Built-in models and bundled LiteLLM and OpenRouter snapshots when external data is unavailable
 - **Filtering** - Query models by provider, capabilities, price
 
 ---
@@ -47,20 +47,23 @@ Lookups are case-insensitive and resolve aliases. Calling them before `initializ
 
 ### Provider-qualified ids
 
-The registry keeps one entry per provider, so a model sold by several providers keeps each provider's price. `id` is the model's name at its provider and `catalogId` the key LiteLLM lists it under:
+The registry keeps one entry per provider, so a model sold by several providers keeps each provider's price. `id` is the model's name at its provider and `catalogId` the key its catalogue lists it under (`openrouter/<id>` for a model of OpenRouter's list):
 
 ```typescript
 await initializeModels();
 
 getModel('openrouter/deepseek/deepseek-v4-pro');
 // { id: 'deepseek/deepseek-v4-pro', provider: 'openrouter',
-//   catalogId: 'openrouter/deepseek/deepseek-v4-pro', pricing: { input: 0.2088, output: 0.4176 }, ... }
+//   catalogId: 'openrouter/deepseek/deepseek-v4-pro',
+//   pricing: { input: 0.888966, output: 1.777932, inputCached: 0.0740805 }, ... }
+
+getModel('deepseek/deepseek-v4-pro'); // DeepSeek's own price, { input: 1.32, output: 3.96, ... }
 
 getModel('openai/gpt-6.1-sol'); // Cogitator model strings work
 getModel('azure_ai/deepseek-v4-pro'); // and so do LiteLLM keys, at that provider's price
 ```
 
-- A provider-qualified id finds that provider's entry.
+- A provider-qualified id finds that provider's entry. `openrouter/*` models are priced from OpenRouter's public model list (`https://openrouter.ai/api/v1/models`, no key needed), as OpenRouter bills them, not at the vendor's direct price. OpenRouter's vendor names `z-ai` and `x-ai` are read as the providers `zai` and `xai`.
 - When that provider does not list the model, the prefix is dropped and the rest is looked up (`openai/deepseek/deepseek-v4-pro` is priced as `deepseek/deepseek-v4-pro`).
 - A bare name picks one listing by fixed rules, never by catalogue order: active before deprecated, the vendor's own listing (a built-in model or an unprefixed LiteLLM key) before resellers, then the providers in `BUILTIN_PROVIDERS` order, then the shorter id, then alphabetically.
 
@@ -117,21 +120,22 @@ interface CacheOptions {
 | `refreshInterval`   | 24 hours                         | Refresh interval in milliseconds     |
 | `fallbackToBuiltin` | `true`                           | Use the offline catalogue on failure |
 
-`initialize()` uses a fresh cache when there is one (and refreshes from LiteLLM in the background), otherwise fetches LiteLLM data, fetched models are merged with the built-in ones. When the fetch fails it falls back to a stale cache, then to the offline catalogue (or throws with `fallbackToBuiltin: false`).
+`initialize()` uses a fresh cache when there is one (and refreshes in the background), otherwise fetches LiteLLM data and OpenRouter's model list, fetched models are merged with the built-in ones, OpenRouter's prices over LiteLLM's for `openrouter/*`. When the LiteLLM fetch fails it falls back to a stale cache, then to the offline catalogue (or throws with `fallbackToBuiltin: false`). When only OpenRouter cannot be fetched, the bundled copy of its list takes its place, over LiteLLM as offline, with a warning, and the catalogue stays fresh in the cache for 15 minutes instead of the whole `ttl`, so the next load asks OpenRouter again.
 
 ### Offline Catalogue
 
-The offline catalogue is the built-in models plus every priced model of the copy of the LiteLLM catalogue bundled with the package (`LITELLM_SNAPSHOT`, with LiteLLM's MIT notice), the built-in models priced and sized from that copy. A model the live catalogue lists without a price keeps its context window and capabilities but carries `priceUnknown: true`, and `getPrice`, `getPricing` and `calculateCost` answer `null` for it instead of a price of zero. It answers lookups before `initializeModels()` and when both the fetch and the cache fail, so DeepSeek, Mistral, Bedrock and the rest are priced without the network.
+The offline catalogue is the built-in models plus every priced model of the copy of the LiteLLM catalogue bundled with the package (`LITELLM_SNAPSHOT`, with LiteLLM's MIT notice) and of the copy of OpenRouter's model list (`OPENROUTER_SNAPSHOT`, the priced models that answer in text), the built-in models priced and sized from those copies. A model the live catalogue lists without a price keeps its context window and capabilities but carries `priceUnknown: true`, and `getPrice`, `getPricing` and `calculateCost` answer `null` for it instead of a price of zero. It answers lookups before `initializeModels()` and when both the fetch and the cache fail, so DeepSeek, Mistral, Bedrock, OpenRouter and the rest are priced without the network.
 
 ```typescript
-import { getPricing, LITELLM_SNAPSHOT } from '@cogitator-ai/models';
+import { getPricing, LITELLM_SNAPSHOT, OPENROUTER_SNAPSHOT } from '@cogitator-ai/models';
 
 getPricing('deepseek/deepseek-chat'); // from the bundled copy, before initializeModels()
 LITELLM_SNAPSHOT.fetchedAt; // the day the copy was made, 'YYYY-MM-DD'
 LITELLM_SNAPSHOT.source; // the LiteLLM catalogue URL at the commit the copy was made from
+OPENROUTER_SNAPSHOT.fetchedAt; // the day the OpenRouter copy was made
 ```
 
-`pnpm --filter @cogitator-ai/models snapshot` refreshes the copy in the repository, keeping the models that answer text and the fields the registry reads.
+`pnpm --filter @cogitator-ai/models snapshot` refreshes both copies in the repository, keeping the models that answer text and the fields the registry reads.
 
 ### Registry Methods
 
@@ -482,6 +486,18 @@ const rawData = await fetchLiteLLMData();
 
 const models = transformLiteLLMData(rawData);
 ```
+
+### OpenRouter Integration
+
+```typescript
+import { fetchOpenRouterData, transformOpenRouterData } from '@cogitator-ai/models';
+
+const entries = await fetchOpenRouterData(); // every page of GET /api/v1/models, checked with OpenRouterModelEntrySchema
+
+const models = transformOpenRouterData(entries); // provider 'openrouter', catalogId 'openrouter/<id>'
+```
+
+Routers whose price depends on the model they pick (`openrouter/auto`, a price of `-1`) carry `priceUnknown: true`, models past their `expiration_date` are `deprecated`, and models that do not answer in text are left out. Time and prompt-size price overrides are not applied, the base price is used.
 
 ### LiteLLM Data Structure
 

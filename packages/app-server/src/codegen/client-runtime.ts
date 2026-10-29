@@ -137,10 +137,13 @@ export class AppServerClient {
     };
   }
 
-  /** Closes the connection: requests still waiting reject, the transport closes */
-  close(): void {
+  /**
+   * Closes the connection: requests still waiting reject, the transport closes. \`reason\` is
+   * what they and later requests reject with, such as why the server process went away
+   */
+  close(reason?: Error): void {
     if (this.closedReason) return;
-    this.closedReason = new Error('The app-server client is closed');
+    this.closedReason = reason ?? new Error('The app-server client is closed');
     for (const pending of this.pending.values()) pending.reject(this.closedReason);
     this.pending.clear();
     this.transport.close();

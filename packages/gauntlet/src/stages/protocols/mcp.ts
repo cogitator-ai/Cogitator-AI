@@ -341,11 +341,8 @@ export const mcpAgentsStage: StageDefinition = {
       ctx.onCleanup(() => client.close());
       const names = (await client.listToolDefinitions()).map((definition) => definition.name);
       evidence('tools', names);
-      for (const name of ['librarian', 'archivist', 'archivist_resume']) {
+      for (const name of ['librarian', 'librarian_resume', 'archivist', 'archivist_resume']) {
         if (!names.includes(name)) throw new Error(`${name} is not listed`);
-      }
-      if (names.includes('librarian_resume')) {
-        throw new Error('librarian has no approval tools but got a resume tool');
       }
       return client;
     });

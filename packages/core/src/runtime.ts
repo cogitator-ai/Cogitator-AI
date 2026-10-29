@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module';
 import { hostname } from 'node:os';
 import { resolve as resolvePath } from 'node:path';
 import { nanoid } from 'nanoid';
@@ -428,6 +427,7 @@ import {
 } from './cogitator/response-format';
 import { CostEstimator } from './cost-routing/cost-estimator';
 import { readEnv } from './utils/env';
+import { coreVersion } from './version';
 import {
   EXIT_PLAN_MODE,
   PermissionModeControl,
@@ -778,10 +778,6 @@ function isEmptyAnswer(response: ChatResponse): boolean {
  * });
  * ```
  */
-/** The version of the core, which plugins' `engines.cogitator` ranges are checked against */
-const CORE_VERSION = (createRequire(import.meta.url)('../package.json') as { version: string })
-  .version;
-
 export class Cogitator implements ToolInvoker {
   private config: CogitatorConfig;
   private observers: RunObserver[];
@@ -839,8 +835,8 @@ export class Cogitator implements ToolInvoker {
   private readonly workspaceRuns = new WorkspaceRuns();
   private processDurableRuns?: InMemoryDurableRunStore;
   private threadDurableRuns?: { memory: MemoryAdapter; store: ThreadDurableRunStore };
-  /** Who this runtime's durable runs are held by, see `DurableRunsConfig.owner` */
-  private readonly durableOwner: string;
+  /** Who this runtime's durable runs are held by, see `DurableRunsConfig.owner`, set on first use */
+  private ownerOfDurableRuns?: string;
   /** Who this runtime's durable runs are held by: its owner and this instance of it */
   private readonly durableHolder: DurableRunHolder;
   /** The durable runs this runtime has going, by run id */
@@ -938,8 +934,13 @@ export class Cogitator implements ToolInvoker {
         code: ErrorCode.CONFIGURATION_ERROR,
       });
     }
-    this.durableOwner = durable?.owner ?? `${hostname()}:${process.pid}:${nanoid(8)}`;
-    this.durableHolder = { owner: this.durableOwner, instance: `instance_${nanoid(16)}` };
+    const owner = () => this.durableOwner;
+    this.durableHolder = {
+      get owner() {
+        return owner();
+      },
+      instance: `instance_${nanoid(16)}`,
+    };
     LIVE_INSTANCES.add(this.durableHolder.instance);
     const retries = durable?.storeRetries;
     if (retries !== undefined && !(Number.isInteger(retries) && retries >= 0)) {
@@ -961,7 +962,7 @@ export class Cogitator implements ToolInvoker {
       root: config.experimental_plugins?.root ?? pluginSettings?.root ?? this.permissionRoot(),
       ...(pluginSettings && { settings: pluginSettings }),
       core: [corePlugin(() => this.config.llm)],
-      cogitatorVersion: CORE_VERSION,
+      cogitatorVersion: coreVersion,
     });
     this.pluginHost.onChange(() => this.forgetPluginBackends());
     const plugins = config.experimental_plugins !== undefined;
@@ -6628,6 +6629,17 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
+   * Who this runtime's durable runs are held by: `durable.owner`, else `host:pid:random`, worked
+   * out when a durable run first needs it, so a runtime without durable runs never asks for the
+   * host name (Deno without `--allow-sys`)
+   */
+  private get durableOwner(): string {
+    const durable = typeof this.config.durable === 'object' ? this.config.durable : undefined;
+    this.ownerOfDurableRuns ??= durable?.owner ?? defaultDurableOwner();
+    return this.ownerOfDurableRuns;
+  }
+
+  /**
    * The instance of a lease this runtime takes over before it runs out: one of its own `owner`
    * that no runtime of this process has, with `takeoverOnRestart` set. Undefined otherwise, when
    * only a lease that ran out may be taken
@@ -9304,6 +9316,20 @@ function assertRunId(runId: string): void {
 
 /** The durable instances of the runtimes of this process, see `DurableRunHolder.instance` */
 const LIVE_INSTANCES = new Set<string>();
+
+/** `host:pid:random`, `unknown-host` where the runtime does not give the host name */
+function defaultDurableOwner(): string {
+  const pid = (globalThis as { process?: { pid?: number } }).process?.pid ?? 0;
+  return `${hostName()}:${pid}:${nanoid(8)}`;
+}
+
+function hostName(): string {
+  try {
+    return hostname();
+  } catch {
+    return 'unknown-host';
+  }
+}
 
 /** `messages` of `queue` with the ids it gave them, for a durable run's store */
 function withQueueIds(

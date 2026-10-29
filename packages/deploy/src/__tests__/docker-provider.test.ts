@@ -27,7 +27,10 @@ beforeEach(() => {
   registryAuthenticated.mockReturnValue(false);
 });
 
-afterEach(() => vi.resetAllMocks());
+afterEach(() => {
+  vi.resetAllMocks();
+  vi.unstubAllEnvs();
+});
 
 const checksByName = (checks: { name: string; passed: boolean }[]) =>
   Object.fromEntries(checks.map((c) => [c.name, c.passed]));
@@ -39,13 +42,14 @@ describe('DockerProvider', () => {
     expect(provider.name).toBe('docker');
   });
 
-  it('passes preflight when docker, its daemon and compose are available', async () => {
+  it('passes preflight when docker, its daemon, compose and BuildKit are available', async () => {
     const result = await provider.preflight({ target: 'docker', port: 3000 }, process.cwd());
 
     expect(checksByName(result.checks)).toEqual({
       'Docker installed': true,
       'Docker daemon running': true,
       'Docker Compose available': true,
+      'Docker BuildKit available': true,
     });
     expect(result.passed).toBe(true);
     expect(runMock).toHaveBeenCalledWith(
@@ -86,6 +90,34 @@ describe('DockerProvider', () => {
     expect(result.passed).toBe(false);
   });
 
+  it('fails preflight without BuildKit, which the cache mounts of the Dockerfile need', async () => {
+    runMock.mockImplementation((_command, args) => ({
+      success: args[0] !== 'buildx',
+      output: '',
+    }));
+
+    const result = await provider.preflight({ target: 'docker', port: 3000 }, process.cwd());
+
+    expect(runMock).toHaveBeenCalledWith(
+      'docker',
+      ['buildx', 'version'],
+      expect.objectContaining({ timeout: expect.any(Number) })
+    );
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        name: 'Docker BuildKit available',
+        passed: false,
+        message: expect.stringContaining('RUN --mount=type=cache'),
+        fix: expect.stringContaining('buildx'),
+      })
+    );
+    expect(checksByName(result.checks)).toMatchObject({
+      'Docker daemon running': true,
+      'Docker Compose available': true,
+    });
+    expect(result.passed).toBe(false);
+  });
+
   it('checks registry authentication only when a registry is configured', async () => {
     const withoutRegistry = await provider.preflight({ target: 'docker' }, process.cwd());
     expect(checksByName(withoutRegistry.checks)).not.toHaveProperty('Registry authentication');
@@ -119,6 +151,24 @@ describe('DockerProvider without a deployment', () => {
   it('refuses to destroy a deployment that does not exist', async () => {
     await expect(new DockerProvider().destroy({}, dir)).rejects.toThrow(
       'No docker deployment found'
+    );
+  });
+
+  it('builds with BuildKit even when the environment turns it off', async () => {
+    vi.stubEnv('DOCKER_BUILDKIT', '0');
+    runMock.mockReturnValue({ success: false, output: '', error: 'stop after the build' });
+    const result = await new DockerProvider().deploy(
+      { target: 'docker', port: 3000 },
+      { files: [{ path: 'Dockerfile', content: 'FROM x' }], outputDir: '.cogitator' },
+      dir
+    );
+
+    expect(result).toEqual({ success: false, error: 'Docker build failed: stop after the build' });
+    expect(runMock).toHaveBeenCalledTimes(1);
+    expect(runMock).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['build']),
+      expect.objectContaining({ env: expect.objectContaining({ DOCKER_BUILDKIT: '1' }) })
     );
   });
 

@@ -68,6 +68,8 @@ const PROVIDER_MAPPINGS: Record<string, string> = {
   friendliai: 'friendliai',
   github: 'github',
   xai: 'xai',
+  'x-ai': 'xai',
+  'z-ai': 'zai',
 };
 
 function mapProvider(name: string): string | undefined {
@@ -81,8 +83,9 @@ function mapProvider(name: string): string | undefined {
 
 /**
  * The registry's provider id for a LiteLLM provider or a model id prefix:
- * `gemini` and `vertex_ai` become `google`, `azure_ai` becomes `azure`, and
- * names without a mapping (`openrouter`, `deepseek`) stay as they are.
+ * `gemini` and `vertex_ai` become `google`, `azure_ai` becomes `azure`, OpenRouter's vendor
+ * names `z-ai` and `x-ai` become `zai` and `xai`, and names without a mapping (`openrouter`,
+ * `deepseek`) stay as they are.
  */
 export function normalizeProviderId(name: string): string {
   const id = name.toLowerCase();

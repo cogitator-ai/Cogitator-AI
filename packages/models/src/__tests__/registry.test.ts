@@ -9,6 +9,8 @@ import {
 } from '../registry';
 import { BUILTIN_MODELS } from '../providers/index';
 import { LITELLM_SNAPSHOT } from '../snapshot';
+import { LITELLM_URL } from '../fetcher';
+import { OPENROUTER_MODELS_URL } from '../openrouter-catalogue';
 
 describe('ModelRegistry', () => {
   let registry: ModelRegistry;
@@ -285,7 +287,8 @@ describe('ModelRegistry initialization', () => {
 
     await Promise.all([reg.initialize(), reg.initialize()]);
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls.sort()).toEqual([LITELLM_URL, OPENROUTER_MODELS_URL].sort());
   });
 
   it('should resolve fetched model ids case-insensitively', async () => {
