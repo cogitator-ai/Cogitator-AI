@@ -45,7 +45,7 @@
     "@cogitator-ai/redis": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "nanoid": "^6.0.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@cogitator-ai/test-utils": "workspace:*",
