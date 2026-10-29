@@ -1,5 +1,13 @@
 # @cogitator-ai/app-server
 
+## 0.3.2
+
+### Patch Changes
+
+- [#321](https://github.com/cogitator-ai/Cogitator-AI/pull/321) [`4483b63`](https://github.com/cogitator-ai/Cogitator-AI/commit/4483b63469c0c43b3a5f496186f56be0e512edfa) - `AppServerClient.close()` takes an optional reason that requests still waiting, and any made after, reject with. A transport that sees the server process exit can close the client with the exit code and the end of its stderr instead of the generic "The app-server client is closed".
+- Updated dependencies [[`4483b63`](https://github.com/cogitator-ai/Cogitator-AI/commit/4483b63469c0c43b3a5f496186f56be0e512edfa)]:
+  - @cogitator-ai/core@0.78.1
+
 ## 0.3.1
 
 ### Patch Changes
