@@ -44,7 +44,7 @@
     "@cogitator-ai/mcp": "workspace:*",
     "@cogitator-ai/server-shared": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@cogitator-ai/test-utils": "workspace:*",

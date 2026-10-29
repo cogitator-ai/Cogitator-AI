@@ -43,7 +43,7 @@
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/models": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "peerDependencies": {
     "@cogitator-ai/swarms": "workspace:>=0.15.12",

@@ -33,7 +33,7 @@
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "nanoid": "^6.0.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

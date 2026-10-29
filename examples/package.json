@@ -55,7 +55,7 @@
     "koa": "^3.2.1",
     "openai": "^7.25.0",
     "ws": "^8.22.0",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

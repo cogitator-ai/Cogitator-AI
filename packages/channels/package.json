@@ -50,7 +50,7 @@
     "@cogitator-ai/types": "workspace:*",
     "cron-parser": "^5.10.1",
     "nanoid": "^6.0.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@atproto/api": "0.24.0",
