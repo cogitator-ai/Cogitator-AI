@@ -55,13 +55,13 @@
   "dependencies": {
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "nanoid": "^6.0.1",
-    "zod": "^4.6.5"
+    "nanoid": "^6.0.2",
+    "zod": "^4.6.7"
   },
   "optionalDependencies": {
     "neo4j-driver": "^6.2.0",
     "pg": "^8.23.1",
-    "z3-solver": "^4.13.0 || ^5.0.0"
+    "z3-solver": "^5.3.2"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1",
