@@ -92,6 +92,14 @@ Document loading, chunking strategies, retrieval-augmented generation with agent
 
 Basic evals, LLM-as-judge scoring, A/B comparison testing.
 
+### [`testing/`](./testing/) — Unit Testing (no API keys)
+
+Script `MockLLMBackend` responses, run agents offline, and inspect model requests with `getCalls()`.
+
+```bash
+npx tsx examples/testing/01-mock-llm-agent.ts
+```
+
 ### [`channels/`](./channels/) — Messaging Channels
 
 Telegram assistant with owner commands, YAML-style super assistant built with `RuntimeBuilder` (terminal + Telegram, scheduler, memory), WebChat bot with a browser client (`webchat-client.html`), one post published to Bluesky and Threads with a scheduled follow-up (a dry run unless `PUBLISH=1`), an agent that answers mentions, replies and DMs there, a GitHub bot that answers mentions in issues, pull requests and review threads, an email bot that answers mail in its thread over IMAP and SMTP, and a Microsoft Teams bot that answers personal chats and @mentions in channel threads.

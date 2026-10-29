@@ -174,6 +174,9 @@ importers:
       '@cogitator-ai/swarms':
         specifier: workspace:*
         version: link:../packages/swarms
+      '@cogitator-ai/test-utils':
+        specifier: workspace:*
+        version: link:../packages/test-utils
       '@cogitator-ai/tetsu':
         specifier: workspace:*
         version: link:../packages/tetsu
