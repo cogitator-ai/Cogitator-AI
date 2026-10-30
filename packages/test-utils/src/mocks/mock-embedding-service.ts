@@ -56,9 +56,7 @@ export class MockEmbeddingService implements EmbeddingService {
 
   setEmbedding(text: string, vector: number[]): void {
     if (vector.length !== this.dimensions) {
-      throw new Error(
-        `setEmbedding expected ${this.dimensions} dimensions, got ${vector.length}`
-      );
+      throw new Error(`setEmbedding expected ${this.dimensions} dimensions, got ${vector.length}`);
     }
     this.pinned.set(text, [...vector]);
     this.cache.delete(text);
