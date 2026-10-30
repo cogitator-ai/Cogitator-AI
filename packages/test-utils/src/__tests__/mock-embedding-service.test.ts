@@ -110,4 +110,21 @@ describe('MockEmbeddingService', () => {
     expect(embedder.getCalls()).toEqual([]);
     expect(await embedder.embed('a')).toEqual(await new MockEmbeddingService().embed('a'));
   });
+
+  it('embeds the same word in NFC and NFD forms to the same vector', async () => {
+    const precomposed = 'café'; // é as one code point
+    const decomposed = 'cafe\u0301'; // e plus a combining acute accent
+
+    expect(await embedder.embed(precomposed)).toEqual(await embedder.embed(decomposed));
+  });
+
+  it('rejects a setEmbedding vector with the wrong length', () => {
+    expect(() => embedder.setEmbedding('the cat sat', [1, 2, 3])).toThrow(/dimensions/);
+  });
+
+  it('rejects a dimensions option that is not a positive integer', () => {
+    expect(() => new MockEmbeddingService({ dimensions: 0 })).toThrow(/positive integer/);
+    expect(() => new MockEmbeddingService({ dimensions: 8.5 })).toThrow(/positive integer/);
+    expect(() => new MockEmbeddingService({ dimensions: -3 })).toThrow(/positive integer/);
+  });
 });

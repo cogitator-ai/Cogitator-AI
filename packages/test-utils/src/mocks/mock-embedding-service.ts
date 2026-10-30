@@ -35,7 +35,11 @@ export class MockEmbeddingService implements EmbeddingService {
   private calls: MockEmbeddingCall[] = [];
 
   constructor(options?: MockEmbeddingServiceOptions) {
-    this.dimensions = options?.dimensions ?? 64;
+    const dimensions = options?.dimensions ?? 64;
+    if (!Number.isInteger(dimensions) || dimensions < 1) {
+      throw new Error(`dimensions must be a positive integer, got ${dimensions}`);
+    }
+    this.dimensions = dimensions;
     this.model = options?.model ?? 'mock-embedding';
   }
 
@@ -51,6 +55,11 @@ export class MockEmbeddingService implements EmbeddingService {
   }
 
   setEmbedding(text: string, vector: number[]): void {
+    if (vector.length !== this.dimensions) {
+      throw new Error(
+        `setEmbedding expected ${this.dimensions} dimensions, got ${vector.length}`
+      );
+    }
     this.pinned.set(text, [...vector]);
     this.cache.delete(text);
   }
@@ -93,6 +102,7 @@ export class MockEmbeddingService implements EmbeddingService {
    */
   private hashBagOfWords(text: string): number[] {
     const words = text
+      .normalize('NFC')
       .toLowerCase()
       .split(/[^\p{L}\p{N}]+/u)
       .filter((word) => word !== '');
