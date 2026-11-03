@@ -14,6 +14,7 @@ pnpm add -D @cogitator-ai/test-utils
 
 - **Mock LLM Backend** - Scriptable `MockLLMBackend` for deterministic `chat()` responses and `chatStream()` chunks with request recording and inspection
 - **Mock Memory Adapter** - In-process `MockMemoryAdapter` recording method calls for threads and entries
+- **Mock Embedding Service** - Deterministic `MockEmbeddingService`: stable unit vectors from a hashed bag of words, pin-able per text, recording every call
 - **Test Fixtures** - Preconfigured agents, messages, tool calls, tool results, JSON Schema tools, and run results
 - **Stream Helpers** - Drain and collect stream content, chunks, and tool calls, or create mock byte streams
 - **Async Utilities** - Polling (`waitFor`, `eventually`), delay, and promise timeout helpers

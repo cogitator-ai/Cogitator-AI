@@ -13,6 +13,7 @@ pnpm add -D @cogitator-ai/test-utils
 | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `MockLLMBackend`, `createMockLLMBackend()`                                                                                                            | An `LLMBackend` that answers with scripted responses and records every request                                             |
 | `MockMemoryAdapter`, `createMockMemoryAdapter()`                                                                                                      | An in-process `MemoryAdapter` that records every method call                                                               |
+| `MockEmbeddingService`, `createMockEmbeddingService()`                                                                                                | A deterministic `EmbeddingService` with stable vectors, pin-able per text, recording every call                            |
 | `createTestAgentConfig()`, `createTestAgent()`                                                                                                        | Agent configs and agent-shaped objects with test defaults                                                                  |
 | `createUserMessage()`, `createToolCall()`, …                                                                                                          | Message, tool call and tool result fixtures                                                                                |
 | `createTestTool()`, `createCalculatorTool()`, …                                                                                                       | Tool-shaped fixtures with JSON Schema parameters                                                                           |
@@ -205,6 +206,26 @@ expect(memory.getCallsFor('addEntry').length).toBeGreaterThan(0);
 ```
 
 Besides the `MemoryAdapter` methods it has `getCalls()` (`{ method, args }[]`), `getCallsFor(method)`, `isConnected()` and `reset()` (clears threads, entries, calls and the connection flag). `cog.close()` disconnects it.
+
+## MockEmbeddingService
+
+A deterministic `EmbeddingService` for tests: the same text always embeds to the same unit vector, and texts that share words have a higher cosine similarity than texts that share none. Use it wherever a pipeline needs an embedder but not a model.
+
+```typescript
+import { MockEmbeddingService } from '@cogitator-ai/test-utils';
+
+const embedder = new MockEmbeddingService({ dimensions: 8, model: 'mock-8d' });
+
+await embedder.embed('the cat sat');
+await embedder.embedBatch(['cat sat', 'stock prices']);
+
+embedder.setEmbedding('the cat sat', [1, 0, 0, 0, 0, 0, 0, 0]); // wins over the hashed vector
+
+expect(embedder.getCallsFor('embed')).toHaveLength(1);
+expect(embedder.getCallsFor('embedBatch')).toHaveLength(1);
+```
+
+Vectors come from a hashed bag of words (each word contributes its SHA-256 digest along the vector, then the vector is normalized), so they are stable across runs without any randomness. Besides `embed` and `embedBatch` it has `setEmbedding(text, vector)`, `getCalls()` / `getCallsFor(method)` and `reset()`.
 
 ## Conformance Suites
 
