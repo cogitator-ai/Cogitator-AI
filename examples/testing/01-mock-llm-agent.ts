@@ -37,7 +37,6 @@ async function main() {
 
   const backend = new MockLLMBackend();
   const tokyoWeatherCall = createToolCall('get_weather', { city: 'Tokyo' });
-  backend.setToolCallResponse([tokyoWeatherCall]);
   backend.setResponses([
     { toolCalls: [tokyoWeatherCall], finishReason: 'tool_calls' },
     { content: 'The weather in Tokyo is sunny and 22°C.' },
@@ -98,6 +97,16 @@ async function main() {
   });
 
   assert.ok(backend.wasCalledWith((req) => req.model === 'test-model'));
+
+  section('3. Script a single answer with setResponse');
+  backend.reset();
+  backend.setResponse({ content: 'Hello!' });
+  const hello = await cog.run(agent, { input: 'Say hello' });
+
+  console.log('Output:', hello.output);
+  assert.equal(hello.output, 'Hello!');
+  assert.equal(hello.toolCalls.length, 0);
+  assert.equal(backend.getCallCount(), 1);
 
   await cog.close();
   console.log('\nDone. Example ran green with no API keys and no Ollama.');
