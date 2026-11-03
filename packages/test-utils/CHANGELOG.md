@@ -1,5 +1,11 @@
 # @cogitator-ai/test-utils
 
+## 0.15.0
+
+### Minor Changes
+
+- [#275](https://github.com/cogitator-ai/Cogitator-AI/pull/275) [`b287800`](https://github.com/cogitator-ai/Cogitator-AI/commit/b2878006bd2d7db1668c98668c1469feed48b3e3) Thanks [@rahul05ranjan](https://github.com/rahul05ranjan)! - Add a `MockEmbeddingService`: a deterministic `EmbeddingService` whose stable unit vectors come from a hashed bag of words, with configurable `dimensions` and `model`, `setEmbedding(text, vector)` to pin one, `embedBatch` matching `embed` item for item, and call recording (`getCalls`, `getCallsFor`, `reset`).
+
 ## 0.14.7
 
 ### Patch Changes
