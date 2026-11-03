@@ -41,8 +41,8 @@
   "dependencies": {
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "cron-parser": "^5.10.1",
-    "nanoid": "^6.0.1"
+    "cron-parser": "^5.10.2",
+    "nanoid": "^6.0.2"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

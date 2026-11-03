@@ -43,25 +43,25 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "optionalDependencies": {
     "@extism/extism": "^2.0.0-rc13",
     "dockerode": "^5.0.1"
   },
   "devDependencies": {
-    "@daytona/sdk": "^0.226.0",
+    "@daytona/sdk": "^0.227.0",
     "@types/dockerode": "^4.0.1",
     "@types/node": "^22.20.4",
-    "@vercel/sandbox": "^3.9.0",
-    "e2b": "^2.59.0",
+    "@vercel/sandbox": "^3.9.1",
+    "e2b": "^2.62.0",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"
   },
   "peerDependencies": {
     "@daytona/sdk": ">=0.226.0 <1.0.0",
     "@extism/extism": "^2.0.0-rc13",
-    "@vercel/sandbox": "^3.9.0",
+    "@vercel/sandbox": "^3.9.1",
     "dockerode": "^4.0.0 || ^5.0.0",
     "e2b": "^2.28.1"
   },
