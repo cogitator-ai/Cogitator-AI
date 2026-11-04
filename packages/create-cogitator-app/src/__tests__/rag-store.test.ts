@@ -1,11 +1,59 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { join, resolve } from 'node:path';
 import { compileFunction } from 'node:vm';
 import ts from 'typescript';
-import { InMemoryEmbeddingAdapter } from '../../../memory/dist/index.js';
-import { MarkdownLoader, RAGPipelineBuilder } from '../../../rag/dist/index.js';
+interface MemoryModule {
+  InMemoryEmbeddingAdapter: new () => {
+    connect?: () => Promise<{ success: boolean; data?: undefined; error?: string }>;
+    addEmbedding(embedding: unknown): Promise<{ success: boolean; data?: unknown }>;
+    search(options: unknown): Promise<{ success: boolean; data?: unknown[] }>;
+    deleteEmbedding(id: string): Promise<{ success: boolean; error?: string }>;
+    deleteBySource(source: string): Promise<{ success: boolean; error?: string }>;
+    deleteByFilter(filter: unknown): Promise<{ success: boolean; error?: string }>;
+    getBySources(sourceIds: string[]): Promise<{ success: boolean; data?: unknown[] }>;
+    replaceBySource(embedding: unknown): Promise<{ success: boolean; data?: unknown }>;
+  };
+}
+
+interface RagPipelineInstance {
+  ingest(source: string): Promise<{ documents: number; chunks: number; unchanged: number }>;
+  query(text: string, options?: unknown): Promise<Array<{ content: string }>>;
+}
+
+interface RagModule {
+  MarkdownLoader: new () => unknown;
+  RAGPipelineBuilder: new () => {
+    withLoader(loader: unknown): unknown;
+    withEmbeddingService(service: unknown): unknown;
+    withEmbeddingAdapter(adapter: unknown): unknown;
+    withConfig(config: unknown): unknown;
+    build(): RagPipelineInstance;
+  };
+}
+
+const memoryModuleUrl: string = pathToFileURL(
+  resolve(import.meta.dirname, '../../../memory/src/adapters/memory-embedding.ts')
+).href;
+const ragModuleUrl: string = pathToFileURL(
+  resolve(import.meta.dirname, '../../../rag/src/index.ts')
+).href;
+
+async function loadRagPipelineTools(): Promise<{
+  InMemoryEmbeddingAdapter: MemoryModule['InMemoryEmbeddingAdapter'];
+  MarkdownLoader: RagModule['MarkdownLoader'];
+  RAGPipelineBuilder: RagModule['RAGPipelineBuilder'];
+}> {
+  const memory = (await import(memoryModuleUrl)) as unknown as MemoryModule;
+  const rag = (await import(ragModuleUrl)) as unknown as RagModule;
+  return {
+    InMemoryEmbeddingAdapter: memory.InMemoryEmbeddingAdapter,
+    MarkdownLoader: rag.MarkdownLoader,
+    RAGPipelineBuilder: rag.RAGPipelineBuilder,
+  };
+}
 import { LAZY_CONNECT } from '../kit/features/rag.js';
 import { planProject } from '../kit/plan.js';
 import { parseSpec } from '../kit/spec.js';
@@ -307,6 +355,9 @@ describe('lazilyConnected RAG store adapter', () => {
         },
       };
 
+      const { InMemoryEmbeddingAdapter, MarkdownLoader, RAGPipelineBuilder } =
+        await loadRagPipelineTools();
+
       const memoryStore = new InMemoryEmbeddingAdapter();
       const persistentStore = Object.assign(memoryStore, {
         connect: async () => ({ success: true as const, data: undefined }),
@@ -314,19 +365,15 @@ describe('lazilyConnected RAG store adapter', () => {
 
       const adapter = lazilyConnected(persistentStore);
 
-      const pipeline = new RAGPipelineBuilder()
-        .withLoader(new MarkdownLoader())
-        .withEmbeddingService(embeddingService)
-        .withEmbeddingAdapter(
-          adapter as unknown as Parameters<
-            InstanceType<typeof RAGPipelineBuilder>['withEmbeddingAdapter']
-          >[0]
-        )
-        .withConfig({
-          chunking: { strategy: 'recursive', chunkSize: 600, chunkOverlap: 80 },
-          retrieval: { strategy: 'similarity', topK: 4, threshold: 0.1 },
-        })
-        .build();
+      const builder = new RAGPipelineBuilder();
+      builder.withLoader(new MarkdownLoader());
+      builder.withEmbeddingService(embeddingService);
+      builder.withEmbeddingAdapter(adapter);
+      builder.withConfig({
+        chunking: { strategy: 'recursive', chunkSize: 600, chunkOverlap: 80 },
+        retrieval: { strategy: 'similarity', topK: 4, threshold: 0.1 },
+      });
+      const pipeline = builder.build();
 
       const initial = await pipeline.ingest(docsDir);
       expect(initial.documents).toBe(1);
