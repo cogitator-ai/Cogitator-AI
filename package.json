@@ -45,7 +45,7 @@
     "ogg-opus-decoder": "^1.7.5",
     "openai": "^7.25.0",
     "typescript": "^6.0.3",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
