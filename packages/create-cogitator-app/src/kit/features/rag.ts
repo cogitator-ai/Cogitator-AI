@@ -99,7 +99,7 @@ function storeCode(spec: ProjectSpec): { imports: string[]; body: string } {
   }
 }
 
-const LAZY_CONNECT = code`
+export const LAZY_CONNECT = code`
   /** Connects a store on first use, so importing the project opens no connection. */
   function lazilyConnected(
     store: EmbeddingAdapter & { connect(): Promise<MemoryResult<void>> }
@@ -109,7 +109,7 @@ const LAZY_CONNECT = code`
       (connected ??= store.connect().then((result) => {
         if (!result.success) throw new Error(\`Cannot connect the vector store: \${result.error}\`);
       }));
-    return {
+    const adapter: EmbeddingAdapter = {
       async addEmbedding(embedding) {
         await ready();
         return store.addEmbedding(embedding);
@@ -132,6 +132,21 @@ const LAZY_CONNECT = code`
         return store.deleteByFilter(filter);
       },
     };
+    const getBySources = store.getBySources?.bind(store);
+    if (getBySources) {
+      adapter.getBySources = async (sourceIds) => {
+        await ready();
+        return getBySources(sourceIds);
+      };
+    }
+    const replaceBySource = store.replaceBySource?.bind(store);
+    if (replaceBySource) {
+      adapter.replaceBySource = async (embedding) => {
+        await ready();
+        return replaceBySource(embedding);
+      };
+    }
+    return adapter;
   }
 `;
 
