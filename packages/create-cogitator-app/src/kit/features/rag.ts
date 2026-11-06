@@ -132,16 +132,18 @@ export const LAZY_CONNECT = code`
         return store.deleteByFilter(filter);
       },
     };
-    if (store.getBySources) {
+    const getBySources = store.getBySources?.bind(store);
+    if (getBySources) {
       adapter.getBySources = async (sourceIds) => {
         await ready();
-        return store.getBySources!(sourceIds);
+        return getBySources(sourceIds);
       };
     }
-    if (store.replaceBySource) {
+    const replaceBySource = store.replaceBySource?.bind(store);
+    if (replaceBySource) {
       adapter.replaceBySource = async (embedding) => {
         await ready();
-        return store.replaceBySource!(embedding);
+        return replaceBySource(embedding);
       };
     }
     return adapter;

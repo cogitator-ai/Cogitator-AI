@@ -5,6 +5,10 @@ import { pathToFileURL } from 'node:url';
 import { join, resolve } from 'node:path';
 import { compileFunction } from 'node:vm';
 import ts from 'typescript';
+import { LAZY_CONNECT } from '../kit/features/rag.js';
+import { planProject } from '../kit/plan.js';
+import { parseSpec } from '../kit/spec.js';
+
 interface MemoryModule {
   InMemoryEmbeddingAdapter: new () => {
     connect?: () => Promise<{ success: boolean; data?: undefined; error?: string }>;
@@ -54,9 +58,6 @@ async function loadRagPipelineTools(): Promise<{
     RAGPipelineBuilder: rag.RAGPipelineBuilder,
   };
 }
-import { LAZY_CONNECT } from '../kit/features/rag.js';
-import { planProject } from '../kit/plan.js';
-import { parseSpec } from '../kit/spec.js';
 
 interface FakeStoreOptions {
   hasGetBySources?: boolean;
@@ -257,6 +258,27 @@ describe('lazilyConnected RAG store adapter', () => {
       });
       expect(recordedCalls).toEqual(['connect', 'getBySources', 'replaceBySource']);
       expect(replaceResult).toMatchObject({ success: true });
+    });
+
+    it('connects before replaceBySource when it is the first call', async () => {
+      let recordedCalls: string[] = [];
+      class RecordingAdapter {
+        constructor() {
+          const fake = createFakeStore();
+          recordedCalls = fake.calls as string[];
+          Object.assign(this, fake);
+        }
+      }
+
+      const adapter = loadGeneratedStore(vectorStore, RecordingAdapter);
+
+      await adapter.replaceBySource({
+        sourceId: 'source-1',
+        sourceType: 'document',
+        vector: [0.1, 0.2],
+        content: 'replaced',
+      });
+      expect(recordedCalls).toEqual(['connect', 'replaceBySource']);
     });
 
     it('rejects if connection fails when invoking forwarded methods', async () => {
