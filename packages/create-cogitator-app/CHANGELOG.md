@@ -1,5 +1,11 @@
 # create-cogitator-app
 
+## 0.14.6
+
+### Patch Changes
+
+- [#329](https://github.com/cogitator-ai/Cogitator-AI/pull/329) [`85ccb9f`](https://github.com/cogitator-ai/Cogitator-AI/commit/85ccb9f7780e382d9183008adcbe2c0852115980) Thanks [@bhushan4work](https://github.com/bhushan4work)! - Forward optional `getBySources()` and `replaceBySource()` methods in `lazilyConnected()` RAG store wrappers. Persistent vector stores generated for Postgres and Qdrant now expose both optional methods after establishing a connection, allowing RAG ingestion to detect unchanged documents and avoid redundant re-embedding.
+
 ## 0.14.5
 
 ### Patch Changes
