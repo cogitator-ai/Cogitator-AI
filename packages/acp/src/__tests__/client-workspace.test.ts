@@ -21,7 +21,7 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function editor(files: Map<string, string>, hang = false, creating?: Promise<void>) {
+function editor(files: Map<string, string>, hang = false, creating?: () => Promise<void>) {
   const created: string[] = [];
   let killed = 0;
   let released = 0;
@@ -36,7 +36,7 @@ function editor(files: Map<string, string>, hang = false, creating?: Promise<voi
       return {};
     })
     .onRequest('terminal/create', async ({ params }) => {
-      await creating;
+      await creating?.();
       created.push(params.args?.at(-1) ?? params.command);
       return { terminalId: 't1' };
     })
@@ -138,27 +138,18 @@ describe('AcpClientWorkspace', () => {
       WorkspaceError.is(error, 'ABORTED')
     );
 
-    let open = () => undefined as void;
-    const slowCreate = editor(
-      new Map(),
-      true,
-      new Promise<void>((resolve) => {
-        open = resolve;
-      })
-    );
+    const early = new AbortController();
+    const slowCreate = editor(new Map(), true, async () => {
+      early.abort();
+    });
     const opening = new AcpClientWorkspace({
       base,
       client: slowCreate.context,
       sessionId: 's',
       capabilities: { terminal: true },
     });
-    const early = new AbortController();
     const started = Date.now();
     const running = opening.exec('sleep 100', { signal: early.signal, timeout: 60_000 });
-    setTimeout(() => {
-      early.abort();
-      open();
-    }, 20);
     await expect(running).rejects.toSatisfy((error: unknown) =>
       WorkspaceError.is(error, 'ABORTED')
     );
