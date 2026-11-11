@@ -32,7 +32,7 @@
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "@cogitator-ai/server-shared": "workspace:*",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "peerDependencies": {
     "@tetsujs/core": "^0.6.1",
