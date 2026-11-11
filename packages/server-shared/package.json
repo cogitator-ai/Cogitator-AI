@@ -39,7 +39,7 @@
   "dependencies": {
     "@ag-ui/core": "1.0.3",
     "@cogitator-ai/types": "workspace:*",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@ag-ui/client": "1.0.3",
