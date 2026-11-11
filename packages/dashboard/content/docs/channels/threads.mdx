@@ -20,6 +20,8 @@ The token renews itself (see below), so this is done once.
 
 `ThreadsFeed` publishes in the two steps Threads asks for: a media container, then its publication once Threads reports the container ready. Threads sometimes answers that a container it just reported ready cannot be found (code 24) and takes it seconds later, so the feed tries again after `publishRetryDelays` (2, 5 and 10 seconds). Before each try it reads the container's status, and a container that did go out is looked up instead of being published twice. A post with neither text nor alt text cannot be told apart in that lookup, so it then fails as `unknown` rather than going out twice or taking another post's id. A container still not found fails as `unavailable`, which `FeedPublisher` tries again later.
 
+Now and then Threads refuses a text post's link card on publication ("invalid link attachment", error subcode 4279047), though the link opens and the container was ready, and takes the same post later. The feed then waits `linkRetryDelays` (a minute, then five seconds), looks for the post first since Threads may have published it all the same, and publishes it again from a new container. After the last wait a post with a `link` goes out with the link at the end of its text instead of the card, with a warning. When that is refused too, or the link does not fit in the text, the post fails as `unavailable` for `FeedPublisher` to try again later.
+
 ```typescript
 import { FileTokenStore, ThreadsFeed } from '@cogitator-ai/channels';
 
