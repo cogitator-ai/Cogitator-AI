@@ -86,6 +86,9 @@ function graph() {
     listingFails: false,
     blockTopicTags: false,
     publishNotFound: 0,
+    refuseLink: 0,
+    /** Lists a post refused for its link card as published all the same. */
+    refusedGoesOut: false,
     statusAfterNotFound: undefined as string | undefined,
     renewed: { access_token: 'token-2', token_type: 'bearer', expires_in: 60 * 24 * 60 * 60 },
     error: undefined as { status: number; body: unknown } | undefined,
@@ -135,6 +138,33 @@ function graph() {
         return json({ id: `container-${calls.length}` });
       }
       if (path.endsWith('/threads_publish')) {
+        if (api.refuseLink > 0) {
+          api.refuseLink -= 1;
+          if (api.refusedGoesOut) {
+            api.threads.push({
+              id: 'media-anyway',
+              text: 'Big news',
+              timestamp: iso(Date.now()),
+              media_type: 'TEXT_POST',
+              link_attachment_url: 'https://example.com/story',
+            });
+          }
+          return json(
+            {
+              error: {
+                message: 'Fatal',
+                type: 'OAuthException',
+                code: -1,
+                error_subcode: 4279047,
+                is_transient: false,
+                error_user_title: 'Invalid Link Attachment',
+                error_user_msg: "The post you're trying to publish has an invalid link attachment.",
+                fbtrace_id: 'AbCdEf',
+              },
+            },
+            400
+          );
+        }
         if (api.publishNotFound > 0) {
           api.publishNotFound -= 1;
           if (api.statusAfterNotFound) api.containerStatus = api.statusAfterNotFound;
@@ -190,6 +220,7 @@ function feed(
     fetch: api.fetch as unknown as typeof fetch,
     pollDelays: [0],
     publishRetryDelays: [1, 1, 1],
+    linkRetryDelays: [1, 1],
     ...(options.checkQuota !== undefined && { checkQuota: options.checkQuota }),
   });
 }
@@ -665,6 +696,128 @@ describe('ThreadsFeed', () => {
     expect(containers.map((call) => call.params.topic_tag)).toEqual(['News', undefined]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('blocked the topic tag "News"'));
     warn.mockRestore();
+  });
+
+  describe('a refused link card', () => {
+    const containers = () =>
+      api.calls.filter((call) => call.method === 'POST' && call.path === 'me/threads');
+    const story = { text: 'Big news', link: { url: 'https://example.com/story' } };
+
+    it('publishes the post again from a new container', async () => {
+      api.refuseLink = 1;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const published = await feed({ expiresAt: farFuture() }).publish(story);
+      expect(published.id).toBe('media-1');
+      expect(containers().map((call) => call.params.link_attachment)).toEqual([
+        'https://example.com/story',
+        'https://example.com/story',
+      ]);
+      const publishes = api.calls.filter((call) => call.path === 'me/threads_publish');
+      expect(new Set(publishes.map((call) => call.params.creation_id)).size).toBe(2);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('trying again'));
+      warn.mockRestore();
+    });
+
+    it('moves the link to the end of the text when Threads keeps refusing the card', async () => {
+      api.refuseLink = 2;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const published = await feed({ expiresAt: farFuture() }).publish({
+        ...story,
+        tags: ['News'],
+      });
+      expect(published.id).toBe('media-1');
+      const last = containers().at(-1)?.params;
+      expect(containers()).toHaveLength(3);
+      expect(last?.link_attachment).toBeUndefined();
+      expect(last?.text).toBe('Big news\n\nhttps://example.com/story');
+      expect(last?.topic_tag).toBe('News');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('publishing the link in the text'));
+      warn.mockRestore();
+    });
+
+    it('leaves a text that holds the link already as it is', async () => {
+      api.refuseLink = 2;
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      await feed({ expiresAt: farFuture() }).publish({
+        text: 'Read https://example.com/story/ now',
+        link: { url: 'https://example.com/story' },
+      });
+      const last = containers().at(-1)?.params;
+      expect(last?.link_attachment).toBeUndefined();
+      expect(last?.text).toBe('Read https://example.com/story/ now');
+      vi.restoreAllMocks();
+    });
+
+    it('takes a refused post that went out all the same instead of posting it twice', async () => {
+      api.refuseLink = 1;
+      api.refusedGoesOut = true;
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const published = await feed({ expiresAt: farFuture() }).publish(story);
+      expect(published.id).toBe('media-anyway');
+      expect(containers()).toHaveLength(1);
+      vi.restoreAllMocks();
+    });
+
+    it('fails as unavailable when the post with the link in its text is refused too', async () => {
+      api.refuseLink = 3;
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const error = (await feed({ expiresAt: farFuture() })
+        .publish(story)
+        .catch((caught: unknown) => caught)) as FeedError;
+      expect(error).toBeInstanceOf(FeedError);
+      expect(error.code).toBe('unavailable');
+      expect(error.retryable).toBe(true);
+      expect(error.subcode).toBe(4279047);
+      expect(error.message).toContain('the post with the link in its text');
+      vi.restoreAllMocks();
+    });
+
+    it('keeps the card to the end when the link does not fit in the text', async () => {
+      api.refuseLink = 3;
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const error = (await feed({ expiresAt: farFuture() })
+        .publish({ text: 'x'.repeat(490), link: story.link })
+        .catch((caught: unknown) => caught)) as FeedError;
+      expect(error.code).toBe('unavailable');
+      expect(error.message).toContain('does not fit in the text');
+      expect(containers().map((call) => call.params.link_attachment)).toEqual([
+        'https://example.com/story',
+        'https://example.com/story',
+        'https://example.com/story',
+      ]);
+      vi.restoreAllMocks();
+    });
+
+    it('tries a text post whose card Threads makes from its link again, without a fallback', async () => {
+      api.refuseLink = 3;
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const error = (await feed({ expiresAt: farFuture() })
+        .publish({ text: 'Read https://example.com/story' })
+        .catch((caught: unknown) => caught)) as FeedError;
+      expect(error.code).toBe('unavailable');
+      expect(containers()).toHaveLength(3);
+      expect(
+        containers().every((call) => call.params.text === 'Read https://example.com/story')
+      ).toBe(true);
+      vi.restoreAllMocks();
+    });
+
+    it('finds the post an earlier attempt published with the link in its text', async () => {
+      const threads = feed({ expiresAt: farFuture() });
+      const key = threads.idempotencyKey();
+      api.threads = [
+        {
+          id: 'media-in-text',
+          text: 'Big news\n\nhttps://example.com/story',
+          timestamp: iso(Date.now()),
+          media_type: 'TEXT_POST',
+          link_attachment_url: 'https://example.com/story',
+        },
+      ];
+      const published = await threads.publish(story, { idempotencyKey: key });
+      expect(published.id).toBe('media-in-text');
+      expect(containers()).toHaveLength(0);
+    });
   });
 
   it('keeps the Graph API subcode on a refused post without a tag to drop', async () => {

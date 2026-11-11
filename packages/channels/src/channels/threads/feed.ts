@@ -24,6 +24,14 @@ export type ThreadsFeedConfig = ({ account: ThreadsAccount } | ThreadsAccountCon
    * it cannot find it, in ms (default 2, 5 and 10 seconds).
    */
   publishRetryDelays?: readonly number[];
+  /**
+   * The waits after Threads refuses a post's link card, in ms (default one
+   * minute, then five seconds). After each the account's posts are looked up,
+   * since Threads may have published the post all the same, and the post goes
+   * out again from a new container: with its link card while waits remain,
+   * after the last one with the link at the end of its text.
+   */
+  linkRetryDelays?: readonly number[];
 };
 
 /** What a Threads post accepts. */
@@ -52,6 +60,12 @@ const MEDIA_ID = /^\d+$/;
  * while the same post without the tag goes out.
  */
 const TOPIC_TAG_BLOCKED = 2207051;
+/**
+ * The Graph API error subcode of a text post whose link card Threads refuses
+ * on publishing ("invalid link attachment"), though the link opens and the
+ * container was ready. It passes: the same post goes out later.
+ */
+const INVALID_LINK_ATTACHMENT = 4279047;
 const MAX_PUBLISHED = 1000;
 const QUOTA_PAGES = 12;
 
@@ -105,15 +119,75 @@ function samePost(listed: ListedPost, post: FeedPost, topicTag: string | undefin
   const images = post.images ?? [];
   const alt = images.length === 1 ? (images[0]?.alt ?? '') : '';
   const link = post.link && !post.quote ? comparableUrl(post.link.url) : '';
+  const listedLink = listed.link_attachment_url ? comparableUrl(listed.link_attachment_url) : '';
+  const derived =
+    !link && !post.quote && images.length === 0 && listedLink === firstLink(post.text);
   return (
     listed.media_type === mediaTypeOf(post) &&
     normalized(listed.text) === normalized(post.text) &&
     listed.replied_to?.id === post.replyTo &&
     listed.quoted_post?.id === post.quote &&
-    (listed.link_attachment_url ? comparableUrl(listed.link_attachment_url) : '') === link &&
+    (listedLink === link || derived) &&
     (listed.topic_tag === undefined ||
       listed.topic_tag.toLowerCase() === (topicTag ?? '').toLowerCase()) &&
     (images.length === 1 ? (listed.alt_text ?? '') === alt : true)
+  );
+}
+
+/**
+ * The first link of a text, as compared with a listed link card: Threads
+ * makes a text post without `link_attachment` a card of that link.
+ */
+function firstLink(text: string): string | undefined {
+  const match = text.match(URL_PATTERN)?.[0];
+  return match === undefined
+    ? undefined
+    : comparableUrl(withoutTrailing(match, TRAILING_PUNCTUATION));
+}
+
+/**
+ * `post` with its link card moved to the end of its text, the text left as it
+ * is when it holds the link already, or undefined when it has no card or
+ * there is no room for the link.
+ */
+function withLinkInText(post: FeedPost): FeedPost | undefined {
+  if (!post.link || post.quote) return undefined;
+  const url = post.link.url;
+  const held = [...post.text.matchAll(URL_PATTERN)].some(
+    (match) => comparableUrl(withoutTrailing(match[0], TRAILING_PUNCTUATION)) === comparableUrl(url)
+  );
+  const text = held ? post.text : post.text.trim() ? `${post.text.trimEnd()}\n\n${url}` : url;
+  if (threadsLength(text) > THREADS_LIMITS.maxLength) return undefined;
+  const { link: _card, ...rest } = post;
+  return { ...rest, text };
+}
+
+/** Whether `error` is Threads refusing the link card of a text post. */
+function linkRefused(post: FeedPost, error: unknown): error is FeedError {
+  return (
+    error instanceof FeedError &&
+    error.subcode === INVALID_LINK_ATTACHMENT &&
+    (post.images?.length ?? 0) === 0
+  );
+}
+
+/** The error of a post whose link card Threads went on refusing. */
+function linkUnavailable(post: FeedPost, refusal: FeedError, inText: boolean): FeedError {
+  const card = post.link && !post.quote ? post.link.url : undefined;
+  return new FeedError(
+    'threads',
+    'unavailable',
+    card === undefined
+      ? 'Threads refused the link card it makes of the link in the text'
+      : inText
+        ? `Threads refused the link card of ${card}, and the post with the link in its text`
+        : `Threads refused the link card of ${card}, and the link does not fit in the text`,
+    {
+      ...(refusal.status !== undefined && { status: refusal.status }),
+      ...(refusal.platformCode !== undefined && { platformCode: refusal.platformCode }),
+      subcode: INVALID_LINK_ATTACHMENT,
+      cause: refusal,
+    }
   );
 }
 
@@ -210,6 +284,7 @@ export class ThreadsFeed implements FeedChannel {
   private readonly delays: readonly number[];
   private readonly checkQuota: boolean;
   private readonly publishRetryDelays: readonly number[];
+  private readonly linkRetryDelays: readonly number[];
   /** The posts this feed published, by id, with the key each was published under. */
   private readonly published = new Map<string, string | undefined>();
   /** The post each key was published as, so a retry in this process needs no lookup. */
@@ -223,6 +298,7 @@ export class ThreadsFeed implements FeedChannel {
       : [1000, 2000, 4000, 8000, 15000, 30000];
     this.checkQuota = config.checkQuota ?? true;
     this.publishRetryDelays = config.publishRetryDelays ?? [2000, 5000, 10000];
+    this.linkRetryDelays = config.linkRetryDelays?.length ? config.linkRetryDelays : [60_000, 5000];
   }
 
   measure(text: string): number {
@@ -246,14 +322,17 @@ export class ThreadsFeed implements FeedChannel {
       const known = this.byKey.get(idempotencyKey);
       if (known) return known;
       if (retry && identifiable(post)) {
-        const earlier = await this.findEarlier(post, topicTag, idempotencyKey, since, signal);
+        const inText = withLinkInText(post);
+        const earlier =
+          (await this.findEarlier(post, topicTag, idempotencyKey, since, signal)) ??
+          (inText && (await this.findEarlier(inText, topicTag, idempotencyKey, since, signal)));
         if (earlier) return earlier;
       }
     }
     if (this.checkQuota) await this.assertQuota(Boolean(post.replyTo), signal);
     let published: Container;
     try {
-      published = await this.publishContainer(post, topicTag, idempotencyKey, signal);
+      published = await this.publishLinked(post, topicTag, idempotencyKey, signal);
     } catch (error) {
       if (!topicTag || !(error instanceof FeedError) || error.subcode !== TOPIC_TAG_BLOCKED) {
         throw error;
@@ -261,7 +340,7 @@ export class ThreadsFeed implements FeedChannel {
       console.warn(
         `[threads] Threads blocked the topic tag "${topicTag}" for this account, publishing without it`
       );
-      published = await this.publishContainer(post, undefined, idempotencyKey, signal);
+      published = await this.publishLinked(post, undefined, idempotencyKey, signal);
     }
     let url = '';
     try {
@@ -288,6 +367,44 @@ export class ThreadsFeed implements FeedChannel {
 
   async close(): Promise<void> {
     this.account.close(this);
+  }
+
+  /**
+   * Publishes the post from a new container after each refusal of its link
+   * card, which passes, waiting `linkRetryDelays` and looking the post up
+   * first, since Threads may have published it all the same. After the last
+   * wait a post with a link card goes out with the link at the end of its
+   * text instead, with a warning. A post still refused fails as `unavailable`,
+   * for the publisher to try it again later.
+   */
+  private async publishLinked(
+    post: FeedPost,
+    topicTag: string | undefined,
+    key: string | undefined,
+    signal?: AbortSignal
+  ): Promise<Container> {
+    const since = Date.now();
+    const waits = this.linkRetryDelays;
+    const inText = withLinkInText(post);
+    for (let refusals = 0; ; refusals++) {
+      const fallback = refusals === waits.length ? inText : undefined;
+      try {
+        return await this.publishContainer(fallback ?? post, topicTag, key, signal);
+      } catch (error) {
+        if (!linkRefused(post, error)) throw error;
+        if (refusals === waits.length) throw linkUnavailable(post, error, fallback !== undefined);
+        await sleep(waits[refusals], signal);
+        if (identifiable(post)) {
+          const found = await this.findEarlier(post, topicTag, key, since, signal);
+          if (found) return { id: found.id };
+        }
+        console.warn(
+          refusals + 1 === waits.length && inText
+            ? `[threads] Threads keeps refusing the link card of ${post.link?.url ?? ''}, publishing the link in the text`
+            : '[threads] Threads refused the link card of the post, trying again'
+        );
+      }
+    }
   }
 
   /**
