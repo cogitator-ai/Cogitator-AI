@@ -1,5 +1,12 @@
 # @cogitator-ai/cli
 
+## 0.18.3
+
+### Patch Changes
+
+- Updated dependencies [[`db3d2e6`](https://github.com/cogitator-ai/Cogitator-AI/commit/db3d2e67811c52686fbf629ba6dffe3edc421d9a)]:
+  - @cogitator-ai/channels@0.21.7
+
 ## 0.18.2
 
 ### Patch Changes
