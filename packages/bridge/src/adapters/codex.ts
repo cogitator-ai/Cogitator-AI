@@ -3,6 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:f
 import { join, resolve } from 'node:path';
 import type {
   BridgeAdapter,
+  BridgeCalls,
   CreatedSession,
   DeliveryReceipt,
   HealthCheck,
@@ -10,8 +11,9 @@ import type {
   LetterDelivery,
   SessionRequest,
 } from '../adapter.js';
+import { isBridgeError } from '../errors.js';
 import { bridgePaths, findProjectRoot } from '../paths.js';
-import { HARNESSES, type CallerIdentity } from '../types.js';
+import { HARNESSES, type CallerIdentity, type JobState } from '../types.js';
 import {
   CommandMissingError,
   failureOf,
@@ -46,6 +48,8 @@ export interface CodexAdapterOptions {
   logDir?: string;
   /** How long a started session may take to say its thread id, 60 s by default */
   threadStartedMs?: number;
+  /** Hears what went wrong outside a call of the bridge: a report that could not be sent */
+  onError?: (error: Error) => void;
 }
 
 const DEFAULT_THREAD_STARTED_MS = 60_000;
@@ -63,21 +67,94 @@ export const CODEX_NOT_RESUMED_NOTE =
   'Codex app reads it at once, one open nowhere when it is opened, or at once with: ' +
   DAEMON_START;
 
+const FINISHED: readonly JobState[] = ['completed', 'failed', 'canceled'];
+
+/** One line of what `codex exec --json` wrote: an event, or text that is none. */
+type ExecLine = { event: Record<string, unknown> } | { text: string };
+
+function execLines(output: string): ExecLine[] {
+  const lines: ExecLine[] = [];
+  for (const raw of output.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    let event: unknown;
+    if (line.startsWith('{')) {
+      try {
+        event = JSON.parse(line);
+      } catch {
+        event = undefined;
+      }
+    }
+    lines.push(
+      typeof event === 'object' && event !== null
+        ? { event: event as Record<string, unknown> }
+        : { text: line }
+    );
+  }
+  return lines;
+}
+
+function textOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
 /** The id of the thread `codex exec --json` says it started, when its output has it already. */
 export function codexThreadId(output: string): string | undefined {
-  for (const line of output.split('\n')) {
-    if (!line.trim().startsWith('{')) continue;
-    let event: unknown;
-    try {
-      event = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (typeof event !== 'object' || event === null) continue;
-    const id = (event as { thread_id?: unknown }).thread_id;
-    if (typeof id === 'string' && id.trim()) return id.trim();
+  for (const line of execLines(output)) {
+    const id = 'event' in line ? textOf(line.event.thread_id) : undefined;
+    if (id) return id;
   }
   return undefined;
+}
+
+/**
+ * What a thread the bridge starts reads under its first letter. Such a thread often cannot reach
+ * the bridge from its sandbox, so the bridge reports for it.
+ */
+export function codexReportNotice(job: number): string {
+  return `[agent bridge] Your final answer of this turn is taken as the report on job #${job}, unless you send a report yourself.`;
+}
+
+/**
+ * What a `codex exec` that ended leaves to report: the last message of the thread, or why the
+ * turn failed. `output` is what it wrote with `--json`, `code` its exit code, null after a signal.
+ */
+export function codexTurnReport(
+  output: string,
+  code: number | null
+): { body: string; failed: boolean } {
+  let message: string | undefined;
+  let turnFailed = false;
+  let reason: string | undefined;
+  const said: string[] = [];
+  for (const line of execLines(output)) {
+    if ('text' in line) {
+      said.push(line.text);
+      continue;
+    }
+    const { type, item, error } = line.event;
+    if (type === 'item.completed' && typeof item === 'object' && item !== null) {
+      const { type: kind, text } = item as { type?: unknown; text?: unknown };
+      if (kind === 'agent_message') message = textOf(text) ?? message;
+    } else if (type === 'turn.failed') {
+      turnFailed = true;
+      const told =
+        typeof error === 'object' && error !== null
+          ? textOf((error as { message?: unknown }).message)
+          : undefined;
+      reason = told ?? reason;
+    } else if (type === 'error') {
+      reason = textOf(line.event.message) ?? reason;
+    }
+  }
+  if (code === 0 && !turnFailed) return { body: message ?? 'Done', failed: false };
+  const why = reason ?? failureOf({ code, stdout: '', stderr: said.join('\n') });
+  return {
+    body:
+      `codex exec failed before the thread finished its turn: ${why}` +
+      (message ? `\nIts last message: ${message}` : ''),
+    failed: true,
+  };
 }
 
 /**
@@ -85,13 +162,49 @@ export function codexThreadId(output: string): string | undefined {
  * (`codex queue --resume`): a thread open in the Codex app takes it by itself within seconds,
  * one that is open nowhere needs the local daemon (`codex app-server daemon start`), which the
  * bridge never starts on its own. A session for a job is a thread of `codex exec`, started with
- * the job's first letter and left to finish its turn by itself.
+ * the job's first letter and left to finish its turn by itself. Such a thread works in a sandbox
+ * that usually keeps it from the bridge, so when its turn ends and it wrote nothing on the job
+ * itself, the adapter sends its final answer as the report, or what failed when the turn failed.
  */
 export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
   const command = options.command ?? 'codex';
   const env = options.env ?? process.env;
   const logDir = options.logDir ?? join(bridgePaths({ env }).home, 'sessions');
   const bridgeHome = env.COGITATOR_BRIDGE_HOME?.trim() || undefined;
+  const onError = options.onError ?? (() => undefined);
+  let bridge: BridgeCalls | undefined;
+  let closed = false;
+
+  /**
+   * Reports for a thread whose `codex exec` ended, unless the job is over or the thread wrote on
+   * it itself: a thread that reaches the bridge speaks for itself.
+   */
+  async function reportFor(
+    request: SessionRequest,
+    sessionId: string,
+    logPath: string,
+    code: number | null
+  ): Promise<void> {
+    if (closed || !bridge) return;
+    const job = request.job.number;
+    if (FINISHED.includes((await bridge.job(job)).state)) return;
+    const agent = await bridge.register({
+      harness: HARNESSES.codex,
+      sessionId,
+      cwd: request.cwd,
+      project: request.project,
+      agentName: request.agentName,
+    });
+    const own = await bridge.letters({ job, from: agent.name, limit: 1 });
+    if (own.length > 0 || closed) return;
+    const { body, failed } = codexTurnReport(readFileSync(logPath, 'utf8'), code);
+    await bridge.send(agent.name, {
+      job,
+      kind: 'report',
+      body: body.replaceAll('\0', ''),
+      ...(failed && { outcome: 'failed' as const }),
+    });
+  }
 
   async function deliver({ agent, letter }: LetterDelivery): Promise<DeliveryReceipt | void> {
     const result = await runCommand(
@@ -124,6 +237,7 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
     let exited: { code: number | null } | undefined;
     let missing = false;
     let pid: number | undefined;
+    let ended: Promise<number | null>;
     try {
       const child = spawn(
         command,
@@ -149,15 +263,19 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
           stdio: ['pipe', log, log],
         }
       );
-      child.once('error', (error: NodeJS.ErrnoException) => {
-        missing = error.code === 'ENOENT';
-        exited = { code: null };
-      });
-      child.once('exit', (code) => {
-        exited = { code };
+      ended = new Promise((settle) => {
+        child.once('error', (error: NodeJS.ErrnoException) => {
+          missing = error.code === 'ENOENT';
+          exited = { code: null };
+          settle(null);
+        });
+        child.once('exit', (code) => {
+          exited = { code };
+          settle(code);
+        });
       });
       child.stdin?.on('error', () => undefined);
-      child.stdin?.end(request.firstLetter.text);
+      child.stdin?.end(`${request.firstLetter.text}\n\n${codexReportNotice(request.job.number)}`);
       child.unref();
       pid = child.pid;
     } finally {
@@ -180,7 +298,15 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
     for (;;) {
       const output = readFileSync(logPath, 'utf8');
       const sessionId = codexThreadId(output);
-      if (sessionId) return { sessionId, deliveredFirstLetter: true };
+      if (sessionId) {
+        void ended
+          .then((code) => reportFor(request, sessionId, logPath, code))
+          .catch((error: unknown) => {
+            if (isBridgeError(error) && error.code === 'job_finished') return;
+            onError(error instanceof Error ? error : new Error(String(error)));
+          });
+        return { sessionId, deliveredFirstLetter: true };
+      }
       if (missing) {
         throw existsSync(request.cwd)
           ? new CommandMissingError(command)
@@ -266,9 +392,15 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
     harness: HARNESSES.codex,
     delivery: CODEX_DELIVERY,
     capabilities: { createSession: true, push: true, steer: false, nativeWindow: true },
+    attach(calls: BridgeCalls): void {
+      bridge = calls;
+    },
     deliver,
     createSession,
     identify,
     health,
+    async close(): Promise<void> {
+      closed = true;
+    },
   };
 }

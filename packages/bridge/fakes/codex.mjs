@@ -237,6 +237,7 @@ async function foregroundTurn(thread, prompt, asJson) {
     if (asJson) {
       await printEvents({ type: 'thread.started', thread_id: thread.threadId }, TURN_STARTED);
     }
+    if (process.env.FAKE_CODEX_TURN_FAIL) throw new CliError(process.env.FAKE_CODEX_TURN_FAIL);
     const answer = await threadTurn(thread, prompt, 'exec');
     if (!asJson) return await print(answer);
     const item = { id: 'item_0', type: 'agent_message', text: answer };

@@ -8,7 +8,7 @@ import {
   claudeWaitHook,
   hasClaudeWaitHook,
 } from '../adapters/claude';
-import { codexAdapter, codexThreadId } from '../adapters/codex';
+import { codexAdapter, codexThreadId, codexTurnReport } from '../adapters/codex';
 import {
   CommandMissingError,
   MAX_ARGUMENT_BYTES,
@@ -214,6 +214,66 @@ describe('the thread codex exec started', () => {
       codexThreadId('{"type":"turn.started"}\n{"thread_id":7}\n{"thread_id":"  "}')
     ).toBeUndefined();
     expect(codexThreadId('thread_id: abc')).toBeUndefined();
+  });
+});
+
+describe('what a codex exec that ended leaves to report', () => {
+  const message = (text: string): string =>
+    JSON.stringify({ type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text } });
+  const started = '{"type":"thread.started","thread_id":"0199a213"}\n{"type":"turn.started"}';
+
+  it('is the last message of the thread, and done when it said nothing', () => {
+    const output = [
+      started,
+      message('Looking at the folder'),
+      '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"ls","aggregated_output":"b"}}',
+      message('  Two files: README.md and b  '),
+      '{"type":"turn.completed","usage":{"input_tokens":1}}',
+    ].join('\n');
+
+    expect(codexTurnReport(output, 0)).toEqual({
+      body: 'Two files: README.md and b',
+      failed: false,
+    });
+    expect(codexTurnReport(`${started}\n{"type":"turn.completed"}`, 0)).toEqual({
+      body: 'Done',
+      failed: false,
+    });
+    expect(codexTurnReport(`${started}\n${message('   ')}`, 0).body).toBe('Done');
+  });
+
+  it('is a failure with what codex said when it did not end well', () => {
+    expect(codexTurnReport(`${started}\nError: usage limit reached\n`, 1)).toEqual({
+      body: 'codex exec failed before the thread finished its turn: Error: usage limit reached',
+      failed: true,
+    });
+    expect(codexTurnReport(started, null)).toEqual({
+      body: 'codex exec failed before the thread finished its turn: it ended with a signal',
+      failed: true,
+    });
+    expect(codexTurnReport(`${started}\n${message('Half way there')}`, 2)).toEqual({
+      body:
+        'codex exec failed before the thread finished its turn: it ended with exit code 2\n' +
+        'Its last message: Half way there',
+      failed: true,
+    });
+  });
+
+  it('takes a turn codex calls failed for a failure, whatever the exit code', () => {
+    const output = [
+      started,
+      '{"type":"error","message":"stream disconnected"}',
+      '{"type":"turn.failed","error":{"message":"You have hit your usage limit"}}',
+    ].join('\n');
+
+    expect(codexTurnReport(output, 0)).toEqual({
+      body: 'codex exec failed before the thread finished its turn: You have hit your usage limit',
+      failed: true,
+    });
+    expect(codexTurnReport(`${started}\n{"type":"error","message":"reconnecting"}`, 0)).toEqual({
+      body: 'Done',
+      failed: false,
+    });
   });
 });
 

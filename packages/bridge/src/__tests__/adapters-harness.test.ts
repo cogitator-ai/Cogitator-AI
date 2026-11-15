@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BridgeAdapter } from '../adapter';
 import { claudeCodeAdapter, claudeWaitHook, hasClaudeWaitHook } from '../adapters/claude';
-import { CODEX_NOT_RESUMED_NOTE, codexAdapter } from '../adapters/codex';
+import { CODEX_NOT_RESUMED_NOTE, codexAdapter, codexReportNotice } from '../adapters/codex';
 import { BridgeClient } from '../client';
 import { hostBridge, type BridgeHost } from '../host';
 import { bridgePaths } from '../paths';
@@ -650,13 +650,13 @@ describe.skipIf(!posix)('the Codex adapter', () => {
     });
   });
 
-  it('starts a thread for a job and leaves it to finish its turn', async () => {
+  it('starts a thread for a job, and reports its final answer when its turn ends without a report', async () => {
     await startHost([codex({ sandbox: 'read-only' })]);
     const conductor = await orchestrator();
 
     const { job } = await conductor.createJob({
       to: 'codex',
-      body: 'Write the tests\nrun: printf "%s|%s|%s" "$CODEX_THREAD_ID" "$COGITATOR_BRIDGE_AGENT" "$FAKE_CODEX_SANDBOX"\nsleep: 300',
+      body: 'Write the tests\nrun: printf "%s|%s|%s" "$CODEX_THREAD_ID" "$COGITATOR_BRIDGE_AGENT" "$FAKE_CODEX_SANDBOX"\nsleep: 1000\nsay: 14 tests written',
     });
     const agent = await until(
       async () => (await conductor.agents({ harness: 'codex', statuses: ['active'] }))[0],
@@ -668,6 +668,7 @@ describe.skipIf(!posix)('the Codex adapter', () => {
     expect((await conductor.job(1)).state).toBe('working');
     const turn = await fakes.waitForTurn('codex', agent.sessionId, () => true);
     expect(turn.ran[0].stdout).toBe(`${agent.sessionId}|${agent.name}|read-only`);
+    expect(turn.input.split('\n').slice(-2)).toEqual(['', codexReportNotice(1)]);
     const [log] = readdirSync(join(home, 'sessions'));
     expect(log).toMatch(/^codex-codex_.*\.log$/);
     await until(
@@ -676,6 +677,88 @@ describe.skipIf(!posix)('the Codex adapter', () => {
         undefined,
       'the thread to finish its turn by itself'
     );
+
+    const [report] = await until(async () => {
+      const inbox = await conductor.inbox();
+      return inbox.length > 0 ? inbox : undefined;
+    }, 'the report for the thread');
+    expect(report).toMatchObject({
+      kind: 'report',
+      from: agent.name,
+      body: '14 tests written',
+      outcome: 'completed',
+    });
+    expect((await conductor.job(1)).state).toBe('completed');
+    expect(errors).toEqual([]);
+  });
+
+  it('leaves the report to a thread that sends one itself', async () => {
+    const host = await startHost([codex()]);
+    const looked = vi.spyOn(host.dispatcher, 'job');
+    const conductor = await orchestrator();
+    await conductor.createJob({ to: 'codex', body: 'Write the tests\nsleep: 1500\nsay: All good' });
+    const agent = await until(
+      async () => (await conductor.agents({ harness: 'codex', statuses: ['active'] }))[0],
+      'the thread to start'
+    );
+
+    await host.dispatcher.send(agent.name, { job: 1, kind: 'report', body: 'Done: 14 tests pass' });
+    await fakes.waitForTurn('codex', agent.sessionId, () => true);
+    await until(
+      () => looked.mock.results.length > 0 || undefined,
+      'the adapter to look at the job'
+    );
+    await looked.mock.results[0].value;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const reports = await conductor.letters({ job: 1, kinds: ['report'] });
+    expect(reports.map((letter) => letter.body)).toEqual(['Done: 14 tests pass']);
+    expect(errors).toEqual([]);
+  });
+
+  it('reports nothing for a thread that asked a question and waits for the answer', async () => {
+    const host = await startHost([codex()]);
+    const read = vi.spyOn(host.dispatcher, 'letters');
+    const conductor = await orchestrator();
+    await conductor.createJob({ to: 'codex', body: 'Write the tests\nsleep: 1500\nsay: Waiting' });
+    const agent = await until(
+      async () => (await conductor.agents({ harness: 'codex', statuses: ['active'] }))[0],
+      'the thread to start'
+    );
+
+    await host.dispatcher.send(agent.name, { job: 1, kind: 'question', body: 'Mock Redis?' });
+    await fakes.waitForTurn('codex', agent.sessionId, () => true);
+    await until(
+      () => read.mock.results.length > 0 || undefined,
+      'the adapter to look at the letters'
+    );
+    await read.mock.results[0].value;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(await conductor.letters({ job: 1, kinds: ['report'] })).toEqual([]);
+    expect((await conductor.job(1)).state).toBe('input-required');
+    expect(errors).toEqual([]);
+  });
+
+  it('fails the job with what Codex said when the turn of its thread fails', async () => {
+    await startHost([
+      codex({ env: { ...env(), FAKE_CODEX_TURN_FAIL: 'Error: usage limit reached' } }),
+    ]);
+    const conductor = await orchestrator();
+
+    const { job } = await conductor.createJob({ to: 'codex', body: 'Write the tests' });
+
+    const failed = await until(async () => {
+      const current = await conductor.job(1);
+      return current.state === 'failed' ? current : undefined;
+    }, 'the job to fail');
+    expect(failed.to).toBe(job.to);
+    const [report] = await conductor.letters({ job: 1, kinds: ['report'] });
+    expect(report).toMatchObject({
+      from: job.to,
+      body: 'codex exec failed before the thread finished its turn: Error: usage limit reached',
+      outcome: 'failed',
+    });
     expect(errors).toEqual([]);
   });
 
