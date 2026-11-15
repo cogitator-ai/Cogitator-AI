@@ -151,6 +151,8 @@ export type {
   ExecuteTaskOptions,
   TaskEvent,
   CreateTaskOptions,
+  AdvanceTaskOptions,
+  AdvanceTaskState,
 } from './task-manager.js';
 
 export {
