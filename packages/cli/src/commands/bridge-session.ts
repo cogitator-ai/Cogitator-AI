@@ -60,7 +60,9 @@ function pathsOf(flags: HomeFlags, context: BridgeSessionContext): BridgePaths {
 }
 
 function adaptersOf(flags: HomeFlags, context: BridgeSessionContext): readonly BridgeAdapter[] {
-  return context.adapters ?? bridgeAdapters(context.env, flags.home);
+  return (
+    context.adapters ?? bridgeAdapters(context.env, { ...(flags.home && { home: flags.home }) })
+  );
 }
 
 const NO_SESSION = new CommandError('This command runs inside a session of an agent', {

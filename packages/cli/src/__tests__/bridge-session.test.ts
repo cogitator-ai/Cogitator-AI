@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
@@ -23,7 +23,7 @@ import {
   runBridgeWait,
   type BridgeSessionContext,
 } from '../commands/bridge-session.js';
-import { bridgeAdapters, bridgeCommandOf } from '../utils/bridge-adapters.js';
+import { bridgeAdapters, bridgeCommandOf, codexSandboxOf } from '../utils/bridge-adapters.js';
 import { UsageError, exitCodeFor } from '../utils/cli.js';
 import { createProgram } from '../program.js';
 
@@ -518,7 +518,7 @@ describe('how a hook reaches the command line', () => {
   });
 
   it('tells the sessions of a dispatcher in a folder of its own where that folder is', async () => {
-    const [claudeCode, codexThreads] = bridgeAdapters({ PATH: '/nowhere' }, home);
+    const [claudeCode, codexThreads] = bridgeAdapters({ PATH: '/nowhere' }, { home });
     const hook = (await claudeCode.health?.({ cwd: project }))?.[0];
     expect(hook?.status).toBe('fail');
 
@@ -533,6 +533,58 @@ describe('how a hook reaches the command line', () => {
     await expect(codexThreads.createSession?.(request)).rejects.toThrow('not installed');
     expect(existsSync(join(home, 'sessions'))).toBe(true);
     expect(bridgeAdapters({}).map((adapter) => adapter.harness)).toEqual(['claude-code', 'codex']);
+  });
+
+  it('starts Codex threads in the sandbox the flag or the environment names', async () => {
+    const bin = join(home, 'bin');
+    mkdirSync(bin);
+    const seen = join(home, 'codex-args');
+    writeFileSync(
+      join(bin, 'codex'),
+      `#!/bin/sh\nprintf '%s\\n' "$@" > '${seen}'\ncat > /dev/null\necho '{"type":"thread.started","thread_id":"t-1"}'\n`,
+      { mode: 0o755 }
+    );
+    const env = { PATH: `${bin}:/usr/bin:/bin`, COGITATOR_BRIDGE_HOME: home };
+    const request = {
+      agentName: 'codex@demo',
+      harness: 'codex',
+      project,
+      cwd: project,
+      job: { number: 1 } as never,
+      firstLetter: { text: '[agent bridge] job #1', body: 'x', job: 1 } as never,
+    };
+    const sandboxOf = async (adapters: ReturnType<typeof bridgeAdapters>): Promise<string> => {
+      await adapters[1].createSession?.(request);
+      const args = readFileSync(seen, 'utf8').split('\n');
+      return args[args.indexOf('--sandbox') + 1];
+    };
+
+    expect(await sandboxOf(bridgeAdapters(env))).toBe('workspace-write');
+    expect(
+      await sandboxOf(bridgeAdapters({ ...env, COGITATOR_BRIDGE_CODEX_SANDBOX: 'read-only' }))
+    ).toBe('read-only');
+    expect(
+      await sandboxOf(
+        bridgeAdapters(
+          { ...env, COGITATOR_BRIDGE_CODEX_SANDBOX: 'read-only' },
+          { codexSandbox: 'danger-full-access' }
+        )
+      )
+    ).toBe('danger-full-access');
+
+    expect(codexSandboxOf({})).toBeUndefined();
+    expect(() => bridgeAdapters({ COGITATOR_BRIDGE_CODEX_SANDBOX: 'wide-open' })).toThrow(
+      UsageError
+    );
+    expect(() => codexSandboxOf({}, 'wide-open')).toThrow('"wide-open" is not a sandbox of Codex');
+    const serve = createProgram()
+      .commands.find((command) => command.name() === 'bridge')
+      ?.commands.find((command) => command.name() === 'serve');
+    expect(serve?.options.find((option) => option.long === '--codex-sandbox')?.argChoices).toEqual([
+      'read-only',
+      'workspace-write',
+      'danger-full-access',
+    ]);
   });
 });
 
