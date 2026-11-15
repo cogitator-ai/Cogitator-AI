@@ -197,10 +197,10 @@ export function resolveAddress(
       `The address "${text}" names no session after the colon`
     );
   }
-  if (wanted !== undefined && !/^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u.test(wanted)) {
+  if (wanted?.startsWith('-')) {
     throw new BridgeError(
       'invalid_input',
-      `A session is named with letters, digits, spaces, ".", "_" and "-", starting with a letter or a digit. "${wanted.replace(/\p{Cc}/gu, ' ')}" is not such a name`
+      `A session name does not start with "-": "${wanted}" would read as an option of the command that starts it`
     );
   }
 

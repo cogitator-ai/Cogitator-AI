@@ -416,7 +416,7 @@ await tasks.continueTask(task.id, fromClient('Mock it'));
 await tasks.advanceTask(task.id, { state: 'completed', message: 'Done: 14 tests pass' });
 ```
 
-The message is recorded as the agent's: added to the history and kept as the status message. Moves of one task run one after another, so two made at once do not overwrite each other. A task does not move (`taskNotContinuable`) when it is in a terminal state, when a run of the manager is executing it, or when a run of the manager paused on it for approvals or answers. `createTask` takes `metadata` to store with the task in the same write. The keys the manager keeps for itself (owner, agent, creation time) are dropped from it, so metadata passed on from a client cannot set them.
+The message is recorded as the agent's: added to the history and kept as the status message. Changes of one task's state run one after another, moves, cancels and client messages alike, so two made at once do not overwrite each other. A task does not move (`taskNotContinuable`) when it is in a terminal state, when a run of the manager is executing it, or when a run of the manager paused on it for approvals or answers. `createTask` takes `metadata` to store with the task in the same write. The keys the manager keeps for itself (owner, agent, creation time) are dropped from it, so metadata passed on from a client cannot set them.
 
 ## RedisTaskStore
 

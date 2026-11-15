@@ -62,6 +62,14 @@ function cliEntry(): string {
 interface LaunchFlags {
   config?: string;
   bridge?: boolean;
+  /** The folder of the bridge a restarted daemon keeps, when the shell does not name one */
+  bridgeHome?: string;
+}
+
+/** The folder `COGITATOR_BRIDGE_HOME` names, absolute, or undefined when it names none. */
+function bridgeHomeOf(flags: LaunchFlags): string | undefined {
+  const named = process.env[BRIDGE_HOME_ENV]?.trim() || flags.bridgeHome;
+  return named ? resolve(named) : undefined;
 }
 
 const CONFIG_OPTION = [
@@ -133,7 +141,7 @@ async function stopDaemon(record: DaemonPidRecord): Promise<'stopped' | 'killed'
   return 'killed';
 }
 
-function startDaemon(flags: LaunchFlags): void {
+function startDaemon(flags: LaunchFlags, resolved?: DaemonLaunch): void {
   const existing = runningDaemon();
   if (existing) {
     log.warn(`Daemon already running (PID: ${existing.pid})`);
@@ -141,7 +149,8 @@ function startDaemon(flags: LaunchFlags): void {
     return;
   }
 
-  const launch = resolveLaunch(flags);
+  const launch = resolved ?? resolveLaunch(flags);
+  const bridgeHome = flags.bridge ? bridgeHomeOf(flags) : undefined;
   mkdirSync(dataDir(), { recursive: true });
 
   const out = openSync(logFile(), 'a');
@@ -155,6 +164,7 @@ function startDaemon(flags: LaunchFlags): void {
         ...process.env,
         COGITATOR_DAEMON: '1',
         ...(flags.bridge && { [BRIDGE_HOST_ENV]: '1' }),
+        ...(bridgeHome && { [BRIDGE_HOME_ENV]: bridgeHome }),
       },
     });
     child.on('error', (error) => {
@@ -174,7 +184,12 @@ function startDaemon(flags: LaunchFlags): void {
 
   writeFileSync(
     pidFile(),
-    serializePidRecord({ pid, script: launch.args[0], ...(flags.bridge && { bridge: true }) })
+    serializePidRecord({
+      pid,
+      script: launch.args[0],
+      ...(flags.bridge && { bridge: true }),
+      ...(bridgeHome && { bridgeHome }),
+    })
   );
   log.success(`Daemon started (PID: ${pid})`);
   log.dim(`Running ${launch.description}`);
@@ -253,6 +268,13 @@ daemonCommand
   .option(...NO_BRIDGE_OPTION)
   .action(async (options: LaunchFlags) => {
     const previous = readPidRecord(pidFile());
+    const flags: LaunchFlags = {
+      ...options,
+      bridge: options.bridge ?? previous?.bridge,
+      ...(previous?.bridgeHome && { bridgeHome: previous.bridgeHome }),
+    };
+    const launch = resolveLaunch(flags);
+
     const record = runningDaemon();
     if (record) {
       log.step('Stopping current daemon...');
@@ -262,7 +284,7 @@ daemonCommand
     }
 
     log.step('Starting daemon...');
-    startDaemon({ ...options, bridge: options.bridge ?? previous?.bridge });
+    startDaemon(flags, launch);
   });
 
 daemonCommand
@@ -344,10 +366,7 @@ daemonCommand
       logFile: logFile(),
       path: process.env.PATH,
       ...(options.bridge && { bridge: true }),
-      ...(options.bridge &&
-        process.env[BRIDGE_HOME_ENV]?.trim() && {
-          bridgeHome: resolve(process.env[BRIDGE_HOME_ENV].trim()),
-        }),
+      ...(options.bridge && bridgeHomeOf(options) && { bridgeHome: bridgeHomeOf(options) }),
     };
 
     if (process.platform === 'darwin') {

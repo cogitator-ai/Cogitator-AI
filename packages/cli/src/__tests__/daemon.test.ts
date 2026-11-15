@@ -188,6 +188,8 @@ describe('service definitions', () => {
   });
 
   it('remembers that the daemon hosts the bridge, so a restart hosts it again', () => {
+    const kept = { pid: 42, script: '/a.js', bridge: true, bridgeHome: '/srv/bridge' };
+    expect(parsePidRecord(serializePidRecord(kept))).toEqual(kept);
     const record = parsePidRecord(serializePidRecord({ pid: 42, script: '/a.js', bridge: true }));
     expect(record).toEqual({ pid: 42, script: '/a.js', bridge: true });
     expect(parsePidRecord(serializePidRecord({ pid: 42, script: '/a.js' }))).toEqual({

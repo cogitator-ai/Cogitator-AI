@@ -116,6 +116,7 @@ const SCHEMA = `
   );
   CREATE INDEX letters_recipient ON letters (recipient, state, seq);
   CREATE INDEX letters_job ON letters (job, seq);
+  CREATE INDEX letters_due ON letters (reply_due_at) WHERE reply_due_at IS NOT NULL;
 
   CREATE TABLE journal (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -269,7 +270,8 @@ function toJournalEntry(row: JournalRow): JournalEntry {
  * written to them: the database is created with mode 0600 from the start (SQLite gives its
  * `-wal` and `-shm` files the same mode), a file that is already there is narrowed, and a folder
  * or a file that belongs to someone else is refused. A filesystem without owners and modes
- * (Windows) keeps the protection of the user's profile.
+ * (Windows) keeps the protection of the user's profile, and root, who owns everything anyway, is
+ * not asked whose the files are (a container often runs as root on a volume of the host's user).
  *
  * @throws BridgeError `storage` when the folder or the file belongs to another user, or the
  * file is not a plain file
@@ -281,7 +283,8 @@ function makePrivate(path: string): void {
     return;
   }
   mkdirSync(folder, { recursive: true, mode: 0o700 });
-  const uid = process.getuid?.();
+  const self = process.getuid?.();
+  const uid = self === 0 ? undefined : self;
   if (uid !== undefined && statSync(folder).uid !== uid) {
     throw new BridgeError(
       'storage',

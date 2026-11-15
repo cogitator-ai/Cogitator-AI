@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /** Where the bridge of this machine keeps its files. */
 export interface BridgePaths {
@@ -110,7 +110,20 @@ function mainCheckoutOf(worktree: string): string | undefined {
 /** Whether `path` is `folder` or lies inside it. */
 export function isInside(folder: string, path: string): boolean {
   const inner = relative(resolve(folder), resolve(path));
-  return inner === '' || (!inner.startsWith('..') && !isAbsolute(inner));
+  if (inner === '') return true;
+  return inner !== '..' && !inner.startsWith(`..${sep}`) && !isAbsolute(inner);
+}
+
+/**
+ * The checkout `cwd` is in: the nearest folder up the tree with a `.git`, the main checkout or a
+ * linked worktree alike. `cwd` itself when no folder up the tree is a repository.
+ */
+export function findCheckoutRoot(cwd: string): string {
+  const start = resolve(cwd);
+  for (let dir = start; ; dir = dirname(dir)) {
+    if (gitEntry(dir)) return dir;
+    if (dirname(dir) === dir) return start;
+  }
 }
 
 /**

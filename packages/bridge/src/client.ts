@@ -76,6 +76,8 @@ function open(socketPath: string): Promise<Socket> {
 export class BridgeClient {
   /** What the dispatcher sends this connection: one job, everything, or nothing */
   private subscribed: number | 'all' | null = null;
+  /** The last change of the subscription: they run one after another, each seeing the listeners as they are then */
+  private syncing: Promise<void> = Promise.resolve();
 
   private constructor(
     private readonly socket: Socket,
@@ -217,16 +219,23 @@ export class BridgeClient {
 
   /**
    * Asks the dispatcher for what the listeners need between them: one job when they all want the
-   * same one, everything otherwise, nothing when none is left.
+   * same one, everything otherwise, nothing when none is left. Changes run one after another, so
+   * one made while another is on its way is not lost.
    */
-  private async syncSubscription(): Promise<void> {
-    const jobs = new Set(this.listeners.values());
-    const wanted =
-      this.listeners.size === 0 ? null : jobs.size === 1 ? ([...jobs][0] ?? 'all') : 'all';
-    if (wanted === this.subscribed) return;
-    if (wanted === null) await this.call(BRIDGE_METHODS.unsubscribeJournal, {});
-    else await this.call(BRIDGE_METHODS.subscribeJournal, wanted === 'all' ? {} : { job: wanted });
-    this.subscribed = wanted;
+  private syncSubscription(): Promise<void> {
+    const sync = this.syncing.then(async () => {
+      const jobs = new Set(this.listeners.values());
+      const wanted =
+        this.listeners.size === 0 ? null : jobs.size === 1 ? ([...jobs][0] ?? 'all') : 'all';
+      if (wanted === this.subscribed) return;
+      if (wanted === null) await this.call(BRIDGE_METHODS.unsubscribeJournal, {});
+      else {
+        await this.call(BRIDGE_METHODS.subscribeJournal, wanted === 'all' ? {} : { job: wanted });
+      }
+      this.subscribed = wanted;
+    });
+    this.syncing = sync.catch(() => undefined);
+    return sync;
   }
 
   /** Ends the connection. Calls still waiting for an answer reject */

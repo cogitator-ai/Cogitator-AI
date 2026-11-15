@@ -9,7 +9,7 @@ import {
   projectLabel,
   resolveAddress,
 } from '../registry';
-import { bridgePaths, findProjectRoot } from '../paths';
+import { bridgePaths, findCheckoutRoot, findProjectRoot, isInside } from '../paths';
 import { SqliteBridgeStore } from '../store/sqlite';
 import { agentRecord, at, tempDir } from './helpers';
 
@@ -129,6 +129,20 @@ describe('findProjectRoot', () => {
     expect(findProjectRoot(join(worktree, 'src'))).toBe(main);
   });
 
+  it('knows the checkout a folder is in apart from the project: the worktree itself', () => {
+    const main = join(dir, 'repo');
+    const worktree = join(dir, 'trees', 'feature');
+    mkdirSync(join(main, '.git', 'worktrees', 'feature'), { recursive: true });
+    mkdirSync(join(worktree, 'src'), { recursive: true });
+    writeFileSync(
+      join(worktree, '.git'),
+      `gitdir: ${join(main, '.git', 'worktrees', 'feature')}\n`
+    );
+
+    expect(findCheckoutRoot(join(worktree, 'src'))).toBe(worktree);
+    expect(findCheckoutRoot(main)).toBe(main);
+  });
+
   it('does not let a folder join a project that does not name it as its worktree', () => {
     const main = join(dir, 'repo');
     const stranger = join(dir, 'stranger');
@@ -172,6 +186,17 @@ describe('findProjectRoot', () => {
     const root = findProjectRoot(plain);
 
     expect([plain, findProjectRoot(dir)]).toContain(root);
+  });
+});
+
+describe('folders', () => {
+  it('tells what lies inside a folder, a name that only starts with two dots included', () => {
+    expect(isInside('/work/app', '/work/app')).toBe(true);
+    expect(isInside('/work/app', '/work/app/packages/a')).toBe(true);
+    expect(isInside('/work/app', '/work/app/..cache/x')).toBe(true);
+    expect(isInside('/work/app', '/work/app-wt')).toBe(false);
+    expect(isInside('/work/app', '/work')).toBe(false);
+    expect(isInside('/work/app', '/etc')).toBe(false);
   });
 });
 
@@ -313,16 +338,20 @@ describe('address book', () => {
     });
   });
 
-  it('takes a session name that is safe to pass on, and no other', () => {
+  it('takes any name a session may have, except one that would read as an option', () => {
     const spawning = { ...context, canSpawn: () => true };
     const invalid = expect.objectContaining({ code: 'invalid_input' });
+    addCodex('codex@demo', 't1', { sessionName: 'fix: login (#12)' });
 
+    expect(resolveAddress(store, 'codex:fix: login (#12)', spawning)).toMatchObject({
+      kind: 'agent',
+      agent: { name: 'codex@demo' },
+    });
     expect(resolveAddress(store, 'codex:Rate limiter 2', spawning)).toMatchObject({
       sessionName: 'Rate limiter 2',
     });
     expect(() => resolveAddress(store, 'codex:--dangerous-flag', spawning)).toThrow(invalid);
-    expect(() => resolveAddress(store, 'codex:a|b', spawning)).toThrow(invalid);
-    expect(() => resolveAddress(store, 'codex:a\nb', spawning)).toThrow(invalid);
+    expect(() => resolveAddress(store, 'codex:-x', spawning)).toThrow(/does not start with "-"/);
   });
 
   it('refuses an empty address and one with nothing after the colon', () => {

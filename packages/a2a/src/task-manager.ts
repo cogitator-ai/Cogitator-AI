@@ -182,7 +182,7 @@ export class TaskManager extends EventEmitter {
   private store: TaskStore;
   private activeTasks = new Map<string, AbortController>();
   private continuing = new Set<string>();
-  /** The last `advanceTask` of each task, so the moves of one task run one after another */
+  /** The last change of state asked for each task, so the changes of one task run one after another */
   private advancing = new Map<string, Promise<unknown>>();
 
   constructor(config?: TaskManagerConfig) {
@@ -360,7 +360,11 @@ export class TaskManager extends EventEmitter {
     return this.setStatus(taskId, status);
   }
 
-  async cancelTask(taskId: string): Promise<A2ATask> {
+  cancelTask(taskId: string): Promise<A2ATask> {
+    return this.exclusive(taskId, () => this.cancel(taskId));
+  }
+
+  private async cancel(taskId: string): Promise<A2ATask> {
     const task = await this.store.get(taskId);
     if (!task) throw new A2AError(errors.taskNotFound(taskId));
     if (isTerminalState(task.status.state)) {
@@ -384,7 +388,11 @@ export class TaskManager extends EventEmitter {
    * it working again. A task in a terminal state can't be restarted: the client sends a new
    * message in the same context instead.
    */
-  async continueTask(taskId: string, message: A2AMessage): Promise<A2ATask> {
+  continueTask(taskId: string, message: A2AMessage): Promise<A2ATask> {
+    return this.exclusive(taskId, () => this.resume(taskId, message));
+  }
+
+  private async resume(taskId: string, message: A2AMessage): Promise<A2ATask> {
     if (this.continuing.has(taskId) || this.activeTasks.has(taskId)) {
       throw new A2AError(errors.taskNotContinuable(taskId, 'working'));
     }
@@ -427,17 +435,25 @@ export class TaskManager extends EventEmitter {
    * finished or that a run of this manager executes or waits on
    */
   advanceTask(taskId: string, options: AdvanceTaskOptions): Promise<A2ATask> {
+    return this.exclusive(taskId, () => this.advance(taskId, options));
+  }
+
+  /**
+   * Runs a change of a task's state after the ones already asked for that task, so a change
+   * never reads a state another one is about to overwrite.
+   */
+  private exclusive<T>(taskId: string, change: () => Promise<T>): Promise<T> {
     const previous = this.advancing.get(taskId) ?? Promise.resolve();
-    const move = previous.then(
-      () => this.advance(taskId, options),
-      () => this.advance(taskId, options)
+    const run = previous.then(change, change);
+    const settled = run.then(
+      () => undefined,
+      () => undefined
     );
-    const settled = move.catch(() => undefined);
     this.advancing.set(taskId, settled);
     void settled.then(() => {
       if (this.advancing.get(taskId) === settled) this.advancing.delete(taskId);
     });
-    return move;
+    return run;
   }
 
   private async advance(taskId: string, options: AdvanceTaskOptions): Promise<A2ATask> {

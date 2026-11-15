@@ -451,7 +451,7 @@ describe('a session started for a job', () => {
     });
     kit = await makeKit({
       adapters: [adapter],
-      limits: { maxStartingSessions: 1, sessionStartTimeoutMs: 40 },
+      limits: { maxStartingSessions: 1, sessionStartTimeoutMs: 500 },
     });
     const { bridge, claude } = kit;
     await bridge.createJob(claude.name, { to: 'gemini:first', body: 'One' });

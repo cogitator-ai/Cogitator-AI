@@ -39,7 +39,7 @@ import {
   repeats,
   titleOf,
 } from './letters.js';
-import { findProjectRoot, isInside } from './paths.js';
+import { findCheckoutRoot, findProjectRoot, isInside } from './paths.js';
 import { allocateAgentName, resolveAddress } from './registry.js';
 import type {
   AgentFilter,
@@ -135,6 +135,16 @@ const REMINDER_QUOTE_LENGTH = 500;
  * an answer that does not fit would be lost after the call already changed what it returned
  */
 const MAX_ANSWER_CHARS = 2_000_000;
+
+/** Why a job that passed its deadline failed, with the time it really had. */
+function ranOutOfTime(
+  job: Pick<BridgeJob, 'createdAt' | 'deadlineAt' | 'budget' | 'parent'>
+): string {
+  const had = Date.parse(job.deadlineAt) - Date.parse(job.createdAt);
+  return had < job.budget.durationMs && job.parent !== undefined
+    ? `it ran longer than the ${formatDuration(had)} that job #${job.parent}, which it is part of, had left`
+    : `it ran longer than its ${formatDuration(job.budget.durationMs)} budget`;
+}
 
 /** As many of `items`, in order, as fit `MAX_ANSWER_CHARS` by `sizeOf`, the first one always. */
 function fitting<T>(items: readonly T[], sizeOf: (item: T) => number): T[] {
@@ -361,8 +371,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
   async createJob(caller: string, input: CreateJobInput): Promise<CreateJobResult> {
     const request = parse(CreateJobInputSchema, input, 'Cannot create the job');
     this.checkBody(request.body);
-    await this.heardFrom(caller);
-    const outcome = await this.mutate(async (tx): Promise<CreateJobResult | Refusal> => {
+    const outcome = await this.asCaller(caller, async (tx): Promise<CreateJobResult | Refusal> => {
       const from = this.requireCaller(caller);
 
       if (request.letterId) {
@@ -427,16 +436,16 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
           ? resolvePath(request.cwd)
           : resolvePath(from.cwd, request.cwd)
         : from.cwd;
-      if (!isInside(from.project, cwd)) {
+      if (!isInside(from.project, cwd) && !isInside(findCheckoutRoot(from.cwd), cwd)) {
         throw new BridgeError(
           'invalid_input',
-          `A job is done inside the project it is handed over in (${from.project}), and ${cwd} is outside it`,
+          `A job is done inside the project it is handed over in (${from.project}) or the checkout you work in, and ${cwd} is outside both`,
           { cwd, project: from.project }
         );
       }
 
       const now = this.now();
-      const refusal = this.handOverRefusal(from, resolution, request.body, now);
+      const refusal = this.handOverRefusal(from, resolution, request.body, cwd, now);
       if (refusal) {
         this.journal(tx, {
           type: 'letter.rejected',
@@ -532,8 +541,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
   async send(caller: string, input: SendLetterInput): Promise<SendLetterResult> {
     const request = parse(SendLetterInputSchema, input, 'Cannot send the letter');
     this.checkBody(request.body);
-    await this.heardFrom(caller);
-    const outcome = await this.mutate(async (tx): Promise<SendLetterResult | Refusal> => {
+    const outcome = await this.asCaller(caller, async (tx): Promise<SendLetterResult | Refusal> => {
       const from = this.requireCaller(caller);
 
       if (request.id) {
@@ -611,7 +619,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
         const reason =
           exhausted === 'letters'
             ? `the job used all ${job.budget.letters} letters of its budget`
-            : `the job ran longer than its ${formatDuration(job.budget.durationMs)} budget`;
+            : ranOutOfTime(job);
         await this.failJob(tx, job.number, reason);
         return new Refusal(
           new BridgeError(
@@ -656,6 +664,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
         if (state === 'failed')
           await this.patchRecord(job.taskId, { reason: `reported as failed by ${from.name}` });
         this.closeLetters(tx, job.number, letter.id);
+        await this.cancelChildren(tx, job);
       } else if (isAssignee && NEEDS_ANSWER.includes(request.kind)) {
         await this.transition(
           tx,
@@ -685,19 +694,30 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
    * marks them read, and taking a job's first letter starts the job. One call returns `limit`
    * letters at most (20 by default) and no more text than fits one answer: only the letters
    * returned are marked, the rest wait for the next call. A session that may have missed an
-   * answer asks again with `unhandled`.
+   * answer asks again with `unhandled`, which adds the newest of the letters it took before and
+   * has not answered or put away. `afterSeq` looks further than one call returns.
    */
   async inbox(caller: string, input: InboxInput = {}): Promise<RenderedLetter[]> {
     const request = parse(InboxInputSchema, input, 'Cannot read the inbox');
-    await this.heardFrom(caller);
-    return this.mutate(async (tx) => {
+    return this.asCaller(caller, async (tx) => {
       const agent = this.requireCaller(caller);
-      const waiting = this.store.listLetters({
+      const limit = request.limit ?? DEFAULT_INBOX_LIMIT;
+      const scope = {
         to: agent.name,
-        states: request.unhandled ? ['queued', 'delivered', 'read'] : UNREAD_STATES,
         ...(request.job !== undefined && { job: request.job }),
-        limit: request.limit ?? DEFAULT_INBOX_LIMIT,
-      });
+        ...(request.afterSeq !== undefined && { afterSeq: request.afterSeq }),
+      };
+      const unread = this.store.listLetters({ ...scope, states: UNREAD_STATES, limit });
+      const taken =
+        request.unhandled && unread.length < limit
+          ? this.store.listLetters({
+              ...scope,
+              states: ['read'],
+              limit: limit - unread.length,
+              newestFirst: request.afterSeq === undefined,
+            })
+          : [];
+      const waiting = [...taken, ...unread].sort((a, b) => a.seq - b.seq);
       const letters = fitting(waiting, (letter) => 2 * letter.body.length);
       const rendered: RenderedLetter[] = [];
       for (const letter of letters) {
@@ -721,8 +741,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
    * @throws BridgeError `unknown_letter` for a letter that is not addressed to the caller
    */
   async acknowledge(caller: string, letterId: string): Promise<Letter> {
-    await this.heardFrom(caller);
-    return this.mutate(async (tx) => {
+    return this.asCaller(caller, async (tx) => {
       const agent = this.requireCaller(caller);
       const letter = this.store.getLetter(letterId);
       if (letter?.to !== agent.name) {
@@ -749,8 +768,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
    * @throws BridgeError `not_a_party`, `job_finished`
    */
   async cancel(caller: string, number: number, reason?: string): Promise<BridgeJob> {
-    await this.heardFrom(caller);
-    return this.mutate(async (tx) => {
+    return this.asCaller(caller, async (tx) => {
       const agent = this.requireCaller(caller);
       const { job } = this.requireJob(number);
       if (agent.name !== job.from) {
@@ -883,15 +901,14 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       const failed: number[] = [];
       const reminded: string[] = [];
 
-      for (const task of this.store.jobTasks({ states: ACTIVE_JOB_STATES, deadlineBy: now })) {
-        const job = jobOf(task);
-        if (!job) continue;
-        await this.failJob(
-          tx,
-          job.number,
-          `it ran longer than its ${formatDuration(job.budget.durationMs)} budget`
-        );
-        failed.push(job.number);
+      const overdue = this.store
+        .jobTasks({ states: ACTIVE_JOB_STATES, deadlineBy: now })
+        .flatMap((task) => jobOf(task) ?? [])
+        .sort((a, b) => a.number - b.number);
+      for (const late of overdue) {
+        if (isFinishedJobState(this.requireJob(late.number).job.state)) continue;
+        await this.failJob(tx, late.number, ranOutOfTime(late));
+        failed.push(late.number);
       }
 
       for (const letter of this.store.listLetters({ replyDueBy: now })) {
@@ -1034,23 +1051,36 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
   }
 
   private mutate<T>(work: (tx: Transaction) => Promise<T>): Promise<T> {
+    return this.enqueue(() => this.transact(work));
+  }
+
+  /**
+   * A call made as an agent, as one entry of the queue: first the sign of life is stored, on its
+   * own, so a call the bridge then refuses still counts, then the call itself.
+   */
+  private asCaller<T>(caller: string, work: (tx: Transaction) => Promise<T>): Promise<T> {
     return this.enqueue(async () => {
-      const tx: Transaction = { entries: [], wake: new Set(), spawns: [] };
-      const result = await this.store.transaction(() => {
-        this.assertWritable?.();
-        return work(tx);
-      });
-      for (const entry of tx.entries) {
-        try {
-          this.emit('journal', entry);
-        } catch (error) {
-          this.onError(asError(error));
-        }
-      }
-      for (const spawn of tx.spawns) this.startSession(spawn.agent, spawn.job, spawn.letter);
-      for (const agent of tx.wake) this.wake(agent);
-      return result;
+      await this.transact(async (tx) => this.heardFrom(tx, caller));
+      return this.transact(work);
     });
+  }
+
+  private async transact<T>(work: (tx: Transaction) => Promise<T>): Promise<T> {
+    const tx: Transaction = { entries: [], wake: new Set(), spawns: [] };
+    const result = await this.store.transaction(() => {
+      this.assertWritable?.();
+      return work(tx);
+    });
+    for (const entry of tx.entries) {
+      try {
+        this.emit('journal', entry);
+      } catch (error) {
+        this.onError(asError(error));
+      }
+    }
+    for (const spawn of tx.spawns) this.startSession(spawn.agent, spawn.job, spawn.letter);
+    for (const agent of tx.wake) this.wake(agent);
+    return result;
   }
 
   private journal(tx: Transaction, entry: Omit<JournalEntry, 'seq' | 'at'>): void {
@@ -1059,22 +1089,19 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
 
   /**
    * Notes that a session called: the time, and that a session the bridge took for gone is
-   * there again. It is stored on its own, before the call is handled, so a call the bridge then
-   * refuses still counts as a sign of life.
+   * there again.
    */
-  private heardFrom(name: string): Promise<void> {
-    return this.mutate(async (tx) => {
-      const known = this.store.getAgent(name);
-      if (!known || known.status === 'starting' || known.sessionId === '') return;
-      this.store.putAgent({ ...known, status: 'active', lastSeenAt: this.iso() });
-      if (known.status !== 'gone') return;
-      this.journal(tx, {
-        type: 'agent.registered',
-        agent: name,
-        data: { harness: known.harness, returned: true },
-      });
-      tx.wake.add(name);
+  private heardFrom(tx: Transaction, name: string): void {
+    const known = this.store.getAgent(name);
+    if (!known || known.status === 'starting' || known.sessionId === '') return;
+    this.store.putAgent({ ...known, status: 'active', lastSeenAt: this.iso() });
+    if (known.status !== 'gone') return;
+    this.journal(tx, {
+      type: 'agent.registered',
+      agent: name,
+      data: { harness: known.harness, returned: true },
     });
+    tx.wake.add(name);
   }
 
   private requireCaller(name: string): AgentRecord {
@@ -1198,25 +1225,28 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
     from: AgentRecord,
     resolution: ReturnType<typeof resolveAddress>,
     body: string,
+    cwd: string,
     now: number
   ): BridgeError | undefined {
     const open = this.store
       .jobTasks({ from: from.name, states: ACTIVE_JOB_STATES })
       .flatMap((task) => jobOf(task) ?? []);
-    if (resolution.kind === 'agent') {
-      const wanted = normalizeBody(body);
-      const same = open.find((job) => {
-        if (job.to !== resolution.agent.name) return false;
-        const first = this.store.listLetters({ job: job.number, kinds: ['task'], limit: 1 })[0];
-        return first !== undefined && normalizeBody(first.body) === wanted;
-      });
-      if (same) {
-        return new BridgeError(
-          'loop_detected',
-          `You already handed this job to ${same.to} as job #${same.number}, and it is still ${same.state}. Wait for its report, or cancel it first`,
-          { job: same.number }
-        );
-      }
+    const wanted = normalizeBody(body);
+    const sameAgent = (job: BridgeJob): boolean =>
+      resolution.kind === 'agent'
+        ? job.to === resolution.agent.name
+        : this.store.getAgent(job.to)?.harness === resolution.harness;
+    const same = open.find((job) => {
+      if (job.cwd !== cwd || !sameAgent(job)) return false;
+      const first = this.store.listLetters({ job: job.number, kinds: ['task'], limit: 1 })[0];
+      return first !== undefined && normalizeBody(first.body) === wanted;
+    });
+    if (same) {
+      return new BridgeError(
+        'loop_detected',
+        `You already handed this job to ${same.to} as job #${same.number}, and it is still ${same.state}. Wait for its report, or cancel it first`,
+        { job: same.number }
+      );
     }
     if (open.length >= this.limits.maxOpenJobs) {
       return new BridgeError(

@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { BridgeError } from '../errors';
 import { BRIDGE_SENDER, type CallerIdentity, type JournalEntry } from '../types';
 import { FakeAdapter, makeKit, MINUTE, type Kit } from './bridge-kit';
+import { tempDir } from './helpers';
 
 let kit: Kit;
 
@@ -90,6 +93,51 @@ describe('register', () => {
     await expect(
       kit.bridge.register({ ...identity, extra: true } as unknown as CallerIdentity)
     ).rejects.toThrow(code('invalid_input'));
+  });
+
+  it('lets a session in a worktree next to the main checkout hand a job over', async () => {
+    const { dir, remove } = tempDir();
+    try {
+      const main = join(dir, 'app');
+      const worktree = join(dir, 'app-wt', 'feature');
+      mkdirSync(join(main, '.git', 'worktrees', 'feature'), { recursive: true });
+      mkdirSync(join(worktree, 'packages', 'a'), { recursive: true });
+      const gitDir = join(main, '.git', 'worktrees', 'feature');
+      writeFileSync(join(worktree, '.git'), `gitdir: ${gitDir}\n`);
+      writeFileSync(join(gitDir, 'gitdir'), `${join(worktree, '.git')}\n`);
+      kit = await makeKit();
+      const { bridge } = kit;
+      const inTree = await bridge.register({ harness: 'gemini', sessionId: 'g1', cwd: worktree });
+      await bridge.register({ harness: 'qwen', sessionId: 'q1', cwd: main });
+      expect(inTree.project).toBe(main);
+
+      const here = await bridge.createJob(inTree.name, { to: 'qwen', body: 'From the worktree' });
+      const sub = await bridge.createJob(inTree.name, {
+        to: 'qwen',
+        body: 'Sub',
+        cwd: 'packages/a',
+      });
+      const inMain = await bridge.createJob(inTree.name, { to: 'qwen', body: 'Main', cwd: main });
+
+      expect(here.job.cwd).toBe(worktree);
+      expect(sub.job.cwd).toBe(join(worktree, 'packages', 'a'));
+      expect(inMain.job.cwd).toBe(main);
+      await expect(
+        bridge.createJob(inTree.name, { to: 'qwen', body: 'Out', cwd: dir })
+      ).rejects.toThrow(/outside both/);
+    } finally {
+      remove();
+    }
+  });
+
+  it('lists agents by harness whatever the case or the short word', async () => {
+    kit = await makeKit();
+    const names = async (harness: string) =>
+      (await kit.bridge.agents({ harness })).map((agent) => agent.name);
+
+    expect(await names('Codex')).toEqual(['codex@demo']);
+    expect(await names('claude')).toEqual(['claude@demo']);
+    expect(await kit.bridge.agents({ seenBefore: 0 })).toEqual([]);
   });
 
   it('refuses an identity without a session', async () => {
@@ -449,7 +497,7 @@ describe('a job from hand-over to report', () => {
     expect(absolute.job.cwd).toBe('/work/demo/docs');
     await expect(
       bridge.createJob(claude.name, { to: 'codex', body: 'c', cwd: '/elsewhere' })
-    ).rejects.toThrow(/outside it/);
+    ).rejects.toThrow(/outside both/);
     await expect(
       bridge.createJob(claude.name, { to: 'codex', body: 'd', cwd: '../../etc' })
     ).rejects.toThrow(code('invalid_input'));
@@ -821,6 +869,23 @@ describe('limits', () => {
     ).toBe(2);
   });
 
+  it('take the same words for another job when the folder is another', async () => {
+    kit = await makeKit();
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Run the tests', cwd: 'packages/a' });
+
+    const other = await bridge.createJob(claude.name, {
+      to: 'codex',
+      body: 'Run the tests',
+      cwd: 'packages/b',
+    });
+
+    expect(other.job.number).toBe(2);
+    await expect(
+      bridge.createJob(claude.name, { to: 'codex', body: 'Run the tests', cwd: 'packages/b' })
+    ).rejects.toThrow(code('loop_detected'));
+  });
+
   it('cap how many jobs an agent has out and how fast it hands them over', async () => {
     kit = await makeKit({ limits: { maxOpenJobs: 2, jobsPerHour: 3 } });
     const { bridge, claude, codex, clock } = kit;
@@ -1060,7 +1125,7 @@ describe('cancel', () => {
     expect(toGemini.some((body) => body.includes('Job #3 was canceled'))).toBe(true);
   });
 
-  it('ends the jobs under a job that failed as well', async () => {
+  it('ends the jobs under a job that failed as well, and says the time each really had', async () => {
     kit = await makeKit();
     const { bridge, claude, codex, clock } = kit;
     await bridge.register({
@@ -1074,15 +1139,67 @@ describe('cancel', () => {
       body: 'Parent',
       budget: { durationMs: 10 * MINUTE },
     });
+    clock.advance(4 * MINUTE);
     const child = await bridge.createJob(codex.name, { to: 'gemini', body: 'Child' });
+    expect(Date.parse(child.job.deadlineAt)).toBe(clock.now() + 6 * MINUTE);
 
-    expect(Date.parse(child.job.deadlineAt)).toBe(clock.now() + 10 * MINUTE);
-    clock.advance(10 * MINUTE);
-    await bridge.sweep();
+    clock.advance(6 * MINUTE);
+    expect(await bridge.sweep()).toEqual({ failed: [1], reminded: [] });
 
-    expect((await bridge.job(1)).state).toBe('failed');
-    expect((await bridge.job(2)).state).not.toBe('working');
-    expect(['canceled', 'failed']).toContain((await bridge.job(2)).state);
+    expect(await bridge.job(1)).toMatchObject({
+      state: 'failed',
+      reason: 'it ran longer than its 10 min budget',
+    });
+    expect(await bridge.job(2)).toMatchObject({
+      state: 'canceled',
+      reason: 'job #1, which it was part of, is over',
+    });
+  });
+
+  it('says a job under another ran out of the time its parent had left', async () => {
+    kit = await makeKit();
+    const { bridge, claude, codex, clock } = kit;
+    await bridge.register({
+      harness: 'gemini',
+      sessionId: 'g1',
+      cwd: '/work/demo',
+      project: '/work/demo',
+    });
+    await bridge.createJob(claude.name, {
+      to: 'codex',
+      body: 'Parent',
+      budget: { durationMs: 10 * MINUTE },
+    });
+    clock.advance(4 * MINUTE);
+    await bridge.createJob(codex.name, { to: 'gemini', body: 'Child' });
+    clock.advance(6 * MINUTE);
+
+    await expect(
+      bridge.send('gemini@demo', { job: 2, kind: 'report', body: 'Done' })
+    ).rejects.toThrow(/longer than the 6 min that job #1, which it is part of, had left/);
+  });
+
+  it('ends the jobs under a job that was reported on, done or failed', async () => {
+    kit = await makeKit();
+    const { bridge, claude, codex } = kit;
+    await bridge.register({
+      harness: 'gemini',
+      sessionId: 'g1',
+      cwd: '/work/demo',
+      project: '/work/demo',
+    });
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Parent' });
+    await bridge.createJob(codex.name, { to: 'gemini', body: 'Child' });
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Other parent' });
+    await bridge.createJob(codex.name, { to: 'gemini', body: 'Other child', parent: 3 });
+
+    await bridge.send(codex.name, { job: 1, kind: 'report', body: 'Done' });
+    await bridge.send(codex.name, { job: 3, kind: 'report', body: 'No luck', outcome: 'failed' });
+
+    expect((await bridge.jobs({ parent: 1 })).map((job) => job.state)).toEqual(['canceled']);
+    expect((await bridge.jobs({ parent: 3 })).map((job) => job.state)).toEqual(['canceled']);
+    const told = (await bridge.inbox('gemini@demo', { limit: 100 })).map((letter) => letter.body);
+    expect(told.filter((body) => body.includes('Stop working on it'))).toHaveLength(2);
   });
 });
 
@@ -1156,6 +1273,36 @@ describe('inbox', () => {
     expect(tail.length).toBeLessThan(all.length);
     expect(head[0].seq).toBe(1);
     expect(head.length).toBeLessThan(all.length);
+  });
+
+  it('shows the newest of what was taken before, and looks further on request', async () => {
+    kit = await makeKit();
+    const { bridge, claude, codex } = kit;
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Carrier', budget: { letters: 100 } });
+    for (let index = 1; index <= 30; index += 1) {
+      await bridge.send(claude.name, { job: 1, kind: 'note', body: `Note ${index}` });
+    }
+    while ((await bridge.inbox(codex.name)).length > 0);
+    await bridge.send(claude.name, { job: 1, kind: 'note', body: 'The missed answer' });
+
+    const again = await bridge.inbox(codex.name, { unhandled: true });
+    expect(again).toHaveLength(20);
+    expect(again.at(-1)?.body).toBe('The missed answer');
+    expect(again[0].body).toBe('Note 12');
+    expect(again.map((letter) => letter.seq)).toEqual(
+      [...again].sort((a, b) => a.seq - b.seq).map((letter) => letter.seq)
+    );
+
+    const all: string[] = [];
+    let afterSeq = 0;
+    for (;;) {
+      const page = await bridge.inbox(codex.name, { unhandled: true, afterSeq, peek: true });
+      if (page.length === 0) break;
+      all.push(...page.map((letter) => letter.body));
+      afterSeq = page.at(-1)!.seq;
+    }
+    expect(all).toHaveLength(32);
+    expect(all[0]).toBe('Carrier');
   });
 
   it('is done with a question nobody answered once its job is over', async () => {
