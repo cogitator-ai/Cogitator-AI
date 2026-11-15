@@ -146,13 +146,21 @@ function ranOutOfTime(
     : `it ran longer than its ${formatDuration(job.budget.durationMs)} budget`;
 }
 
-/** As many of `items`, in order, as fit `MAX_ANSWER_CHARS` by `sizeOf`, the first one always. */
-function fitting<T>(items: readonly T[], sizeOf: (item: T) => number): T[] {
+/**
+ * As many of `items`, in order, as fit `budget` characters by `sizeOf`. The first one is taken
+ * even when it alone is over the budget, unless `orNone` says an empty answer is fine.
+ */
+function fitting<T>(
+  items: readonly T[],
+  sizeOf: (item: T) => number,
+  budget: number = MAX_ANSWER_CHARS,
+  orNone = false
+): T[] {
   const taken: T[] = [];
   let size = 0;
   for (const item of items) {
     size += sizeOf(item);
-    if (taken.length > 0 && size > MAX_ANSWER_CHARS) break;
+    if ((taken.length > 0 || orNone) && size > budget) break;
     taken.push(item);
   }
   return taken;
@@ -695,7 +703,8 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
    * letters at most (20 by default) and no more text than fits one answer: only the letters
    * returned are marked, the rest wait for the next call. A session that may have missed an
    * answer asks again with `unhandled`, which adds the newest of the letters it took before and
-   * has not answered or put away. `afterSeq` looks further than one call returns.
+   * has not answered or put away, in the room the new letters leave: what was not seen yet
+   * always comes first. `afterSeq` looks further than one call returns.
    */
   async inbox(caller: string, input: InboxInput = {}): Promise<RenderedLetter[]> {
     const request = parse(InboxInputSchema, input, 'Cannot read the inbox');
@@ -717,8 +726,12 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
               newestFirst: request.afterSeq === undefined,
             })
           : [];
-      const waiting = [...taken, ...unread].sort((a, b) => a.seq - b.seq);
-      const letters = fitting(waiting, (letter) => 2 * letter.body.length);
+      const size = (letter: Letter) => 2 * letter.body.length;
+      const fresh = fitting(unread, size);
+      const left = MAX_ANSWER_CHARS - fresh.reduce((sum, letter) => sum + size(letter), 0);
+      const again =
+        fresh.length === unread.length ? fitting(taken, size, left, fresh.length > 0) : [];
+      const letters = [...again, ...fresh].sort((a, b) => a.seq - b.seq);
       const rendered: RenderedLetter[] = [];
       for (const letter of letters) {
         const { job } = this.requireJob(letter.job);
