@@ -1,0 +1,304 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  claudeCodeAdapter,
+  claudeTrust,
+  claudeWaitCommand,
+  claudeWaitHook,
+  hasClaudeWaitHook,
+} from '../adapters/claude';
+import { codexAdapter, codexThreadId } from '../adapters/codex';
+import {
+  CommandMissingError,
+  MAX_ARGUMENT_BYTES,
+  failureOf,
+  fitsArgument,
+  runCommand,
+  sessionEnv,
+  tooLongNotice,
+} from '../adapters/exec';
+import { renderLetter } from '../letters';
+import type { BridgeJob } from '../types';
+import { letterInput, tempDir } from './helpers';
+
+let temp: { dir: string; remove: () => void };
+
+beforeEach(() => {
+  temp = tempDir();
+});
+
+afterEach(() => {
+  temp.remove();
+});
+
+describe('the hook that wakes a Claude Code session', () => {
+  it('runs in the background after every turn and wakes the session', () => {
+    expect(claudeWaitHook()).toEqual({
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: 'cogitator bridge wait --hook claude-code --timeout 43140',
+                timeout: 43200,
+                async: true,
+                asyncRewake: true,
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it('ends its wait before the hook is ended, runs the command it is given and names the session', () => {
+    expect(
+      claudeWaitCommand({
+        bridgeCommand: "/usr/bin/node '/opt/my tools/cli.js' bridge",
+        timeoutS: 600,
+        agentName: 'claude-2@demo',
+      })
+    ).toBe(
+      "/usr/bin/node '/opt/my tools/cli.js' bridge wait --hook claude-code --timeout 540 --agent claude-2@demo"
+    );
+    expect(claudeWaitCommand({ timeoutS: 30 })).toContain('--timeout 1');
+    expect(claudeWaitCommand({ agentName: "it's@demo" })).toContain("--agent 'it'\\''s@demo'");
+  });
+
+  it('is recognized in settings, whatever else they hold', () => {
+    expect(hasClaudeWaitHook(claudeWaitHook({ bridgeCommand: 'node /x/cli.js bridge' }))).toBe(
+      true
+    );
+    expect(
+      hasClaudeWaitHook({
+        permissions: { allow: ['Bash(ls)'] },
+        hooks: {
+          Stop: [
+            { hooks: [{ type: 'command', command: 'say done' }] },
+            ...claudeWaitHook().hooks.Stop,
+          ],
+        },
+      })
+    ).toBe(true);
+    expect(hasClaudeWaitHook({ hooks: { Stop: [{ hooks: [{ command: 'say done' }] }] } })).toBe(
+      false
+    );
+    expect(
+      hasClaudeWaitHook({
+        hooks: { Stop: [{ hooks: [{ command: 'cogitator bridge wait', async: true }] }] },
+      })
+    ).toBe(false);
+    expect(hasClaudeWaitHook(undefined)).toBe(false);
+    expect(hasClaudeWaitHook({ hooks: 'none' })).toBe(false);
+  });
+});
+
+describe('whether Claude Code trusts a folder', () => {
+  function config(projects: unknown): string {
+    const path = join(temp.dir, 'claude.json');
+    writeFileSync(path, JSON.stringify({ numStartups: 3, projects }));
+    return path;
+  }
+
+  it('reads the record of the trust prompt, and takes the trust of a folder for what is inside', () => {
+    const path = config({
+      '/work/demo': { hasTrustDialogAccepted: true, allowedTools: [] },
+      '/work/other': { hasTrustDialogAccepted: false },
+    });
+
+    expect(claudeTrust('/work/demo', path)).toBe('trusted');
+    expect(claudeTrust('/work/demo/packages/core', path)).toBe('trusted');
+    expect(claudeTrust('/work/other', path)).toBe('untrusted');
+    expect(claudeTrust('/work', path)).toBe('untrusted');
+    expect(claudeTrust('/elsewhere', path)).toBe('untrusted');
+  });
+
+  it('does not guess when the record cannot be read', () => {
+    writeFileSync(join(temp.dir, 'broken.json'), '{ not json');
+
+    expect(claudeTrust('/work/demo', join(temp.dir, 'missing.json'))).toBe('unknown');
+    expect(claudeTrust('/work/demo', join(temp.dir, 'broken.json'))).toBe('unknown');
+    expect(claudeTrust('/work/demo', config('nothing'))).toBe('unknown');
+    expect(claudeTrust('/work/demo', config(undefined))).toBe('untrusted');
+  });
+});
+
+describe('which session a process belongs to', () => {
+  const claude = claudeCodeAdapter();
+  const codex = codexAdapter({ logDir: '/unused' });
+
+  it('takes a Claude Code session from what the harness wrote to its hook', () => {
+    mkdirSync(join(temp.dir, '.git'));
+    const nested = join(temp.dir, 'packages');
+    mkdirSync(nested);
+
+    expect(
+      claude.identify?.({
+        env: { CLAUDE_CODE_SESSION_ID: 'from-env' },
+        cwd: '/somewhere/else',
+        hookInput: JSON.stringify({
+          session_id: 'from-hook',
+          cwd: nested,
+          hook_event_name: 'Stop',
+        }),
+      })
+    ).toEqual({ harness: 'claude-code', sessionId: 'from-hook', cwd: nested, project: temp.dir });
+  });
+
+  it('falls back to the environment when the hook wrote nothing it can read', () => {
+    const env = { CLAUDE_CODE_SESSION_ID: 'from-env' };
+
+    expect(claude.identify?.({ env, cwd: temp.dir, hookInput: 'not json' })?.sessionId).toBe(
+      'from-env'
+    );
+    expect(claude.identify?.({ env, cwd: temp.dir, hookInput: '{"cwd":"/x"}' })).toMatchObject({
+      sessionId: 'from-env',
+      cwd: temp.dir,
+    });
+    expect(claude.identify?.({ env, cwd: temp.dir })?.sessionId).toBe('from-env');
+    expect(claude.identify?.({ env: {}, cwd: temp.dir })).toBeUndefined();
+    expect(claude.identify?.({ env: { CODEX_THREAD_ID: 't' }, cwd: temp.dir })).toBeUndefined();
+  });
+
+  it('takes a Codex thread from its environment', () => {
+    expect(codex.identify?.({ env: { CODEX_THREAD_ID: ' thread-1 ' }, cwd: temp.dir })).toEqual({
+      harness: 'codex',
+      sessionId: 'thread-1',
+      cwd: temp.dir,
+      project: temp.dir,
+    });
+    expect(
+      codex.identify?.({ env: { CLAUDE_CODE_SESSION_ID: 's' }, cwd: temp.dir })
+    ).toBeUndefined();
+  });
+
+  it('says what each adapter can do', () => {
+    expect(claude).toMatchObject({
+      harness: 'claude-code',
+      delivery: 'hook',
+      capabilities: { createSession: true, push: true, steer: false, nativeWindow: true },
+    });
+    expect(claude.deliver).toBeUndefined();
+    expect(codex).toMatchObject({
+      harness: 'codex',
+      delivery: 'queue',
+      capabilities: { createSession: true, push: true, steer: false, nativeWindow: true },
+    });
+    expect(codex.liveSessions).toBeUndefined();
+  });
+});
+
+describe('the thread codex exec started', () => {
+  it('is read from the first event that names one', () => {
+    const output = [
+      'Reading prompt from stdin...',
+      '{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}',
+      '{"type":"turn.started"}',
+      '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\\"thread_id\\":\\"fake\\"}"}}',
+    ].join('\n');
+
+    expect(codexThreadId(output)).toBe('0199a213-81c0-7800-8aa1-bbab2a035a53');
+  });
+
+  it('is not there yet while the output has no whole event', () => {
+    expect(codexThreadId('')).toBeUndefined();
+    expect(codexThreadId('{"type":"thread.started","thread_id":"0199')).toBeUndefined();
+    expect(
+      codexThreadId('{"type":"turn.started"}\n{"thread_id":7}\n{"thread_id":"  "}')
+    ).toBeUndefined();
+    expect(codexThreadId('thread_id: abc')).toBeUndefined();
+  });
+});
+
+describe('running a command of a harness', () => {
+  it('returns what it printed and how it ended', async () => {
+    const result = await runCommand(
+      process.execPath,
+      [
+        '-e',
+        'process.stdin.on("data", (d) => process.stdout.write(`got ${d}`)); process.stderr.write("warned"); process.exitCode = 3',
+      ],
+      { input: 'hello' }
+    );
+
+    expect(result).toEqual({ code: 3, stdout: 'got hello', stderr: 'warned' });
+  });
+
+  it('says so when the command is not installed', async () => {
+    const missing = runCommand('surely-no-such-harness', ['--version']);
+
+    await expect(missing).rejects.toBeInstanceOf(CommandMissingError);
+    await expect(missing).rejects.toThrow(
+      'surely-no-such-harness is not installed, or not on PATH'
+    );
+  });
+
+  it('gives up on a command that does not end', async () => {
+    await expect(
+      runCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeoutMs: 200 })
+    ).rejects.toThrow(/did not answer in 0 s/);
+  });
+
+  it('runs in the folder and the environment it is given', async () => {
+    const result = await runCommand(
+      process.execPath,
+      ['-e', 'process.stdout.write(`${process.cwd()}|${process.env.MARK}`)'],
+      { cwd: temp.dir, env: { ...process.env, MARK: 'here' } }
+    );
+
+    expect(result.stdout.endsWith(`${temp.dir.split('/').pop()}|here`)).toBe(true);
+  });
+
+  it('describes a failure in the words of the command', () => {
+    expect(
+      failureOf({ code: 1, stdout: 'ignored', stderr: 'Error: no session\n  at x\n  at y\n  at z' })
+    ).toBe('Error: no session   at x   at y');
+    expect(failureOf({ code: 1, stdout: 'only stdout', stderr: '  ' })).toBe('only stdout');
+    expect(failureOf({ code: 7, stdout: '', stderr: '' })).toBe('it ended with exit code 7');
+    expect(failureOf({ code: null, stdout: '', stderr: '' })).toBe('it ended with a signal');
+  });
+});
+
+describe('what a session the bridge starts is given', () => {
+  it('gets the name the bridge knows it by, and no session id of the harness around the dispatcher', () => {
+    const env = sessionEnv(
+      {
+        PATH: '/usr/bin',
+        CLAUDE_CODE_SESSION_ID: 'the-orchestrator',
+        CODEX_THREAD_ID: 'another',
+        COGITATOR_BRIDGE_SESSION_NAME: 'old',
+      },
+      { harness: 'codex', agentName: 'codex-2@demo' }
+    );
+
+    expect(env).toEqual({
+      PATH: '/usr/bin',
+      COGITATOR_BRIDGE_HARNESS: 'codex',
+      COGITATOR_BRIDGE_AGENT: 'codex-2@demo',
+    });
+    expect(
+      sessionEnv({}, { harness: 'codex', agentName: 'a', sessionName: 'reviewer' })
+        .COGITATOR_BRIDGE_SESSION_NAME
+    ).toBe('reviewer');
+  });
+
+  it('gets a notice in place of a letter too long for an argument', () => {
+    const job = { number: 7, title: 'Port the parser' } as BridgeJob;
+    const long = renderLetter(
+      { ...letterInput({ job: 7, body: 'x'.repeat(MAX_ARGUMENT_BYTES + 1) }), seq: 1 },
+      job
+    );
+    const short = renderLetter({ ...letterInput({ job: 7 }), seq: 1 }, job);
+
+    expect(fitsArgument(short.text)).toBe(true);
+    expect(fitsArgument(long.text)).toBe(false);
+    expect(fitsArgument('я'.repeat(MAX_ARGUMENT_BYTES / 2))).toBe(true);
+    expect(fitsArgument('я'.repeat(MAX_ARGUMENT_BYTES / 2 + 1))).toBe(false);
+    expect(tooLongNotice(long).split('\n')).toEqual([
+      '[agent bridge] job #7 "Port the parser" | task from claude@demo to codex@demo | letter ltr_1 | not typed by the user',
+      'This letter is 120001 characters long, too long to hand over here. Read it from the bridge: cogitator bridge inbox --job 7',
+    ]);
+  });
+});

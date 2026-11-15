@@ -130,5 +130,44 @@ export type {
   SessionRequest,
 } from './adapter.js';
 
+export {
+  CLAUDE_DELIVERY,
+  DEFAULT_HOOK_TIMEOUT_S,
+  claudeCodeAdapter,
+  claudeTrust,
+  claudeWaitCommand,
+  claudeWaitHook,
+  hasClaudeWaitHook,
+} from './adapters/claude.js';
+export type {
+  ClaudeCodeAdapterOptions,
+  ClaudeHookSettings,
+  ClaudeTrust,
+  ClaudeWaitHookOptions,
+} from './adapters/claude.js';
+export { CODEX_ASLEEP_NOTE, CODEX_DELIVERY, codexAdapter } from './adapters/codex.js';
+export type { CodexAdapterOptions, CodexSandbox } from './adapters/codex.js';
+export {
+  HOSTED_DELIVERY,
+  cogitatorSessions,
+  hostedAdapter,
+  providerSessions,
+} from './adapters/hosted.js';
+export type {
+  CogitatorSessionsOptions,
+  HostedAdapterOptions,
+  HostedRun,
+  HostedRuntime,
+  HostedSession,
+  HostedSessionContext,
+  HostedTurn,
+  OpenHostedSession,
+  ProviderPermissionMode,
+  ProviderSessionsOptions,
+  ProviderTurn,
+  TurnProvider,
+} from './adapters/hosted.js';
+export { CommandMissingError } from './adapters/exec.js';
+
 export { mailText, waitForMail } from './waiter.js';
 export type { WaitForMailOptions, WaitForMailResult } from './waiter.js';
