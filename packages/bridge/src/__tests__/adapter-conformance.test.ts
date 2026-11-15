@@ -113,6 +113,45 @@ describe('the adapter contract, kept by hosted sessions', () => {
     });
   });
 
+  it('hands the later letter over as another job when the answer of the session closed the first', async () => {
+    const heard = new Map<string, string[]>();
+    const target: AdapterConformanceTarget = {
+      ...hostedTarget(),
+      create: () =>
+        hostedAdapter({
+          harness: 'echo',
+          open: ({ sessionId }) => {
+            const texts: string[] = [];
+            heard.set(sessionId, texts);
+            return {
+              turn: (text) => {
+                texts.push(text);
+                return { result: Promise.resolve('Got it') };
+              },
+            };
+          },
+        }),
+      received: async (sessionId, needle) => {
+        const deadline = Date.now() + 5_000;
+        while (!heard.get(sessionId)?.some((text) => text.includes(needle))) {
+          if (Date.now() > deadline) throw new Error(`The session never got "${needle}"`);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      },
+    };
+    const delivers = adapterConformanceCases(target).find(
+      (entry) => entry.name === 'delivers-a-letter'
+    );
+
+    await delivers?.run();
+
+    const [texts] = [...heard.values()];
+    expect(texts.map((text) => text.split('\n')[0])).toEqual([
+      expect.stringMatching(/^\[agent bridge\] job #1 .* \| task from /),
+      expect.stringMatching(/^\[agent bridge\] job #2 .* \| task from /),
+    ]);
+  });
+
   it('asks a target whose adapter identifies sessions for a process to identify', async () => {
     const target: AdapterConformanceTarget = {
       ...hostedTarget(),

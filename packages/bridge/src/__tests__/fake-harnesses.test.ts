@@ -1001,6 +1001,19 @@ describe('fake codex', () => {
     expect(existsSync(join(fakes.home, 'codex', 'threads'))).toBe(false);
   });
 
+  it('fails a turn the way FAKE_CODEX_TURN_FAIL says, once the thread has started', async () => {
+    const env = { FAKE_CODEX_TURN_FAIL: 'Error: usage limit reached' };
+
+    const result = await fakes.run('codex', ['exec', '--json', 'say: hi'], { cwd: work, env });
+
+    expect(result).toMatchObject({ code: 1, stderr: 'Error: usage limit reached\n' });
+    const events = parseEvents(result.stdout);
+    expect(events.map((event) => event.type)).toEqual(['thread.started', 'turn.started']);
+    expect(fakes.transcript('codex', events[0].thread_id!)).toEqual([]);
+    const next = await fakes.run('codex', ['exec', '--json', 'say: hi'], { cwd: work });
+    expect(next).toMatchObject({ code: 0, stderr: '' });
+  });
+
   it('queues a message for a thread and warns when no daemon can resume it', async () => {
     const threadId = await fakes.openCodexThread({ cwd: work });
 

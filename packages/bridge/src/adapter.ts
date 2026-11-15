@@ -5,6 +5,7 @@ import type {
   SendLetterInput,
   SendLetterResult,
 } from './inputs.js';
+import type { LetterFilter } from './store/store.js';
 import type {
   AdapterCapabilities,
   AgentRecord,
@@ -97,6 +98,7 @@ export interface BridgeCalls {
   acknowledge(caller: string, letterId: string): Promise<Letter>;
   cancel(caller: string, job: number, reason?: string): Promise<BridgeJob>;
   job(number: number): Promise<BridgeJob>;
+  letters(filter?: LetterFilter): Promise<Letter[]>;
 }
 
 /**

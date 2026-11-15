@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import type { BridgeAdapter, IdentifyContext } from '../adapter.js';
+import { isBridgeError } from '../errors.js';
 import { hostBridge, type BridgeHost } from '../host.js';
 import { aliasOfHarness } from '../registry.js';
-import { HarnessNameSchema, type AgentRecord } from '../types.js';
+import { HarnessNameSchema, type AgentRecord, type Letter } from '../types.js';
 
 /** What a case of the adapter contract works in. */
 export interface AdapterConformanceContext {
@@ -155,6 +156,26 @@ async function staged(
 }
 
 /**
+ * A letter for a session that already has its job: one more thing on that job, or the first
+ * letter of another job when the session's answer has closed the first one meanwhile, as the
+ * answer of a session the bridge speaks for does.
+ */
+async function later(
+  host: BridgeHost,
+  orchestrator: AgentRecord,
+  agent: AgentRecord,
+  job: number
+): Promise<Letter> {
+  const body = 'Conformance: one more thing';
+  try {
+    return (await host.dispatcher.send(orchestrator.name, { job, kind: 'note', body })).letter;
+  } catch (error) {
+    if (!isBridgeError(error) || error.code !== 'job_finished') throw error;
+    return (await host.dispatcher.createJob(orchestrator.name, { to: agent.name, body })).letter;
+  }
+}
+
+/**
  * The contract every adapter keeps, as cases a test runs one by one against the adapter and its
  * harness: it says what it is, starts a session that gets the job's first letter, hands later
  * letters to it, and tells the truth about the sessions it lists, the processes it recognizes
@@ -223,16 +244,13 @@ export function adapterConformanceCases(
         staged(target, async ({ host, orchestrator, start }) => {
           const { agent, job, firstLetter } = await start();
           await target.received(agent.sessionId, firstLetter);
-          const { letter } = await host.dispatcher.send(orchestrator.name, {
-            job,
-            kind: 'note',
-            body: 'Conformance: one more thing',
-          });
+          const letter = await later(host, orchestrator, agent, job);
           await target.received(agent.sessionId, letter.id);
           await until(async () => {
-            const [note] = await host.dispatcher.letters({ job, kinds: ['note'] });
-            return note?.state === 'queued' ? undefined : note;
-          }, 'the note to count as handed over');
+            const sent = await host.dispatcher.letters({ job: letter.job });
+            const current = sent.find((entry) => entry.id === letter.id);
+            return current?.state === 'queued' ? undefined : current;
+          }, 'the later letter to count as handed over');
         }),
     },
     {

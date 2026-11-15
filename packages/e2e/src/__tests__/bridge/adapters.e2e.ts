@@ -276,7 +276,11 @@ describe.skipIf(!posix)('bridge adapters', () => {
   });
 
   it('tells in the journal when a Codex thread got a letter nothing will wake it for', async () => {
-    script('delegate.sh', `${BRIDGE} delegate codex "Write the tests"`);
+    script(
+      'delegate.sh',
+      `printf 'Write the tests\\nrun: sh ./ask.sh\\n' | ${BRIDGE} delegate codex -`
+    );
+    script('ask.sh', `${BRIDGE} send --job 1 --kind question "Which test runner?"`);
     await serve();
     const claude = await fakes.openClaudeWindow({ cwd: project, env: env() });
     await fakes.say(claude, 'run: sh ./delegate.sh');
@@ -286,6 +290,7 @@ describe.skipIf(!posix)('bridge adapters', () => {
       'the thread to start'
     );
     await fakes.waitForTurn('codex', worker.sessionId, () => true);
+    expect((await client.job(1)).state).toBe('input-required');
 
     const claudeAgent = (await client.agents({ harness: 'claude-code' }))[0];
     script('note.sh', `${BRIDGE} send --job 1 --kind note "Use vitest"`);
