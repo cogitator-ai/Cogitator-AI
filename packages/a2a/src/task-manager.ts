@@ -71,6 +71,25 @@ export interface CreateTaskOptions {
   ownerId?: string;
   /** The agent the task belongs to; over A2A 1.0 only that agent's endpoint reaches it */
   agentName?: string;
+  /**
+   * Metadata the task starts with, stored in the same write that creates it. The keys the
+   * manager keeps itself (owner, agent, creation time) win over the same keys here
+   */
+  metadata?: Record<string, unknown>;
+}
+
+/** States {@link TaskManager.advanceTask} moves a task to. */
+export type AdvanceTaskState =
+  'working' | 'input-required' | 'auth-required' | 'completed' | 'failed' | 'rejected';
+
+/** Where {@link TaskManager.advanceTask} moves a task, and what the task says there. */
+export interface AdvanceTaskOptions {
+  state: AdvanceTaskState;
+  /**
+   * What the one carrying the task out says in that state: the question of `input-required`, the
+   * result of `completed`, the reason of `failed`. Text, or the parts of the message
+   */
+  message?: string | Part[];
 }
 
 /** What the task manager emits on `event`: the task changes a stream or a webhook relays. */
@@ -177,7 +196,7 @@ export class TaskManager extends EventEmitter {
     contextId?: string,
     ownerOrOptions?: string | CreateTaskOptions
   ): Promise<A2ATask> {
-    const { ownerId, agentName }: CreateTaskOptions =
+    const { ownerId, agentName, metadata }: CreateTaskOptions =
       typeof ownerOrOptions === 'string' ? { ownerId: ownerOrOptions } : (ownerOrOptions ?? {});
     const id = `task_${randomUUID()}`;
     const resolvedContextId = contextId ?? `ctx_${randomUUID()}`;
@@ -190,6 +209,7 @@ export class TaskManager extends EventEmitter {
       history: [{ ...message, taskId: id, contextId: resolvedContextId }],
       artifacts: [],
       metadata: {
+        ...(metadata && structuredClone(metadata)),
         [TASK_CREATED_AT_KEY]: now,
         ...(ownerId !== undefined && { [TASK_OWNER_KEY]: ownerId }),
         ...(agentName !== undefined && { [TASK_AGENT_KEY]: agentName }),
@@ -389,6 +409,44 @@ export class TaskManager extends EventEmitter {
     } finally {
       this.continuing.delete(taskId);
     }
+  }
+
+  /**
+   * Moves a task that something outside the manager carries out (another process, a person, an
+   * agent of another runtime) to its next state. The message is recorded as the agent's: added to
+   * the history and kept as the status message. A task in a terminal state, or one a run of this
+   * manager is executing, does not move.
+   *
+   * @throws A2AError `taskNotFound` for an unknown task, `taskNotContinuable` for a task that is
+   * finished or that this manager is executing
+   */
+  async advanceTask(taskId: string, options: AdvanceTaskOptions): Promise<A2ATask> {
+    if (this.activeTasks.has(taskId) || this.continuing.has(taskId)) {
+      throw new A2AError(errors.taskNotContinuable(taskId, 'working'));
+    }
+    const task = await this.store.get(taskId);
+    if (!task) throw new A2AError(errors.taskNotFound(taskId));
+    if (isTerminalState(task.status.state)) {
+      throw new A2AError(errors.taskNotContinuable(taskId, task.status.state));
+    }
+
+    const parts =
+      typeof options.message === 'string' ? [textPart(options.message)] : options.message;
+    const message = parts && parts.length > 0 ? agentMessage(task, parts) : undefined;
+    const status: TaskStatus = {
+      state: options.state,
+      ...(message && { message }),
+      timestamp: new Date().toISOString(),
+    };
+
+    await this.store.update(taskId, {
+      status,
+      ...(message && { history: [...(task.history ?? []), message] }),
+    });
+    const updated = await this.store.get(taskId);
+    if (!updated) throw new A2AError(errors.taskNotFound(taskId));
+    this.emitStatusUpdate(updated);
+    return updated;
   }
 
   abortExecution(taskId: string): void {

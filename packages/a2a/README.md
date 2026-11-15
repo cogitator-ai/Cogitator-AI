@@ -393,6 +393,31 @@ A request that fails before the stream starts (bad params, unknown task, missing
 
 The client `timeout` is an idle timeout between events (long runs are fine as long as events keep flowing), pass `{ signal }` as the third argument to cancel. When the client disconnects, the adapters abort the agent run.
 
+## Tasks Carried Out Elsewhere
+
+A task does not have to be run by a Cogitator agent. `TaskManager.advanceTask()` moves a task that something outside the manager carries out (another process, a person, an agent of another runtime) through the same lifecycle, with the same events and the same store:
+
+```typescript
+import { TaskManager, textPart, toMessage } from '@cogitator-ai/a2a';
+
+const tasks = new TaskManager({ taskStore });
+const fromClient = (text: string) => toMessage({ role: 'user', parts: [textPart(text)] });
+
+const task = await tasks.createTask(fromClient('Write the tests'), undefined, {
+  metadata: { 'acme:ticket': 'OPS-12' },
+});
+
+await tasks.advanceTask(task.id, { state: 'working' });
+await tasks.advanceTask(task.id, {
+  state: 'input-required',
+  message: 'Mock Redis or run a real one?',
+});
+await tasks.continueTask(task.id, fromClient('Mock it'));
+await tasks.advanceTask(task.id, { state: 'completed', message: 'Done: 14 tests pass' });
+```
+
+The message is recorded as the agent's: added to the history and kept as the status message. A task in a terminal state, or one a run of the manager is executing, does not move (`taskNotContinuable`). `createTask` takes `metadata` to store with the task in the same write, the manager's own keys win over the same keys in it.
+
 ## RedisTaskStore
 
 For production deployments, use `RedisTaskStore` instead of the default in-memory store:
