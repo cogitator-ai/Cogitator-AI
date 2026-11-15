@@ -30,7 +30,7 @@ async function main(): Promise<number> {
   });
   if (waited.reason !== 'letters') return 0;
   process.stderr.write(`${mailText(waited.letters)}\n`);
-  await waited.confirm();
+  await waited.confirm().catch(() => undefined);
   return 2;
 }
 

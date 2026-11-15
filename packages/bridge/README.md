@@ -37,7 +37,7 @@ The dispatcher of `cogitator bridge serve` reaches both harnesses with the comma
 | It wakes by itself when | the session carries the hook                              | the thread is open in the Codex app, or the local daemon runs |
 | Before it can start     | Claude Code must trust the folder                         | nothing                                                       |
 
-**Claude Code.** Nothing is pushed into a window from outside. After every turn a background hook of the session runs `cogitator bridge wait`, which waits at the dispatcher and, when a letter comes, exits with code 2 and the letter on stderr: that wakes the session with the letter as its next input (`asyncRewake` in Claude Code's hooks). While the hook waits the session is free, you can talk to it. A session the bridge starts carries the hook itself. For the sessions you open yourself, put it into the project's `.claude/settings.local.json`, `cogitator bridge doctor` prints the exact lines:
+**Claude Code.** Nothing is pushed into a window from outside. After every turn a background hook of the session runs `cogitator bridge wait`, which waits at the dispatcher and, when a letter comes, exits with code 2 and the letter on stderr: that wakes the session with the letter as its next input (`asyncRewake` in Claude Code's hooks). Under the letter it adds one line saying how to answer through the bridge. While the hook waits the session is free, you can talk to it. A session the bridge starts carries the hook itself. For the sessions you open yourself, put it into the project's `.claude/settings.local.json`, `cogitator bridge doctor` prints the exact lines:
 
 ```json
 {
@@ -61,7 +61,7 @@ The dispatcher of `cogitator bridge serve` reaches both harnesses with the comma
 
 A dispatcher that keeps its files somewhere else (`--home`, `COGITATOR_BRIDGE_HOME`) puts that folder into the hook, so its sessions call it and not the default one. A session without the hook still gets its letters, when it asks: `cogitator bridge inbox`. The hook waits 12 hours at most, then the session reads its mail at its next turn. Claude Code starts a background session only in a folder it trusts: the bridge checks that first and fails the job with what to do (open the folder in Claude Code once and accept its prompt).
 
-**Codex.** A letter goes into the message queue of the thread. A thread open in the Codex app takes it within seconds. A thread that is open nowhere, such as one the bridge started, wakes only when Codex's local daemon runs (`codex app-server daemon start`). The bridge never starts that daemon for you: without it the letter stays in the queue until the thread is opened, and the journal says so. A thread the bridge starts runs in the `workspace-write` sandbox.
+**Codex.** A letter goes into the message queue of the thread. A thread open in the Codex app takes it within seconds. A thread that is open nowhere, such as one the bridge started, wakes only when Codex's local daemon runs (`codex app-server daemon start`). The bridge never starts that daemon for you: without it the letter stays in the queue until the thread is opened, and the journal says so. A thread the bridge starts runs in the `workspace-write` sandbox, and what it prints goes to a file of its own in `~/.cogitator/bridge/sessions`, which the bridge never removes.
 
 **From inside a session.** Until the bridge has tools of its own, an agent calls it from its shell. The session is known by what its harness put into the environment.
 
@@ -241,11 +241,31 @@ const provider = new AcpAgentProvider({
 const gemini = hostedAdapter({ harness: 'gemini', open: providerSessions({ provider }) });
 ```
 
-`open` may return anything with a `turn(text)` that resolves with an answer, so a session of your own is a few lines. Hosted sessions live in the host's process and end with it.
+`open` returns a session: anything with a `turn(text)` whose `result` resolves with the agent's answer, so a session of your own is a few lines. Hosted sessions live in the host's process and end with it.
 
 ## Adapters
 
-An adapter tells the bridge how to reach the sessions of one harness. `claudeCodeAdapter()`, `codexAdapter()` and `hostedAdapter()` are the ones above, and the port is small enough to write another:
+An adapter tells the bridge how to reach the sessions of one harness. `claudeCodeAdapter()`, `codexAdapter()` and `hostedAdapter()` are the ones above. `cogitator bridge serve` runs the first two as they come. To choose the permission mode of Claude Code sessions or the sandbox of Codex threads, or to add hosted agents, host the dispatcher in a process of your own:
+
+```typescript
+import {
+  claudeCodeAdapter,
+  codexAdapter,
+  cogitatorSessions,
+  hostBridge,
+  hostedAdapter,
+} from '@cogitator-ai/bridge';
+
+const host = await hostBridge({
+  adapters: [
+    claudeCodeAdapter({ permissionMode: 'acceptEdits' }),
+    codexAdapter({ sandbox: 'read-only' }),
+    hostedAdapter({ harness: 'qwen', open: cogitatorSessions({ runtime: cogitator, agent }) }),
+  ],
+});
+```
+
+The port is small enough to write an adapter of your own:
 
 ```typescript
 import type { BridgeAdapter } from '@cogitator-ai/bridge';

@@ -138,6 +138,7 @@ function threadFiles(threadId) {
     transcript: `${base}.jsonl`,
     queue: `${base}.queue`,
     lock: `${base}.lock`,
+    running: `${base}.pid`,
   };
 }
 
@@ -224,12 +225,14 @@ function findThread(threadId) {
 
 /** Runs one turn of `exec` to its end. The first event leaves before the turn starts */
 async function foregroundTurn(thread, prompt, asJson) {
-  const { lock: lockFile } = threadFiles(thread.threadId);
+  const { lock: lockFile, running } = threadFiles(thread.threadId);
   onStopSignal(() => {
+    rmSync(running, { force: true });
     abandonWork();
     process.exit(EXIT_ON_STOP_SIGNAL);
   });
   await lock(lockFile);
+  writeJson(running, { pid: process.pid });
   try {
     if (asJson) {
       await printEvents({ type: 'thread.started', thread_id: thread.threadId }, TURN_STARTED);
@@ -239,6 +242,7 @@ async function foregroundTurn(thread, prompt, asJson) {
     const item = { id: 'item_0', type: 'agent_message', text: answer };
     await printEvents({ type: 'item.completed', item }, TURN_COMPLETED);
   } finally {
+    rmSync(running, { force: true });
     unlock(lockFile);
   }
 }
@@ -381,6 +385,7 @@ async function remove(argv) {
   rmSync(files.record, { force: true });
   rmSync(files.transcript, { force: true });
   rmSync(files.queue, { recursive: true, force: true });
+  rmSync(files.running, { force: true });
   unlock(files.lock);
 }
 

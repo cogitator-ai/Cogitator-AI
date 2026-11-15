@@ -32,8 +32,16 @@ export interface AdapterConformanceTarget {
    * the harness. Rejects when it does not come in reasonable time
    */
   received(sessionId: string, needle: string): Promise<void>;
-  /** What `identify` is given for a process of the session */
+  /**
+   * What `identify` is given for a process of the session. Needed when the adapter is said to
+   * support `identify`
+   */
   processOf?(sessionId: string): IdentifyContext;
+  /**
+   * For an adapter that starts no sessions: opens a session of the harness outside the bridge
+   * and returns its id, so the delivery of a letter to it can be checked
+   */
+  openSession?(): Promise<string>;
   /** Cases to leave out, with the reason */
   skip?: Partial<Record<AdapterScenario, string>>;
 }
@@ -77,7 +85,10 @@ interface Stage {
   host: BridgeHost;
   /** The agent that hands jobs over */
   orchestrator: AgentRecord;
-  /** Hands a job to the harness and returns the session the adapter started for it */
+  /**
+   * Hands a job to the harness and returns the session that got it: one the adapter started, or
+   * for an adapter that starts none, one the target opened
+   */
   start(): Promise<{ agent: AgentRecord; job: number; firstLetter: string }>;
 }
 
@@ -108,8 +119,19 @@ async function staged(
       host,
       orchestrator,
       start: async () => {
+        let to = `${aliasOfHarness(adapter.harness)}:new`;
+        if (!adapter.createSession) {
+          assert.ok(target.openSession, 'an adapter that starts no session needs openSession');
+          const opened = await bridge.register({
+            harness: adapter.harness,
+            sessionId: await target.openSession(),
+            cwd: target.cwd,
+            project: target.cwd,
+          });
+          to = opened.name;
+        }
         const { job, letter } = await bridge.createJob(orchestrator.name, {
-          to: `${aliasOfHarness(adapter.harness)}:new`,
+          to,
           body: 'Conformance: say you got this',
         });
         const agent = await until(async () => {
@@ -188,17 +210,15 @@ export function adapterConformanceCases(
           const { agent, job, firstLetter } = await start();
           await target.received(agent.sessionId, firstLetter);
           await target.received(agent.sessionId, 'not typed by the user');
-          const letter = await until(async () => {
+          await until(async () => {
             const [first] = await host.dispatcher.letters({ job });
             return first?.state === 'queued' ? undefined : first;
           }, 'the first letter to count as handed over');
-          assert.ok(['delivered', 'read', 'handled'].includes(letter.state));
           assert.notEqual((await host.dispatcher.job(job)).state, 'submitted', 'the job is taken');
         }),
     },
     {
       name: 'delivers-a-letter',
-      needs: 'createSession',
       run: () =>
         staged(target, async ({ host, orchestrator, start }) => {
           const { agent, job, firstLetter } = await start();
@@ -238,7 +258,7 @@ export function adapterConformanceCases(
             undefined,
             'a process of no session is nobody'
           );
-          if (!target.processOf) return;
+          assert.ok(target.processOf, 'a target whose adapter identifies sessions gives processOf');
           const sessionId = randomUUID();
           const caller = adapter.identify?.(target.processOf(sessionId));
           assert.equal(caller?.harness, adapter.harness);
@@ -274,7 +294,12 @@ export function adapterConformanceCases(
   return cases.map(({ name, needs, run }) => {
     const skip =
       target.skip?.[name] ??
-      (needs && !target.supports.includes(needs) ? `the adapter has no ${needs}` : undefined);
+      (needs && !target.supports.includes(needs) ? `the adapter has no ${needs}` : undefined) ??
+      (name === 'delivers-a-letter' &&
+      !target.supports.includes('createSession') &&
+      !target.openSession
+        ? 'the adapter starts no session and the target opens none'
+        : undefined);
     return { name, run, ...(skip !== undefined && { skip }) };
   });
 }

@@ -9,19 +9,19 @@ When `create-cogitator-app` or `cogitator init` scaffolds a project, it sends **
 
 The event holds exactly these fields and nothing else:
 
-| Field | Example | What it is |
-| --- | --- | --- |
-| `version` | `0.5.0` | Version of the scaffolder |
-| `preset` | `rag` | The preset, `custom` for a stack picked by hand, `example` or `template` for a copied project |
-| `provider` | `openai` | The LLM provider |
-| `memory` | `postgres` | The memory adapter |
-| `features` | `rag,evals` | The add-ons, comma-separated |
-| `packageManager` | `pnpm` | The package manager |
-| `node` | `24` | The major version of Node |
-| `os` | `darwin` | The operating system |
-| `outcome` | `success` | `success`, or `failure` when creating the project or installing its dependencies failed |
-| `failedStep` | `install` | Where a failure stopped: `create` (the options, the directory, downloading or writing files) or `install`, `none` on success |
-| `errorCode` | `ERR_PNPM_NO_MATCHING_VERSION` | Why it stopped, as a code (see below), `none` on success |
+| Field            | Example                        | What it is                                                                                                                   |
+| ---------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `version`        | `0.5.0`                        | Version of the scaffolder                                                                                                    |
+| `preset`         | `rag`                          | The preset, `custom` for a stack picked by hand, `example` or `template` for a copied project                                |
+| `provider`       | `openai`                       | The LLM provider                                                                                                             |
+| `memory`         | `postgres`                     | The memory adapter                                                                                                           |
+| `features`       | `rag,evals`                    | The add-ons, comma-separated                                                                                                 |
+| `packageManager` | `pnpm`                         | The package manager                                                                                                          |
+| `node`           | `24`                           | The major version of Node                                                                                                    |
+| `os`             | `darwin`                       | The operating system                                                                                                         |
+| `outcome`        | `success`                      | `success`, or `failure` when creating the project or installing its dependencies failed                                      |
+| `failedStep`     | `install`                      | Where a failure stopped: `create` (the options, the directory, downloading or writing files) or `install`, `none` on success |
+| `errorCode`      | `ERR_PNPM_NO_MATCHING_VERSION` | Why it stopped, as a code (see below), `none` on success                                                                     |
 
 It never contains the project name, a path, the model, an API key, the name of an example or a template repository, an error message, the output of the install, or anything else you typed. The request goes to Umami's `/api/send` endpoint, which does not store IP addresses.
 

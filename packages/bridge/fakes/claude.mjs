@@ -234,6 +234,21 @@ function checkSettings(value) {
 }
 
 /**
+ * What a session inherits from the command that started it. Claude Code does not promise a
+ * background session the environment of `claude --bg`: with FAKE_CLAUDE_BG_CLEAN_ENV set the
+ * fake keeps only what a service started on its own would have, so a test can prove that
+ * nothing depends on more.
+ */
+function sessionBaseEnv() {
+  if (!process.env.FAKE_CLAUDE_BG_CLEAN_ENV) return process.env;
+  return Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([name]) => ['PATH', 'HOME', 'TMPDIR'].includes(name) || name.startsWith('FAKE_')
+    )
+  );
+}
+
+/**
  * The session process: takes the prompt, typed messages and hook wake-ups in the order they
  * arrived, runs a turn for each and fires the Stop hooks after it.
  */
@@ -243,7 +258,11 @@ async function runSession(argv) {
   const files = sessionFiles(sessionId);
   const record = await awaitJson(files.record);
   if (record === undefined) return;
-  const env = { ...process.env, CLAUDE_CODE_SESSION_ID: sessionId, CLAUDE_PROJECT_DIR: record.cwd };
+  const env = {
+    ...sessionBaseEnv(),
+    CLAUDE_CODE_SESSION_ID: sessionId,
+    CLAUDE_PROJECT_DIR: record.cwd,
+  };
   const session = { record, files, env, hookPids: new Set() };
   boundLife(files.record, () => endSession(files.record));
   for (;;) {
