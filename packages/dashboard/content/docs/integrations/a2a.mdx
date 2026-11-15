@@ -494,6 +494,31 @@ data: {"jsonrpc":"2.0","id":1,"result":{"statusUpdate":{"taskId":"task_1","conte
 
 `A2AClient` marks that last update `final` for you, so the loop above works over both versions. `SubscribeToTask` refuses a task that already ended with `-32004`, as the specification says.
 
+## Tasks Carried Out Elsewhere
+
+A task does not have to be run by a Cogitator agent. `TaskManager.advanceTask()` moves a task that something outside the manager carries out (another process, a person, an agent of another runtime) through the same lifecycle, with the same events and the same store:
+
+```typescript
+import { TaskManager, textPart, toMessage } from '@cogitator-ai/a2a';
+
+const tasks = new TaskManager({ taskStore });
+const fromClient = (text: string) => toMessage({ role: 'user', parts: [textPart(text)] });
+
+const task = await tasks.createTask(fromClient('Write the tests'), undefined, {
+  metadata: { 'acme:ticket': 'OPS-12' },
+});
+
+await tasks.advanceTask(task.id, { state: 'working' });
+await tasks.advanceTask(task.id, {
+  state: 'input-required',
+  message: 'Mock Redis or run a real one?',
+});
+await tasks.continueTask(task.id, fromClient('Mock it'));
+await tasks.advanceTask(task.id, { state: 'completed', message: 'Done: 14 tests pass' });
+```
+
+The message is recorded as the agent's: added to the history and kept as the status message. A task in a terminal state, or one a run of the manager is executing, does not move (`taskNotContinuable`). `createTask` takes `metadata` to store with the task in the same write, the manager's own keys win over the same keys in it. The [agent bridge](/docs/bridge) runs its jobs this way.
+
 ## RedisTaskStore
 
 ```typescript
@@ -745,7 +770,7 @@ const a2aServer = new A2AServer({
 });
 ```
 
-For production, use [`RedisTaskStore`](#redistaskstore) or implement the `TaskStore` interface (`create`, `get`, `update`, `list`, `delete`). Your `list` must honour `filter.visibleTo`: when it is set, return only tasks owned by that user and tasks without an owner (`null` means a caller without a user), or `tasks/list` leaks other users' tasks.
+For production, use [`RedisTaskStore`](#redistaskstore) or implement the `TaskStore` interface (`create`, `get`, `update`, `list`, `delete`). Your `list` must honour `filter.visibleTo`: when it is set, return only tasks owned by that user and tasks without an owner (`null` means a caller without a user), or `tasks/list` leaks other users' tasks. The helpers the built-in stores use are exported for a store of your own: `isTaskVisibleTo(task, userId)`, `taskTime(task)`, `taskCreatedAt(task)` and `compareTasksNewestFirst(a, b)`.
 
 ## Authentication
 

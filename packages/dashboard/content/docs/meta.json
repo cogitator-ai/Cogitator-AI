@@ -27,6 +27,8 @@
     "server-adapters",
     "---Integrations---",
     "integrations",
+    "---Agent Bridge---",
+    "bridge",
     "---Advanced---",
     "advanced",
     "---Deployment---",

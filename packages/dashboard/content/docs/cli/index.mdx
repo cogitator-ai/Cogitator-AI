@@ -60,6 +60,7 @@ cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 | `cogitator acp`            | Serve a Cogitator coding agent to an editor over the Agent Client Protocol (stdio)                              |
 | `cogitator build`          | Bundle a gateway into a self-starting `dist/cogitator.mjs`                                                      |
 | `cogitator daemon <cmd>`   | Run in the background / install as a launchd or systemd service                                                 |
+| `cogitator bridge <cmd>`   | Run and watch the agent bridge between harnesses (experimental)                                                 |
 | `cogitator skill <cmd>`    | Create, validate, install and remove skills                                                                     |
 | `cogitator models`         | List or pull Ollama models                                                                                      |
 | `cogitator status`         | Show Docker Compose and Ollama status (alias: `ps`)                                                             |
@@ -414,17 +415,38 @@ Only the project's own code is bundled: every package stays an import resolved f
 Runs your assistant in the background. The entry is auto-detected in this order: `dist/cogitator.mjs` (from `cogitator build`), an assistant `cogitator.yml` / `cogitator.yaml` (via `cogitator up`; a runtime config is skipped), `src/gateway.ts` (via `cogitator assistant --quiet`). Use `-c` to choose explicitly.
 
 ```bash
-cogitator daemon start [-c <entry>]
+cogitator daemon start [-c <entry>] [--bridge]
 cogitator daemon status          # PID, uptime, memory
 cogitator daemon logs -f -n 100  # .cogitator/daemon.log
-cogitator daemon restart [-c <entry>]
+cogitator daemon restart [-c <entry>] [--bridge]
 cogitator daemon stop            # SIGTERM, then SIGKILL after ~10s
 
-cogitator daemon install [-c <entry>]   # launchd (macOS) or systemd --user (Linux)
+cogitator daemon install [-c <entry>] [--bridge]   # launchd (macOS) or systemd --user (Linux)
 cogitator daemon uninstall
 ```
 
 The PID file (`.cogitator/daemon.pid`) records the launched script, so `stop` never signals an unrelated process that reused the PID. Service definitions use absolute paths, the current `PATH`, and start on login (`loginctl enable-linger` keeps a systemd user service running after logout).
+
+`--bridge` makes the daemon also host the dispatcher of the [agent bridge](#cogitator-bridge) (experimental). The assistant does not depend on it: when another dispatcher already runs on the machine the daemon just does not host one. A bundle runs without the CLI, so `--bridge` is refused for it, run `cogitator bridge serve` next to it.
+
+---
+
+### cogitator bridge
+
+The agent bridge (experimental): Claude Code, Codex and other agents hand each other jobs, ask questions on the way and report back, each in its own window. The bridge is a dispatcher, one per machine, shared by every project. See the [Agent Bridge guide](/docs/bridge).
+
+```bash
+cogitator bridge serve                # the dispatcher in the foreground, until Ctrl+C
+cogitator bridge status [--json]      # the dispatcher, the sessions it knows, the jobs in progress
+cogitator bridge log                  # the last 50 entries of the journal
+cogitator bridge log --follow         # keep printing what comes in
+cogitator bridge log --job 12 --all   # everything about one job
+cogitator bridge log --json           # one line of JSON per entry
+```
+
+`serve` refuses to start while another dispatcher runs and names its PID. `status` exits 0 when a dispatcher runs and 1 when none does. `log` reads the store itself, so it works after the dispatcher stopped. The files live in `~/.cogitator/bridge` (`bridge.db`, `bridge.sock`), `COGITATOR_BRIDGE_HOME` or `--home <dir>` moves them.
+
+With `cogitator daemon start --bridge` the assistant daemon hosts the dispatcher, so no second process is needed.
 
 ---
 
