@@ -122,7 +122,9 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
 
     const realProject = realpathSync(project);
     expect(agent).toMatchObject({ name: job.to, delivery: 'hook', cwd: realProject });
+    expect(agent.sessionName).toBeUndefined();
     const [session] = await fakes.claudeSessions();
+    expect(session.name).toBe('[agent-bridge]-job');
     expect(session).toMatchObject({
       sessionId: agent.sessionId,
       kind: 'background',
