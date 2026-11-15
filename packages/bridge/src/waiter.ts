@@ -107,5 +107,5 @@ export async function waitForMail(options: WaitForMailOptions): Promise<WaitForM
 
 /** The text a waiter hands its session: the letters, oldest first, each under its signature. */
 export function mailText(letters: readonly RenderedLetter[]): string {
-  return letters.map((letter) => letter.text).join('\n\n');
+  return letters.map((letter) => letter.text.trimEnd()).join('\n\n');
 }
