@@ -403,6 +403,7 @@ A session of an agent calls the bridge from its shell, known by the id its harne
 cogitator bridge delegate <to> [text...]   # hand a job over: --title, --cwd, --check <command>, --parent <job>
 cogitator bridge send [text...] --job <n> --kind <question|answer|report|note|permission>
 cogitator bridge inbox                     # the letters that wait: --job <n>, --peek, --unhandled
+cogitator bridge cancel <job> [reason...]  # take back a job this session handed over
 cogitator bridge wait                      # wait for mail and exit with 2 when it comes
 ```
 
