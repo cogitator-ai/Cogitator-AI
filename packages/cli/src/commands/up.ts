@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import type { BridgeHost } from '@cogitator-ai/bridge';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
@@ -13,6 +14,7 @@ import {
   type BuiltRuntime,
 } from '@cogitator-ai/channels';
 import { log } from '../utils/logger.js';
+import { hostBridgeInDaemon } from '../utils/bridge-host.js';
 import { CommandError, exitWithFailure, examplesHelp } from '../utils/cli.js';
 import { findDockerCompose, checkDocker, composePs, type ComposeService } from '../utils/docker.js';
 import { loadDotenvInto } from '../utils/env.js';
@@ -93,6 +95,7 @@ async function startFromConfig(configPath: string): Promise<void> {
   spinner.succeed('Runtime built');
 
   let stopping = false;
+  let bridge: BridgeHost | undefined;
   const shutdown = async (exitCode: number) => {
     if (stopping) {
       log.warn('Stopping now, without waiting for the answers in progress');
@@ -104,6 +107,7 @@ async function startFromConfig(configPath: string): Promise<void> {
       'Shutting down, answering what is queued (press Ctrl-C again to quit now)...'
     ).start();
     try {
+      await bridge?.close();
       await runtime.cleanup();
       stopSpinner.succeed('Stopped');
     } catch (error) {
@@ -123,6 +127,8 @@ async function startFromConfig(configPath: string): Promise<void> {
     await shutdown(1);
     return;
   }
+
+  bridge = await hostBridgeInDaemon();
 
   const channelTypes = runtime.gateway.stats.connectedChannels;
 

@@ -575,6 +575,9 @@ importers:
       '@cogitator-ai/app-server':
         specifier: workspace:*
         version: link:../app-server
+      '@cogitator-ai/bridge':
+        specifier: workspace:*
+        version: link:../bridge
       '@cogitator-ai/channels':
         specifier: workspace:*
         version: link:../channels

@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { log, printBanner } from '../utils/logger.js';
+import { hostBridgeInDaemon } from '../utils/bridge-host.js';
 import { CommandError, exitWithFailure, examplesHelp } from '../utils/cli.js';
 import { importUserModule } from '../utils/module-loader.js';
 import { loadDotenvInto } from '../utils/env.js';
@@ -85,6 +86,7 @@ export const assistantCommand = new Command('assistant')
     }
 
     printDashboard(gateway, quiet);
+    const bridge = await hostBridgeInDaemon();
 
     let stopping = false;
     let stopLiveLog: (() => void) | null = null;
@@ -101,6 +103,7 @@ export const assistantCommand = new Command('assistant')
         'Shutting down gracefully, answering what is queued (press Ctrl-C again to quit now)...'
       );
       try {
+        await bridge?.close();
         await gateway.stop();
         log.success('All channels stopped');
         process.exit(0);
