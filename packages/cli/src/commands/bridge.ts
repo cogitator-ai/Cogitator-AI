@@ -353,7 +353,7 @@ export async function runBridgeServe(
     host = await hostBridge({
       ...(flags.home && { home: flags.home }),
       env: context.env,
-      adapters: context.adapters ?? bridgeAdapters(context.env),
+      adapters: context.adapters ?? bridgeAdapters(context.env, flags.home),
       onError: (error) => context.io.warn(`${chalk.yellow('!')} ${error.message}`),
     });
   } catch (error) {
@@ -398,6 +398,9 @@ function positiveInt(value: string): number {
   }
   return number;
 }
+
+const DASH_HINT =
+  '(A text that starts with a dash goes after "--", or is piped in with "-" in its place)';
 
 const homeOption = [
   '--home <dir>',
@@ -481,6 +484,7 @@ bridgeCommand
   .option('--parent <number>', 'the job this one is part of', positiveInt)
   .option(...homeOption)
   .option('--json', 'print the job as JSON')
+  .showHelpAfterError(DASH_HINT)
   .action(async (to: string, text: string[], flags: BridgeDelegateFlags) => {
     process.exitCode = await runBridgeDelegate(to, text, flags);
   });
@@ -498,6 +502,7 @@ bridgeCommand
   .option('--reply-to <letter>', 'the letter this one answers')
   .option(...homeOption)
   .option('--json', 'print the letter and the job as JSON')
+  .showHelpAfterError(DASH_HINT)
   .action(async (text: string[], flags: BridgeSendFlags) => {
     process.exitCode = await runBridgeSend(text, flags);
   });

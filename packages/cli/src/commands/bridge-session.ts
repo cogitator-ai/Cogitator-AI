@@ -11,6 +11,7 @@ import {
   callerFromEnv,
   isBridgeError,
   mailText,
+  shellQuote,
   waitForMail,
   type BridgeAdapter,
   type BridgePaths,
@@ -18,8 +19,8 @@ import {
   type HealthCheck,
   type LetterKind,
 } from '@cogitator-ai/bridge';
-import { CommandError, printJson, reportFailure } from '../utils/cli.js';
-import { bridgeAdapters } from '../utils/bridge-adapters.js';
+import { CommandError, EXIT, printJson, reportFailure } from '../utils/cli.js';
+import { bridgeAdapters, bridgeCommandOf } from '../utils/bridge-adapters.js';
 
 /** What the session commands work with */
 export interface BridgeSessionContext {
@@ -58,8 +59,8 @@ function pathsOf(flags: HomeFlags, context: BridgeSessionContext): BridgePaths {
   return bridgePaths({ ...(flags.home && { home: flags.home }), env: context.env });
 }
 
-function adaptersOf(context: BridgeSessionContext): readonly BridgeAdapter[] {
-  return context.adapters ?? bridgeAdapters(context.env);
+function adaptersOf(flags: HomeFlags, context: BridgeSessionContext): readonly BridgeAdapter[] {
+  return context.adapters ?? bridgeAdapters(context.env, flags.home);
 }
 
 const NO_SESSION = new CommandError('This command runs inside a session of an agent', {
@@ -220,10 +221,17 @@ export async function runBridgeInbox(
   }
 }
 
-/** How a session without the bridge's tools answers a letter it was woken with. */
-export const REPLY_HINT =
-  '(The agent bridge woke this session with the mail above. Answer through it, not in this chat: ' +
-  'cogitator bridge send --job <number> --kind <answer|question|report|note> "<text>")';
+/**
+ * How a session without the bridge's tools answers a letter it was woken with: the command line
+ * as the session can run it, whatever its `PATH`.
+ */
+export function replyHint(bridgeCommand: string, home?: string): string {
+  return (
+    '(The agent bridge woke this session with the mail above. Answer through it, not in this chat: ' +
+    `${bridgeCommand} send --job <number> --kind <answer|question|report|note> "<text>"` +
+    `${home ? ` --home ${shellQuote(home)}` : ''})`
+  );
+}
 
 export interface BridgeWaitFlags extends HomeFlags {
   /** The harness whose hook runs the command: its stdin tells the session */
@@ -242,7 +250,8 @@ const DEFAULT_WAIT_S = 600;
 /**
  * cogitator bridge wait: waits for the session's mail and exits. With mail it writes the letters
  * to stderr and exits with code 2, which is what wakes a Claude Code session whose background
- * hook ran it. Without, it exits with 0 and says nothing.
+ * hook ran it. Without, it exits with 0 and says nothing. A failure exits with 1, never with 2:
+ * an error must not wake the session.
  */
 export async function runBridgeWait(
   flags: BridgeWaitFlags,
@@ -252,7 +261,7 @@ export async function runBridgeWait(
     let caller: CallerIdentity | undefined;
     if (flags.hook) {
       const harness = flags.hook.trim().toLowerCase();
-      const adapter = adaptersOf(context).find((candidate) => candidate.harness === harness);
+      const adapter = adaptersOf(flags, context).find((candidate) => candidate.harness === harness);
       if (!adapter?.identify) {
         throw new CommandError(`No adapter tells the sessions of "${flags.hook}" apart`);
       }
@@ -274,11 +283,14 @@ export async function runBridgeWait(
       ...(context.signal && { signal: context.signal }),
     });
     if (waited.reason !== 'letters') return 0;
-    context.wake(`${mailText(waited.letters)}\n\n${REPLY_HINT}`);
+    context.wake(
+      `${mailText(waited.letters)}\n\n${replyHint(bridgeCommandOf(context.env), flags.home)}`
+    );
     await waited.confirm().catch(() => undefined);
     return WAKE_EXIT_CODE;
   } catch (error) {
-    return reportFailure(error, { json: false });
+    reportFailure(error, { json: false });
+    return EXIT.failed;
   }
 }
 
@@ -342,7 +354,7 @@ export async function runBridgeDoctor(
     const sections: DoctorSection[] = [
       { harness: 'bridge', checks: [await dispatcherCheck(pathsOf(flags, context))] },
     ];
-    for (const adapter of adaptersOf(context)) {
+    for (const adapter of adaptersOf(flags, context)) {
       if (!adapter.health) continue;
       sections.push({ harness: adapter.harness, checks: await adapter.health({ cwd }) });
     }

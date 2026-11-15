@@ -54,6 +54,17 @@ const USAGE_CODES = new Set([
   'commander.conflictingOption',
 ]);
 
+/**
+ * The exit code of the process for an error that reached the entry point. `bridge wait` wakes a
+ * session by exiting with 2, so there a mistyped command line exits with 1: a stale hook must
+ * not wake its session with a usage error after every turn.
+ */
+export function exitCodeFor(error: unknown, args: readonly string[]): ExitCode {
+  const code = exitCodeOf(error);
+  const wakes = args[0] === 'bridge' && args[1] === 'wait';
+  return wakes && code === EXIT.usage ? EXIT.failed : code;
+}
+
 /** The exit code of any error a command ends with. */
 export function exitCodeOf(error: unknown): ExitCode {
   if (error instanceof CommandError) return error.exitCode;
