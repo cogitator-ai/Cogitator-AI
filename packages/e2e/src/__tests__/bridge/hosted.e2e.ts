@@ -141,7 +141,7 @@ describe('agents the bridge hosts', () => {
     });
     closers.push(() => provider.close());
     const client = await start(
-      hostedAdapter({ harness: 'gemini', open: providerSessions({ provider }) })
+      hostedAdapter({ harness: 'gemini', open: providerSessions({ provider, root: project }) })
     );
 
     const { job } = await client.createJob({

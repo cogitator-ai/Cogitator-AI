@@ -218,6 +218,54 @@ describe('sessions the host runs', () => {
     ]);
   });
 
+  it('does not start a job that was canceled while it waited for its turn', async () => {
+    const agent = scripted();
+    kit = await makeKit({ adapters: [hostedAdapter({ harness: 'qwen', open: agent.open })] });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Review the diff' });
+    await settle(kit);
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Run the linter' });
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Update the changelog' });
+    await settle(kit);
+    await bridge.cancel(claude.name, 2, 'Not needed any more');
+    await settle(kit);
+
+    agent.turns[0].end('Looks fine');
+    await settle(kit);
+
+    expect(agent.turns.map((turn) => turn.text.split('\n')[1])).toEqual([
+      'Review the diff',
+      'Update the changelog',
+    ]);
+    expect((await bridge.job(2)).state).toBe('canceled');
+    agent.turns[1].end('Done');
+    await settle(kit);
+    expect((await bridge.job(3)).state).toBe('completed');
+    expect(kit.errors).toEqual([]);
+  });
+
+  it('stops the turn of a job that is canceled, and reports nothing for it', async () => {
+    const agent = scripted({ steer: true });
+    kit = await makeKit({ adapters: [hostedAdapter({ harness: 'qwen', open: agent.open })] });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Review the diff' });
+    await settle(kit);
+    await bridge.send(claude.name, { job: 1, kind: 'note', body: 'Take your time' });
+    await settle(kit);
+    expect(agent.turns[0].aborted).toBe(false);
+
+    await bridge.cancel(claude.name, 1, 'Not needed any more');
+    await settle(kit);
+
+    expect(agent.turns[0].aborted).toBe(true);
+    expect((await bridge.job(1)).state).toBe('canceled');
+    expect((await bridge.letters({ job: 1, kinds: ['report'] })).length).toBe(0);
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Run the linter' });
+    await settle(kit);
+    expect(agent.turns[1].text).toContain('Run the linter');
+    expect(kit.errors).toEqual([]);
+  });
+
   it('keeps a letter for the next turn when the turn takes nothing', async () => {
     const agent = scripted();
     kit = await makeKit({ adapters: [hostedAdapter({ harness: 'qwen', open: agent.open })] });
@@ -403,6 +451,36 @@ describe('agents of the runtime as hosted sessions', () => {
     await fixed.turn('three').result;
     expect(started[2].agent).toBe('writer');
   });
+
+  it('fails the job of a run that paused for an approval, instead of reporting it done', async () => {
+    const runtime = {
+      start: (): HostedRun => ({
+        result: Promise.resolve({ output: 'I need to run rm -rf build', status: 'paused' }),
+        steer: () => false,
+        followUp: () => false,
+        abort: () => undefined,
+      }),
+    };
+    kit = await makeKit({
+      adapters: [
+        hostedAdapter({ harness: 'qwen', open: cogitatorSessions({ runtime, agent: 'writer' }) }),
+      ],
+    });
+    const { bridge, claude } = kit;
+
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Clean the build' });
+    for (let round = 0; round < 5; round += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+      await bridge.idle();
+    }
+
+    expect((await bridge.job(1)).state).toBe('failed');
+    const [report] = await bridge.inbox(claude.name);
+    expect(report).toMatchObject({ kind: 'report', outcome: 'failed' });
+    expect(report.body).toBe(
+      'The agent failed: the run stopped to wait for an approval or an answer, which nobody gives in a hosted session. Give the agent the permission rules it needs before it starts'
+    );
+  });
 });
 
 describe('agents behind a session provider as hosted sessions', () => {
@@ -425,7 +503,7 @@ describe('agents behind a session provider as hosted sessions', () => {
         return { output: `${String(session)}: ${turn.input[0].text}` };
       },
     };
-    const session = await providerSessions({ provider })(context);
+    const session = await providerSessions({ provider, root: '/work/demo' })(context);
 
     expect(await session.turn('one').result).toBe('new: one');
     expect(await session.turn('two').result).toBe('session-1: two');
@@ -444,10 +522,55 @@ describe('agents behind a session provider as hosted sessions', () => {
         return { output: 'I cannot help with that', refused: true };
       },
     };
-    const session = await providerSessions({ provider, permissionMode: 'plan' })(context);
+    const session = await providerSessions({ provider, root: '/work', permissionMode: 'plan' })(
+      context
+    );
 
     await expect(session.turn('one').result).rejects.toThrow('I cannot help with that');
     expect(modes).toEqual(['plan']);
+  });
+
+  it('refuses a job for a folder its one provider does not work in', async () => {
+    const provider = { runTurn: async () => ({ output: 'never' }) };
+    const open = providerSessions({ provider, root: '/work/demo' });
+
+    await expect(open({ ...context, cwd: '/work/other' })).rejects.toThrow(
+      'this agent works in /work/demo, and the job is for /work/other. Hand it a job in its own folder'
+    );
+    await expect(open({ ...context, cwd: '/work/demo/packages/core' })).resolves.toBeDefined();
+    expect(() => providerSessions({ provider })).toThrow('providerSessions needs `root`');
+  });
+
+  it('makes a provider for the folder of each session, and closes the ones it made', async () => {
+    const made: { cwd: string; closed: boolean }[] = [];
+    const open = providerSessions({
+      provider: (opened) => {
+        const record = { cwd: opened.cwd, closed: false };
+        made.push(record);
+        return {
+          runTurn: async () => ({ output: `done in ${opened.cwd}` }),
+          close: async () => {
+            record.closed = true;
+          },
+        };
+      },
+    });
+
+    const here = await open(context);
+    const there = await open({ ...context, sessionId: 'def', cwd: '/work/other' });
+
+    expect(await here.turn('one').result).toBe('done in /work/demo');
+    expect(await there.turn('one').result).toBe('done in /work/other');
+    await here.close?.();
+    expect(made).toEqual([
+      { cwd: '/work/demo', closed: true },
+      { cwd: '/work/other', closed: false },
+    ]);
+    const shared = await providerSessions({
+      provider: { runTurn: async () => ({ output: 'x' }), close: async () => undefined },
+      root: '/work',
+    })(context);
+    expect(shared.close).toBeUndefined();
   });
 
   it('aborts the signal of the turn when the turn is stopped', async () => {
@@ -460,7 +583,7 @@ describe('agents behind a session provider as hosted sessions', () => {
         });
       },
     };
-    const session = await providerSessions({ provider })(context);
+    const session = await providerSessions({ provider, root: '/work/demo' })(context);
     const turn = session.turn('one');
 
     turn.abort?.(new Error('stop'));
