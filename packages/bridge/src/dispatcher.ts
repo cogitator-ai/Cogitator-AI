@@ -15,6 +15,8 @@ import {
 import {
   AgentsFilterSchema,
   CreateJobInputSchema,
+  DEFAULT_INBOX_LIMIT,
+  DEFAULT_LIST_LIMIT,
   InboxInputSchema,
   JobsFilterSchema,
   JournalQuerySchema,
@@ -26,8 +28,18 @@ import {
   type SendLetterInput,
 } from './inputs.js';
 import { isFinishedJobState, jobOf, jobRecordOf } from './job-record.js';
-import { expectationOf, newLetterId, renderLetter, repeats, titleOf } from './letters.js';
-import { findProjectRoot } from './paths.js';
+import {
+  expectationOf,
+  forHistory,
+  newLetterId,
+  normalizeBody,
+  oneLine,
+  quoted,
+  renderLetter,
+  repeats,
+  titleOf,
+} from './letters.js';
+import { findProjectRoot, isInside } from './paths.js';
 import { allocateAgentName, resolveAddress } from './registry.js';
 import type {
   AgentFilter,
@@ -41,6 +53,7 @@ import {
   BRIDGE_SENDER,
   CallerIdentitySchema,
   DEFAULT_LIMITS,
+  HarnessNameSchema,
   INBOX_DELIVERY,
   NO_CAPABILITIES,
   type AgentRecord,
@@ -117,6 +130,24 @@ const UNREAD_STATES: readonly DeliveryState[] = ['queued', 'delivered'];
 const NEEDS_ANSWER: readonly LetterKind[] = ['question', 'permission'];
 const REMINDER_QUOTE_LENGTH = 500;
 
+/**
+ * The most characters of letter text one answer carries. A line of the socket holds 16 MiB, and
+ * an answer that does not fit would be lost after the call already changed what it returned
+ */
+const MAX_ANSWER_CHARS = 2_000_000;
+
+/** As many of `items`, in order, as fit `MAX_ANSWER_CHARS` by `sizeOf`, the first one always. */
+function fitting<T>(items: readonly T[], sizeOf: (item: T) => number): T[] {
+  const taken: T[] = [];
+  let size = 0;
+  for (const item of items) {
+    size += sizeOf(item);
+    if (taken.length > 0 && size > MAX_ANSWER_CHARS) break;
+    taken.push(item);
+  }
+  return taken;
+}
+
 const STATE_RANK: Readonly<Record<DeliveryState, number>> = {
   queued: 0,
   delivered: 1,
@@ -156,9 +187,6 @@ function userMessage(text: string) {
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
-
-/** How many queued letters of one agent a delivery pass looks at to find the next one to try. */
-const DELIVERY_WINDOW = 100;
 
 /** `work`, or a rejection when it takes longer than `ms`. */
 function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
@@ -229,10 +257,11 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
     this.onError = options.onError ?? (() => undefined);
     this.assertWritable = options.assertWritable;
     for (const adapter of options.adapters ?? []) {
-      if (this.adapters.has(adapter.harness)) {
-        throw new BridgeError('invalid_input', `Two adapters for the harness ${adapter.harness}`);
+      const harness = parse(HarnessNameSchema, adapter.harness, 'Cannot use the adapter');
+      if (this.adapters.has(harness)) {
+        throw new BridgeError('invalid_input', `Two adapters for the harness ${harness}`);
       }
-      this.adapters.set(adapter.harness, adapter);
+      this.adapters.set(harness, adapter);
     }
   }
 
@@ -265,12 +294,23 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
           lastSeenAt: now,
         };
         this.store.putAgent(agent);
-        if (known.status !== 'active') tx.wake.add(agent.name);
+        if (known.status !== 'active') {
+          this.journal(tx, {
+            type: 'agent.registered',
+            agent: agent.name,
+            data: { harness: agent.harness, returned: true },
+          });
+          tx.wake.add(agent.name);
+        }
         return agent;
       }
 
       const started = caller.agentName ? this.store.getAgent(caller.agentName) : undefined;
-      if (started?.harness === caller.harness && started.status === 'starting') {
+      if (
+        started?.harness === caller.harness &&
+        started.status === 'starting' &&
+        started.project === project
+      ) {
         const agent: AgentRecord = {
           ...started,
           ...reach,
@@ -321,16 +361,19 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
   async createJob(caller: string, input: CreateJobInput): Promise<CreateJobResult> {
     const request = parse(CreateJobInputSchema, input, 'Cannot create the job');
     this.checkBody(request.body);
+    await this.heardFrom(caller);
     const outcome = await this.mutate(async (tx): Promise<CreateJobResult | Refusal> => {
       const from = this.requireCaller(caller);
 
       if (request.letterId) {
         const sent = this.store.getLetter(request.letterId);
         if (sent) {
-          if (sent.kind !== 'task' || sent.from !== from.name) {
-            throw new BridgeError('invalid_letter', `The letter id ${request.letterId} is taken`, {
-              letter: request.letterId,
-            });
+          if (sent.kind !== 'task' || sent.from !== from.name || sent.body !== request.body) {
+            throw new BridgeError(
+              'invalid_letter',
+              `The letter id ${request.letterId} belongs to another letter. Give a new job a new id`,
+              { letter: request.letterId }
+            );
           }
           return { job: this.requireJob(sent.job).job, letter: sent, duplicate: true };
         }
@@ -339,6 +382,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       const resolution = resolveAddress(this.store, request.to, {
         project: from.project,
         caller: from.name,
+        now: this.now(),
         canSpawn: (harness) => this.adapters.get(harness)?.createSession !== undefined,
       });
 
@@ -356,14 +400,14 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
           );
         }
       } else {
-        parent = carriedOut[0];
+        parent = carriedOut.reduce<BridgeJob | undefined>(
+          (deepest, job) => (deepest && deepest.depth >= job.depth ? deepest : job),
+          undefined
+        );
       }
       let depth: number;
       try {
-        depth = nextDepth(
-          carriedOut.map((job) => job.depth),
-          this.limits
-        );
+        depth = nextDepth(parent?.depth, this.limits);
       } catch (error) {
         if (!(error instanceof BridgeError)) throw error;
         this.journal(tx, {
@@ -383,8 +427,29 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
           ? resolvePath(request.cwd)
           : resolvePath(from.cwd, request.cwd)
         : from.cwd;
+      if (!isInside(from.project, cwd)) {
+        throw new BridgeError(
+          'invalid_input',
+          `A job is done inside the project it is handed over in (${from.project}), and ${cwd} is outside it`,
+          { cwd, project: from.project }
+        );
+      }
 
       const now = this.now();
+      const refusal = this.handOverRefusal(from, resolution, request.body, now);
+      if (refusal) {
+        this.journal(tx, {
+          type: 'letter.rejected',
+          agent: from.name,
+          data: {
+            reason: refusal.code,
+            to: request.to,
+            title: request.title ?? titleOf(request.body),
+          },
+        });
+        return new Refusal(refusal);
+      }
+
       let to: AgentRecord;
       if (resolution.kind === 'agent') {
         to = resolution.agent;
@@ -414,15 +479,19 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
         to: to.name,
         project: from.project,
         cwd,
-        ...(request.worktree && { worktree: resolvePath(cwd, request.worktree) }),
         checks: request.checks ?? [],
         budget,
         lettersUsed: 1,
         depth,
         ...(parent && { parent: parent.number }),
-        deadlineAt: this.iso(now + budget.durationMs),
+        createdAt: this.iso(now),
+        deadlineAt: this.iso(
+          Math.min(now + budget.durationMs, parent ? Date.parse(parent.deadlineAt) : Infinity)
+        ),
       };
-      const task = await this.tasks.createTask(userMessage(request.body), undefined, {
+      const firstLetterId = request.letterId ?? this.letterId();
+      const history = userMessage(forHistory(request.body, firstLetterId));
+      const task = await this.tasks.createTask(history, undefined, {
         agentName: to.name,
         metadata: { [BRIDGE_JOB_KEY]: record },
       });
@@ -434,7 +503,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       });
 
       const letter = this.accept(tx, {
-        id: request.letterId ?? this.letterId(),
+        id: firstLetterId,
         job: number,
         kind: 'task',
         from: from.name,
@@ -463,16 +532,24 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
   async send(caller: string, input: SendLetterInput): Promise<SendLetterResult> {
     const request = parse(SendLetterInputSchema, input, 'Cannot send the letter');
     this.checkBody(request.body);
+    await this.heardFrom(caller);
     const outcome = await this.mutate(async (tx): Promise<SendLetterResult | Refusal> => {
       const from = this.requireCaller(caller);
 
       if (request.id) {
         const sent = this.store.getLetter(request.id);
         if (sent) {
-          if (sent.from !== from.name || sent.job !== request.job || sent.kind !== request.kind) {
-            throw new BridgeError('invalid_letter', `The letter id ${request.id} is taken`, {
-              letter: request.id,
-            });
+          if (
+            sent.from !== from.name ||
+            sent.job !== request.job ||
+            sent.kind !== request.kind ||
+            sent.body !== request.body
+          ) {
+            throw new BridgeError(
+              'invalid_letter',
+              `The letter id ${request.id} belongs to another letter. Give a new letter a new id`,
+              { letter: request.id }
+            );
           }
           return { letter: sent, job: this.requireJob(sent.job).job, duplicate: true };
         }
@@ -513,7 +590,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
         newestFirst: true,
         limit: 1,
       })[0];
-      if (repeats(previous, request.kind, request.body)) {
+      if (repeats(previous, request.kind, request.body, answered?.id)) {
         const error = new BridgeError(
           'loop_detected',
           `This ${request.kind} says what your last letter on job ${job.number} said, so it was not delivered. Say something new, report or cancel the job`,
@@ -529,7 +606,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       }
 
       const now = this.now();
-      const exhausted = exhaustedBudget(job, now);
+      const exhausted = exhaustedBudget(job, now, request.kind);
       if (exhausted) {
         const reason =
           exhausted === 'letters'
@@ -575,12 +652,17 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       if (answered && request.kind === 'answer') this.markHandled(tx, answered);
       if (request.kind === 'report') {
         const state = letter.outcome === 'failed' ? 'failed' : 'completed';
-        await this.transition(tx, job.number, state, request.body);
+        await this.transition(tx, job.number, state, forHistory(request.body, letter.id));
         if (state === 'failed')
           await this.patchRecord(job.taskId, { reason: `reported as failed by ${from.name}` });
         this.closeLetters(tx, job.number, letter.id);
       } else if (isAssignee && NEEDS_ANSWER.includes(request.kind)) {
-        await this.transition(tx, job.number, 'input-required', request.body);
+        await this.transition(
+          tx,
+          job.number,
+          'input-required',
+          forHistory(request.body, letter.id)
+        );
       } else if (request.kind === 'answer' && !isAssignee) {
         const open = this.store.countLetters({
           job: job.number,
@@ -589,7 +671,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
           states: ['queued', 'delivered', 'read'],
         });
         if (open === 0 && this.requireJob(job.number).job.state === 'input-required') {
-          await this.transition(tx, job.number, 'working', request.body);
+          await this.transition(tx, job.number, 'working', forHistory(request.body, letter.id));
         }
       }
       return { letter, job: this.requireJob(job.number).job, duplicate: false };
@@ -600,17 +682,23 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
 
   /**
    * The letters waiting for the caller, oldest first, each with the text to show. Taking them
-   * marks them read, and taking a job's first letter starts the job.
+   * marks them read, and taking a job's first letter starts the job. One call returns `limit`
+   * letters at most (20 by default) and no more text than fits one answer: only the letters
+   * returned are marked, the rest wait for the next call. A session that may have missed an
+   * answer asks again with `unhandled`.
    */
   async inbox(caller: string, input: InboxInput = {}): Promise<RenderedLetter[]> {
     const request = parse(InboxInputSchema, input, 'Cannot read the inbox');
+    await this.heardFrom(caller);
     return this.mutate(async (tx) => {
       const agent = this.requireCaller(caller);
-      const letters = this.store.listLetters({
+      const waiting = this.store.listLetters({
         to: agent.name,
         states: request.unhandled ? ['queued', 'delivered', 'read'] : UNREAD_STATES,
         ...(request.job !== undefined && { job: request.job }),
+        limit: request.limit ?? DEFAULT_INBOX_LIMIT,
       });
+      const letters = fitting(waiting, (letter) => 2 * letter.body.length);
       const rendered: RenderedLetter[] = [];
       for (const letter of letters) {
         const { job } = this.requireJob(letter.job);
@@ -633,6 +721,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
    * @throws BridgeError `unknown_letter` for a letter that is not addressed to the caller
    */
   async acknowledge(caller: string, letterId: string): Promise<Letter> {
+    await this.heardFrom(caller);
     return this.mutate(async (tx) => {
       const agent = this.requireCaller(caller);
       const letter = this.store.getLetter(letterId);
@@ -660,6 +749,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
    * @throws BridgeError `not_a_party`, `job_finished`
    */
   async cancel(caller: string, number: number, reason?: string): Promise<BridgeJob> {
+    await this.heardFrom(caller);
     return this.mutate(async (tx) => {
       const agent = this.requireCaller(caller);
       const { job } = this.requireJob(number);
@@ -676,15 +766,14 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
           state: job.state,
         });
       }
-      const why = reason?.trim() || `canceled by ${agent.name}`;
-      await this.transition(tx, number, 'canceled', why);
-      await this.patchRecord(job.taskId, { reason: why });
-      this.closeLetters(tx, number);
-      this.systemNote(
+      const given = reason ? oneLine(reason) : '';
+      await this.cancelJob(
         tx,
-        job,
-        job.to,
-        `Job #${number} was canceled by ${agent.name}: ${why}. Stop working on it.`
+        number,
+        given ? `canceled by ${agent.name}: ${given}` : `canceled by ${agent.name}`,
+        given
+          ? `Job #${number} was canceled by ${agent.name}. Stop working on it. Their reason:\n${quoted(given)}`
+          : `Job #${number} was canceled by ${agent.name}. Stop working on it.`
       );
       return this.requireJob(number).job;
     });
@@ -725,11 +814,13 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
     return this.enqueue(async () => this.requireJob(number).job);
   }
 
-  /** Jobs, newest first */
+  /** Jobs, newest first, 200 at most unless `limit` says otherwise */
   async jobs(filter: JobTaskFilter = {}): Promise<BridgeJob[]> {
     const request = parse(JobsFilterSchema, filter, 'Cannot list jobs') as JobTaskFilter;
     return this.enqueue(async () =>
-      this.store.jobTasks(request).flatMap((task) => jobOf(task) ?? [])
+      this.store
+        .jobTasks({ ...request, limit: request.limit ?? DEFAULT_LIST_LIMIT })
+        .flatMap((task) => jobOf(task) ?? [])
     );
   }
 
@@ -738,14 +829,38 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
     return this.enqueue(async () => this.store.listAgents(request));
   }
 
+  /**
+   * Letters, oldest first, 200 at most unless `limit` says otherwise and no more text than fits
+   * one answer. Go on from the last one with `afterSeq`
+   */
   async letters(filter: LetterFilter = {}): Promise<Letter[]> {
     const request = parse(LettersFilterSchema, filter, 'Cannot list letters') as LetterFilter;
-    return this.enqueue(async () => this.store.listLetters(request));
+    return this.enqueue(async () =>
+      fitting(
+        this.store.listLetters({ ...request, limit: request.limit ?? DEFAULT_LIST_LIMIT }),
+        (letter) => letter.body.length
+      )
+    );
   }
 
+  /**
+   * Entries of the journal, oldest first: the first 200 unless `limit` says otherwise, or the
+   * last `tail`, and no more text than fits one answer. Go on from the last one with `afterSeq`
+   */
   async readJournal(query: JournalQuery = {}): Promise<JournalEntry[]> {
     const request = parse(JournalQuerySchema, query, 'Cannot read the journal');
-    return this.enqueue(async () => this.store.readJournal(request));
+    const size = (entry: JournalEntry) =>
+      typeof entry.data?.body === 'string' ? entry.data.body.length : 0;
+    return this.enqueue(async () => {
+      if (request.tail !== undefined) {
+        const newestFirst = this.store.readJournal(request).reverse();
+        return fitting(newestFirst, size).reverse();
+      }
+      return fitting(
+        this.store.readJournal({ ...request, limit: request.limit ?? DEFAULT_LIST_LIMIT }),
+        size
+      );
+    });
   }
 
   async status(): Promise<DispatcherStatus> {
@@ -768,9 +883,9 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       const failed: number[] = [];
       const reminded: string[] = [];
 
-      for (const task of this.store.jobTasks({ states: ACTIVE_JOB_STATES })) {
+      for (const task of this.store.jobTasks({ states: ACTIVE_JOB_STATES, deadlineBy: now })) {
         const job = jobOf(task);
-        if (!job || now < Date.parse(job.deadlineAt)) continue;
+        if (!job) continue;
         await this.failJob(
           tx,
           job.number,
@@ -802,7 +917,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
             job,
             letter.to,
             `Reminder: the ${letter.kind} ${letter.id} from ${letter.from} still waits for ${pickup ? 'you to take it' : 'your answer'}. ` +
-              `Without it job #${job.number} fails in ${formatDuration(job.budget.replyTimeoutMs)}.\n\n${quote}`
+              `Without it job #${job.number} fails in ${formatDuration(job.budget.replyTimeoutMs)}. It says:\n${quoted(quote)}`
           );
           this.journal(tx, {
             type: 'letter.reminded',
@@ -821,10 +936,60 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
         failed.push(job.number);
       }
 
-      for (const letter of this.store.listLetters({ states: ['queued'] })) tx.wake.add(letter.to);
-      return { failed, reminded };
+      failed.push(...(await this.retireAgents(tx, now)));
+      for (const agent of this.store.queuedRecipients()) tx.wake.add(agent);
+      return { failed: [...new Set(failed)], reminded };
     });
     return result;
+  }
+
+  /**
+   * Takes sessions that are not there out of the address book, so a harness word keeps reaching
+   * the session that is: one whose start never finished (the dispatcher that started it is
+   * gone) fails its jobs, one that has been silent for `limits.agentIdleMs` and has no job in
+   * progress just leaves. Returns the jobs it failed.
+   */
+  private async retireAgents(tx: Transaction, now: number): Promise<number[]> {
+    const failed: number[] = [];
+    for (const agent of this.store.listAgents({ statuses: ['starting'] })) {
+      if (this.starting.has(agent.name)) continue;
+      failed.push(
+        ...(await this.agentGone(
+          tx,
+          agent,
+          `the session of ${agent.name} never started: the dispatcher stopped while starting it`
+        ))
+      );
+    }
+    const silent = this.store.listAgents({
+      statuses: ['active'],
+      seenBefore: now - this.limits.agentIdleMs,
+    });
+    for (const agent of silent) {
+      const busy = this.store.jobTasks({ party: agent.name, states: ACTIVE_JOB_STATES, limit: 1 });
+      if (busy.length > 0) continue;
+      this.store.putAgent({ ...agent, status: 'gone' });
+      this.journal(tx, {
+        type: 'agent.gone',
+        agent: agent.name,
+        data: { reason: 'idle', lastSeenAt: agent.lastSeenAt },
+      });
+    }
+    return failed;
+  }
+
+  /** Marks an agent gone and fails every job it was to carry out. Returns those jobs. */
+  private async agentGone(tx: Transaction, agent: AgentRecord, reason: string): Promise<number[]> {
+    this.store.putAgent({ ...agent, status: 'gone' });
+    this.journal(tx, { type: 'agent.gone', agent: agent.name, data: { error: reason } });
+    const failed: number[] = [];
+    for (const task of this.store.jobTasks({ to: agent.name, states: ACTIVE_JOB_STATES })) {
+      const job = jobOf(task);
+      if (!job) continue;
+      await this.failJob(tx, job.number, reason);
+      failed.push(job.number);
+    }
+    return failed;
   }
 
   /** Resolves once every call made so far is handled and every delivery it started has ended. */
@@ -838,8 +1003,9 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
   }
 
   /**
-   * Waits for the calls being handled and the deliveries they started, then takes no more. A
-   * delivery that hangs is given up on after `limits.deliveryTimeoutMs`, so this always ends.
+   * Waits for the calls being handled, the deliveries and the session starts they began, then
+   * takes no more. A delivery that hangs is given up on after `limits.deliveryTimeoutMs` and a
+   * session start after `limits.sessionStartTimeoutMs`, so this always ends.
    */
   async close(): Promise<void> {
     this.closing = true;
@@ -889,6 +1055,26 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
 
   private journal(tx: Transaction, entry: Omit<JournalEntry, 'seq' | 'at'>): void {
     tx.entries.push(this.store.appendJournal({ at: this.iso(), ...entry }));
+  }
+
+  /**
+   * Notes that a session called: the time, and that a session the bridge took for gone is
+   * there again. It is stored on its own, before the call is handled, so a call the bridge then
+   * refuses still counts as a sign of life.
+   */
+  private heardFrom(name: string): Promise<void> {
+    return this.mutate(async (tx) => {
+      const known = this.store.getAgent(name);
+      if (!known || known.status === 'starting' || known.sessionId === '') return;
+      this.store.putAgent({ ...known, status: 'active', lastSeenAt: this.iso() });
+      if (known.status !== 'gone') return;
+      this.journal(tx, {
+        type: 'agent.registered',
+        agent: name,
+        data: { harness: known.harness, returned: true },
+      });
+      tx.wake.add(name);
+    });
   }
 
   private requireCaller(name: string): AgentRecord {
@@ -968,13 +1154,106 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
     const text = `Job #${number} has failed: ${reason}.`;
     this.systemNote(tx, job, job.from, text);
     this.systemNote(tx, job, job.to, `${text} Stop working on it.`);
+    await this.cancelChildren(tx, job);
   }
 
-  /** A finished job waits for nothing: its letters stop being due, and the job's own letter is done with. */
+  private async cancelJob(
+    tx: Transaction,
+    number: number,
+    reason: string,
+    note: string
+  ): Promise<void> {
+    const { job } = this.requireJob(number);
+    if (isFinishedJobState(job.state)) return;
+    await this.transition(tx, number, 'canceled', reason);
+    await this.patchRecord(job.taskId, { reason });
+    this.closeLetters(tx, number);
+    this.systemNote(tx, job, job.to, note);
+    await this.cancelChildren(tx, job);
+  }
+
+  /** A job that is over takes the jobs handed over from inside it with it: nobody waits for them. */
+  private async cancelChildren(tx: Transaction, parent: BridgeJob): Promise<void> {
+    const children = this.store.jobTasks({ parent: parent.number, states: ACTIVE_JOB_STATES });
+    for (const task of children) {
+      const child = jobOf(task);
+      if (!child) continue;
+      const reason = `job #${parent.number}, which it was part of, is over`;
+      await this.cancelJob(
+        tx,
+        child.number,
+        reason,
+        `Job #${child.number} was canceled: ${reason}. Stop working on it.`
+      );
+      this.systemNote(tx, child, child.from, `Job #${child.number} was canceled: ${reason}.`);
+    }
+  }
+
+  /**
+   * Why an agent may not hand this job over right now, if it may not: it is the job it already
+   * handed to the same agent and that is still in progress, it has too many jobs out, it hands
+   * jobs over too fast, or too many sessions are being started.
+   */
+  private handOverRefusal(
+    from: AgentRecord,
+    resolution: ReturnType<typeof resolveAddress>,
+    body: string,
+    now: number
+  ): BridgeError | undefined {
+    const open = this.store
+      .jobTasks({ from: from.name, states: ACTIVE_JOB_STATES })
+      .flatMap((task) => jobOf(task) ?? []);
+    if (resolution.kind === 'agent') {
+      const wanted = normalizeBody(body);
+      const same = open.find((job) => {
+        if (job.to !== resolution.agent.name) return false;
+        const first = this.store.listLetters({ job: job.number, kinds: ['task'], limit: 1 })[0];
+        return first !== undefined && normalizeBody(first.body) === wanted;
+      });
+      if (same) {
+        return new BridgeError(
+          'loop_detected',
+          `You already handed this job to ${same.to} as job #${same.number}, and it is still ${same.state}. Wait for its report, or cancel it first`,
+          { job: same.number }
+        );
+      }
+    }
+    if (open.length >= this.limits.maxOpenJobs) {
+      return new BridgeError(
+        'budget_exhausted',
+        `You have ${open.length} jobs out that are still in progress, the most there may be. Wait for their reports or cancel some`,
+        { open: open.length, max: this.limits.maxOpenJobs }
+      );
+    }
+    const recent = this.store.jobTasks({ from: from.name, createdSince: now - 3_600_000 }).length;
+    if (recent >= this.limits.jobsPerHour) {
+      return new BridgeError(
+        'budget_exhausted',
+        `You handed over ${recent} jobs in the last hour, the most there may be. This looks like a loop: stop and tell the person what is going on`,
+        { recent, max: this.limits.jobsPerHour }
+      );
+    }
+    if (resolution.kind === 'spawn') {
+      const starting = this.store.listAgents({ statuses: ['starting'] }).length;
+      if (starting >= this.limits.maxStartingSessions) {
+        return new BridgeError(
+          'no_session',
+          `The bridge is already starting ${starting} sessions, the most at once. Hand the job over again when they are up`,
+          { starting, max: this.limits.maxStartingSessions }
+        );
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * A finished job waits for nothing: its own letter and the questions nobody answered are done
+   * with, and no letter of it is due any more.
+   */
   private closeLetters(tx: Transaction, number: number, except?: string): void {
     for (const letter of this.store.listLetters({ job: number })) {
       if (letter.id === except) continue;
-      if (letter.kind === 'task' && letter.state !== 'handled') {
+      if (expectationOf(letter.kind) !== 'none' && letter.state !== 'handled') {
         this.markHandled(tx, letter);
       } else if (letter.replyDueAt) {
         this.store.updateLetter(letter.id, { clear: ['replyDueAt'] });
@@ -1116,13 +1395,19 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
     return updated;
   }
 
-  private markDelivered(tx: Transaction, letterId: string): void {
+  /**
+   * Records that an adapter handed a letter to its session. A job handed over this way counts as
+   * taken: the harness has it and woke the session, which may work without calling the bridge
+   * until it reports. The letter is read only once the session calls about the job.
+   */
+  private async markDelivered(tx: Transaction, letterId: string): Promise<void> {
     const letter = this.store.getLetter(letterId);
     if (letter?.state !== 'queued') return;
+    const taken = expectationOf(letter.kind) === 'pickup';
     this.store.updateLetter(letterId, {
       state: 'delivered',
       deliveredAt: this.iso(),
-      clear: ['nextAttemptAt', 'lastError'],
+      clear: taken ? ['nextAttemptAt', 'lastError', 'replyDueAt'] : ['nextAttemptAt', 'lastError'],
     });
     this.journal(tx, {
       type: 'letter.delivered',
@@ -1130,6 +1415,9 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       letter: letter.id,
       agent: letter.to,
     });
+    if (taken && this.requireJob(letter.job).job.state === 'submitted') {
+      await this.transition(tx, letter.job, 'working');
+    }
   }
 
   private track(work: Promise<void>): void {
@@ -1160,9 +1448,12 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
         if (agent?.status !== 'active') return undefined;
         const adapter = this.adapters.get(agent.harness);
         if (!adapter?.capabilities.push) return undefined;
-        const letter = this.store
-          .listLetters({ to: name, states: ['queued'], limit: DELIVERY_WINDOW })
-          .find((queued) => queued.attempts < this.limits.deliveryAttempts);
+        const letter = this.store.listLetters({
+          to: name,
+          states: ['queued'],
+          attemptsBelow: this.limits.deliveryAttempts,
+          limit: 1,
+        })[0];
         if (!letter) return undefined;
         if (letter.nextAttemptAt && Date.parse(letter.nextAttemptAt) > this.now()) return undefined;
         const { job } = this.requireJob(letter.job);
@@ -1180,7 +1471,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
         await this.mutate(async (tx) => this.deliveryFailed(tx, next.letter.id, asError(error)));
         return;
       }
-      await this.mutate(async (tx) => this.markDelivered(tx, next.letter.id));
+      await this.mutate((tx) => this.markDelivered(tx, next.letter.id));
     }
   }
 
@@ -1263,13 +1554,10 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       const message = asError(error).message;
       await this.mutate(async (tx) => {
         const agent = this.store.getAgent(agentName);
-        if (agent?.status === 'starting') {
-          this.store.putAgent({ ...agent, status: 'gone' });
-          this.journal(tx, { type: 'agent.gone', agent: agentName, data: { error: message } });
-        }
-        await this.failJob(
+        if (agent?.status !== 'starting') return;
+        await this.agentGone(
           tx,
-          jobNumber,
+          agent,
           `the bridge could not start a ${request.agent.harness} session: ${message}`
         );
       });
@@ -1300,11 +1588,8 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
           });
         }
       }
-      if (created.deliveredFirstLetter) this.markDelivered(tx, letterId);
-      if (name !== agentName) {
-        this.starting.delete(agentName);
-        tx.wake.add(name);
-      }
+      if (created.deliveredFirstLetter) await this.markDelivered(tx, letterId);
+      if (name !== agentName) tx.wake.add(name);
     });
   }
 }

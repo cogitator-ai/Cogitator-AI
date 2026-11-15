@@ -65,12 +65,16 @@ export type { CreateJobInput, InboxInput, SendLetterInput } from './inputs.js';
 export { SqliteBridgeStore, BRIDGE_SCHEMA_VERSION } from './store/sqlite.js';
 export type { OpenBridgeStoreOptions } from './store/sqlite.js';
 export type {
+  AcquireLeaseOptions,
+  AcquireLeaseResult,
   AgentFilter,
   BridgeStore,
   JobTaskFilter,
   JournalQuery,
   Lease,
+  LeaseCandidate,
   LetterFilter,
+  LetterPatch,
 } from './store/store.js';
 
 export {

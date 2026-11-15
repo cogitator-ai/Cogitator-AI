@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, statSync } from 'node:fs';
 import { connect } from 'node:net';
 import { BridgeClient } from '../client';
 import { BridgeError } from '../errors';
@@ -119,6 +119,18 @@ describe('hostBridge', () => {
     expect(statSync(host.paths.database).mode & 0o777).toBe(0o600);
   });
 
+  it('keeps them to the owner in a folder that others can enter, from the moment they exist', async () => {
+    if (!posix) return;
+    chmodSync(home, 0o755);
+    const host = await startHost();
+    const client = await clientFor(claudeCaller);
+    await client.status();
+
+    for (const file of [host.paths.socket, host.paths.database, `${host.paths.database}-wal`]) {
+      expect(statSync(file).mode & 0o777, file).toBe(0o600);
+    }
+  });
+
   it('refuses a second dispatcher while the first runs, naming it', async () => {
     await startHost();
 
@@ -132,6 +144,15 @@ describe('hostBridge', () => {
     expect((second as BridgeError).message).toContain(`pid ${process.pid}`);
     const client = await clientFor();
     expect((await client.status()).dispatcher.pid).toBe(process.pid);
+  });
+
+  it('gives the store back when the dispatcher cannot be built', async () => {
+    await expect(hostBridge({ home, limits: { maxDepth: 0 } })).rejects.toMatchObject({
+      code: 'invalid_input',
+    });
+
+    const host = await startHost();
+    expect(host.info.pid).toBe(process.pid);
   });
 
   it('lets the next dispatcher in after it closed, with everything still there', async () => {
@@ -295,6 +316,79 @@ describe('BridgeClient', () => {
     await until(async () => (await watcher.job(1)).state === 'completed', 'the report');
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(all.length).toBe(heard);
+  });
+
+  it('gives each listener the job it asked for', async () => {
+    await startHost();
+    const claude = await clientFor(claudeCaller);
+    await clientFor(codexCaller);
+    const watcher = await clientFor();
+    const first: JournalEntry[] = [];
+    const second: JournalEntry[] = [];
+    const stopFirst = await watcher.subscribe((entry) => first.push(entry), { job: 1 });
+    await watcher.subscribe((entry) => second.push(entry), { job: 2 });
+
+    await claude.createJob({ to: 'codex', body: 'First' });
+    await claude.createJob({ to: 'codex', body: 'Second' });
+    await until(() => first.length >= 2 && second.length >= 2, 'both listeners to hear their job');
+
+    expect(new Set(first.map((entry) => entry.job))).toEqual(new Set([1]));
+    expect(new Set(second.map((entry) => entry.job))).toEqual(new Set([2]));
+
+    await stopFirst();
+    const heard = first.length;
+    await claude.cancel(1);
+    await claude.cancel(2);
+    await until(() => second.some((entry) => entry.data?.to === 'canceled'), 'the second cancel');
+    expect(first.length).toBe(heard);
+  });
+
+  it('pages through an inbox too large for one answer without losing a letter', async () => {
+    await startHost();
+    const claude = await clientFor(claudeCaller);
+    const codex = await clientFor(codexCaller);
+    await claude.createJob({ to: 'codex', body: 'Carrier' });
+    for (let index = 0; index < 46; index += 1) {
+      await claude.send({ job: 1, kind: 'note', body: `${index} ${'x'.repeat(190_000)}` });
+    }
+
+    const seen = new Set<string>();
+    for (;;) {
+      const batch = await codex.inbox({ limit: 100 });
+      if (batch.length === 0) break;
+      for (const letter of batch) seen.add(letter.id);
+    }
+
+    expect(seen.size).toBe(47);
+    expect(await codex.letters({ to: codex.agent!.name, states: ['queued', 'delivered'] })).toEqual(
+      []
+    );
+  }, 30_000);
+
+  it('handles a call written right behind the hello as the agent it named', async () => {
+    const host = await startHost();
+    const lines = await new Promise<string[]>((resolve, reject) => {
+      const socket = connect(host.paths.socket);
+      let buffer = '';
+      socket.once('error', reject);
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf-8');
+        const got = buffer.split('\n').filter(Boolean);
+        if (got.length === 2) {
+          resolve(got);
+          socket.destroy();
+        }
+      });
+      socket.write(
+        `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'bridge/hello', params: { caller: claudeCaller } })}\n` +
+          `${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'letters/inbox', params: {} })}\n`
+      );
+    });
+
+    expect(lines.map((line) => JSON.parse(line) as unknown)).toMatchObject([
+      { id: 1, result: { agent: { name: 'claude@demo' } } },
+      { id: 2, result: [] },
+    ]);
   });
 
   it('rejects the calls still waiting when the dispatcher goes away', async () => {

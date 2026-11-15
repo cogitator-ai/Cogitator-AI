@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, unlinkSync } from 'node:fs';
+import { chmodSync, unlinkSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import type { z } from 'zod';
 import {
@@ -26,6 +26,9 @@ import {
   type HelloResult,
 } from './protocol.js';
 import type { JournalEntry } from './types.js';
+
+/** The most connections the dispatcher holds at once. */
+const MAX_CONNECTIONS = 256;
 
 /** A connection that does not read is dropped once this much waits to be written to it. */
 const MAX_PENDING_BYTES = 16 * 1024 * 1024;
@@ -91,9 +94,9 @@ class Connection {
     try {
       for await (const line of readNdjson(this.socket)) {
         if ('value' in line) {
-          void this.peer.receive(line.value);
+          await this.peer.receive(line.value);
         } else {
-          void this.peer.respondError(null, {
+          await this.peer.respondError(null, {
             code: JSON_RPC_ERROR_CODES.parseError,
             message: `Line ${line.error.line}: ${line.error.message}`,
           });
@@ -206,6 +209,22 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+/**
+ * Removes what a dispatcher that died left at the socket path, a symlink included, without
+ * following it.
+ */
+function removeStale(socketPath: string): void {
+  try {
+    unlinkSync(socketPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+/**
+ * Binds the socket. The bind happens inside this call, so the caller narrows the umask around it
+ * and the socket file is never there with wider access than its owner's.
+ */
 function listen(server: Server, socketPath: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => reject(error);
@@ -220,7 +239,8 @@ function listen(server: Server, socketPath: string): Promise<void> {
 /**
  * Serves a dispatcher on a socket of this machine: JSON-RPC 2.0, one message per line. A
  * connection says which session is calling with `bridge/hello`, and acts as that agent from then
- * on. Whoever serves must hold the dispatcher's lease: a socket file left by a dispatcher that
+ * on. The calls of one connection are handled in the order they were written, one at a time, so
+ * a call written right behind the hello already acts as the agent. Whoever serves must hold the dispatcher's lease: a socket file left by a dispatcher that
  * died is removed.
  */
 export async function serveBridge(options: BridgeServerOptions): Promise<BridgeServer> {
@@ -234,9 +254,22 @@ export async function serveBridge(options: BridgeServerOptions): Promise<BridgeS
   });
 
   const pipe = isPipe(socketPath);
-  if (!pipe && existsSync(socketPath)) unlinkSync(socketPath);
-  await listen(server, socketPath);
-  if (!pipe) chmodSync(socketPath, 0o600);
+  server.maxConnections = MAX_CONNECTIONS;
+  if (pipe) {
+    await listen(server, socketPath);
+  } else {
+    removeStale(socketPath);
+    const umask = process.umask(0o177);
+    let listening: Promise<void>;
+    try {
+      listening = listen(server, socketPath);
+    } finally {
+      process.umask(umask);
+    }
+    await listening;
+    chmodSync(socketPath, 0o600);
+  }
+  server.on('error', (error) => options.onError?.(error));
 
   const onJournal = (entry: JournalEntry) => {
     for (const connection of connections) connection.hear(entry);

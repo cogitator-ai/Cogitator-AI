@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { A2ATask } from '@cogitator-ai/a2a';
-import { taskCreatedAt, taskTime } from '@cogitator-ai/a2a';
+import { taskTime } from '@cogitator-ai/a2a';
 import {
   BRIDGE_JOB_KEY,
   JOB_STATES,
@@ -31,6 +31,7 @@ export const BridgeJobRecordSchema = z.object({
   lettersUsed: z.number().int().nonnegative(),
   depth: z.number().int().positive(),
   parent: z.number().int().positive().optional(),
+  createdAt: z.string(),
   deadlineAt: z.string(),
   reason: z.string().optional(),
   verification: JobVerificationSchema.optional(),
@@ -67,7 +68,6 @@ export function jobOf(task: A2ATask): BridgeJob | undefined {
     ...record,
     taskId: task.id,
     state: jobStateOf(task),
-    createdAt: new Date(taskCreatedAt(task)).toISOString(),
     updatedAt: new Date(taskTime(task)).toISOString(),
   };
 }

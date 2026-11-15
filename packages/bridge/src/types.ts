@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
 /** Metadata key of an A2A task holding the bridge's record of the job. */
@@ -46,7 +47,9 @@ export const INBOX_DELIVERY = 'inbox';
 
 /**
  * `starting`: the bridge asked an adapter to start the session and waits for its id, `active`:
- * the session is known by its id, `gone`: it cannot be reached any more
+ * the session is known by its id, `gone`: it is not reached any more, because it could not be
+ * started or has not called the bridge for `limits.agentIdleMs`. A session that is gone and calls
+ * again is active again, under the same name
  */
 export type AgentStatus = 'starting' | 'active' | 'gone';
 
@@ -69,29 +72,57 @@ export interface AgentRecord {
   status: AgentStatus;
   /** ISO 8601 */
   registeredAt: string;
-  /** ISO 8601 time of its last call to the bridge */
+  /** ISO 8601 time of the last call it made as an agent: a job, a letter, its inbox */
   lastSeenAt: string;
 }
 
 /** Who calls the bridge, as read from the caller's environment. */
 export interface CallerIdentity {
+  /** The harness, compared without regard to case: letters, digits, `.`, `_` and `-` */
   harness: string;
   sessionId: string;
+  /** The folder the session runs in, an absolute path */
   cwd: string;
-  /** The project root, found from `cwd` when absent */
+  /** The project root, an absolute path, found from `cwd` when absent */
   project?: string;
   sessionName?: string;
   /** The name the bridge gave a session it started, handed to that session in its environment */
   agentName?: string;
 }
 
-export const CallerIdentitySchema = z.object({
-  harness: z.string().trim().min(1).max(64),
-  sessionId: z.string().trim().min(1).max(256),
-  cwd: z.string().min(1).max(4096),
-  project: z.string().min(1).max(4096).optional(),
-  sessionName: z.string().trim().min(1).max(256).optional(),
-  agentName: z.string().trim().min(1).max(256).optional(),
+/**
+ * The name of a harness: letters, digits, `.`, `_` and `-`, compared without regard to case and
+ * kept in lower case. It becomes part of agent names, so it takes nothing else.
+ */
+export const HarnessNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'A harness name takes letters, digits, ".", "_" and "-"')
+  .transform((name) => name.toLowerCase());
+
+const AbsolutePathSchema = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine((path) => isAbsolute(path), 'The path must be absolute');
+
+/** Text a person typed that ends up on one line: no line breaks or other control characters. */
+const OneLineSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(256)
+  .regex(/^[^\p{Cc}]*$/u, 'No line breaks or control characters');
+
+export const CallerIdentitySchema = z.strictObject({
+  harness: HarnessNameSchema,
+  sessionId: OneLineSchema,
+  cwd: AbsolutePathSchema,
+  project: AbsolutePathSchema.optional(),
+  sessionName: OneLineSchema.optional(),
+  agentName: OneLineSchema.optional(),
 });
 
 /**
@@ -170,6 +201,7 @@ export interface BridgeJobRecord {
   to: string;
   project: string;
   cwd: string;
+  /** The git worktree the job is done in, when the bridge gave it one */
   worktree?: string;
   checks: JobCheck[];
   budget: JobBudget;
@@ -177,6 +209,8 @@ export interface BridgeJobRecord {
   /** 1 for a job from a person's session, one more for every job handed over from inside a job */
   depth: number;
   parent?: number;
+  /** ISO 8601 time the job was handed over */
+  createdAt: string;
   /** ISO 8601 time the job fails at when it is still running */
   deadlineAt: string;
   /** Why the job failed or was canceled */
@@ -188,9 +222,7 @@ export interface BridgeJobRecord {
 export interface BridgeJob extends BridgeJobRecord {
   taskId: string;
   state: JobState;
-  /** ISO 8601 */
-  createdAt: string;
-  /** ISO 8601 */
+  /** ISO 8601 time of its last change of state */
   updatedAt: string;
 }
 
@@ -304,7 +336,38 @@ export interface BridgeLimits {
   sessionStartTimeoutMs: number;
   /** The longest letter body, in characters */
   maxBodyLength: number;
+  /**
+   * How long a session may stay silent before the bridge takes it for gone, in ms. A session
+   * with a job in progress is never taken for gone
+   */
+  agentIdleMs: number;
+  /** How many jobs an agent may have handed over that are still in progress */
+  maxOpenJobs: number;
+  /** How many jobs an agent may hand over in an hour */
+  jobsPerHour: number;
+  /** How many sessions adapters may be starting at once */
+  maxStartingSessions: number;
 }
+
+export const BridgeLimitsSchema = z.strictObject({
+  maxDepth: z.number().int().min(1).max(100),
+  budget: JobBudgetSchema,
+  maxBudget: JobBudgetSchema,
+  deliveryAttempts: z.number().int().min(1).max(1000),
+  deliveryBackoffMs: z.number().int().min(0).max(86_400_000),
+  deliveryBackoffMaxMs: z.number().int().min(0).max(86_400_000),
+  deliveryTimeoutMs: z.number().int().positive().max(3_600_000),
+  sessionStartTimeoutMs: z.number().int().positive().max(3_600_000),
+  maxBodyLength: z.number().int().positive().max(1_000_000),
+  agentIdleMs: z
+    .number()
+    .int()
+    .positive()
+    .max(365 * 86_400_000),
+  maxOpenJobs: z.number().int().positive().max(10_000),
+  jobsPerHour: z.number().int().positive().max(100_000),
+  maxStartingSessions: z.number().int().positive().max(100),
+});
 
 export const DEFAULT_LIMITS: BridgeLimits = {
   maxDepth: 3,
@@ -316,6 +379,10 @@ export const DEFAULT_LIMITS: BridgeLimits = {
   deliveryTimeoutMs: 60_000,
   sessionStartTimeoutMs: 180_000,
   maxBodyLength: 200_000,
+  agentIdleMs: 12 * 3_600_000,
+  maxOpenJobs: 20,
+  jobsPerHour: 60,
+  maxStartingSessions: 2,
 };
 
 /** A letter on its way to a session, as an adapter gets it. */
@@ -350,6 +417,7 @@ export interface CreatedSession {
  * part: it reads its inbox whenever it calls the bridge.
  */
 export interface BridgeAdapter {
+  /** The harness it reaches, in lower case: letters, digits, `.`, `_` and `-` */
   readonly harness: string;
   /** The mechanism letters travel by, recorded with every session of the harness */
   readonly delivery: string;

@@ -74,11 +74,14 @@ function open(socketPath: string): Promise<Socket> {
  * ```
  */
 export class BridgeClient {
+  /** What the dispatcher sends this connection: one job, everything, or nothing */
+  private subscribed: number | 'all' | null = null;
+
   private constructor(
     private readonly socket: Socket,
     private readonly peer: JsonRpcPeer,
     private readonly timeoutMs: number,
-    private readonly listeners: Set<(entry: JournalEntry) => void>,
+    private readonly listeners: Map<(entry: JournalEntry) => void, number | undefined>,
     /** The dispatcher the client reached */
     readonly dispatcher: DispatcherInfo,
     /** The agent the client acts as, when it was created for a session */
@@ -96,9 +99,12 @@ export class BridgeClient {
         socket.write(encodeNdjsonLine(message));
       },
     });
-    const listeners = new Set<(entry: JournalEntry) => void>();
-    peer.onNotification(BRIDGE_NOTIFICATIONS.journalEntry, (entry) => {
-      for (const listener of listeners) listener(entry as JournalEntry);
+    const listeners = new Map<(entry: JournalEntry) => void, number | undefined>();
+    peer.onNotification(BRIDGE_NOTIFICATIONS.journalEntry, (value) => {
+      const entry = value as JournalEntry;
+      for (const [listener, job] of [...listeners]) {
+        if (job === undefined || job === entry.job) listener(entry);
+      }
     });
     const closed = new BridgeError('not_running', 'The connection to the bridge dispatcher closed');
     socket.on('error', () => peer.close(closed));
@@ -106,7 +112,18 @@ export class BridgeClient {
     void (async () => {
       try {
         for await (const line of readNdjson(socket)) {
-          if ('value' in line) void peer.receive(line.value);
+          if ('value' in line) {
+            void peer.receive(line.value);
+            continue;
+          }
+          peer.close(
+            new BridgeError(
+              'storage',
+              `The bridge dispatcher sent an answer the client could not read (${line.error.message}). Ask for less at once with a limit`
+            )
+          );
+          socket.destroy();
+          return;
         }
       } catch {
         peer.close(closed);
@@ -178,21 +195,38 @@ export class BridgeClient {
   }
 
   /**
-   * Hears every entry the journal gets from now on, of one job or of all. Resolves once the
-   * dispatcher is sending, with a function that stops it.
+   * Hears every entry the journal gets from now on, of one job or of all. Each listener has its
+   * own filter. Resolves once the dispatcher is sending, with a function that stops it.
    */
   async subscribe(
     listener: (entry: JournalEntry) => void,
     options: { job?: number } = {}
   ): Promise<() => Promise<void>> {
-    this.listeners.add(listener);
-    await this.call(BRIDGE_METHODS.subscribeJournal, options);
-    return async () => {
+    this.listeners.set(listener, options.job);
+    try {
+      await this.syncSubscription();
+    } catch (error) {
       this.listeners.delete(listener);
-      if (this.listeners.size === 0 && !this.peer.closed) {
-        await this.call(BRIDGE_METHODS.unsubscribeJournal, {});
-      }
+      throw error;
+    }
+    return async () => {
+      if (!this.listeners.delete(listener) || this.peer.closed) return;
+      await this.syncSubscription();
     };
+  }
+
+  /**
+   * Asks the dispatcher for what the listeners need between them: one job when they all want the
+   * same one, everything otherwise, nothing when none is left.
+   */
+  private async syncSubscription(): Promise<void> {
+    const jobs = new Set(this.listeners.values());
+    const wanted =
+      this.listeners.size === 0 ? null : jobs.size === 1 ? ([...jobs][0] ?? 'all') : 'all';
+    if (wanted === this.subscribed) return;
+    if (wanted === null) await this.call(BRIDGE_METHODS.unsubscribeJournal, {});
+    else await this.call(BRIDGE_METHODS.subscribeJournal, wanted === 'all' ? {} : { job: wanted });
+    this.subscribed = wanted;
   }
 
   /** Ends the connection. Calls still waiting for an answer reject */

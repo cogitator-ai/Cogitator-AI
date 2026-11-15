@@ -86,6 +86,7 @@ export async function hostBridge(options: HostBridgeOptions = {}): Promise<Bridg
 
   const store = await SqliteBridgeStore.open(paths.database);
   let lease: Lease;
+  let acquiredNonce: string | undefined;
   let server: BridgeServer | undefined;
   let dispatcher: BridgeDispatcher;
   let timer: NodeJS.Timeout | undefined;
@@ -122,6 +123,7 @@ export async function hostBridge(options: HostBridgeOptions = {}): Promise<Bridg
     }
     lease = acquired.lease;
     const nonce = lease.nonce;
+    acquiredNonce = nonce;
     dispatcher = new BridgeDispatcher({
       store,
       ...(options.adapters && { adapters: options.adapters }),
@@ -137,6 +139,7 @@ export async function hostBridge(options: HostBridgeOptions = {}): Promise<Bridg
       },
     });
   } catch (error) {
+    if (acquiredNonce !== undefined) store.releaseLease(acquiredNonce);
     store.close();
     throw error;
   }
