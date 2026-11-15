@@ -75,6 +75,13 @@ const INTERNAL_KEYS: readonly string[] = [
   TASK_CREATED_AT_KEY,
 ];
 
+/** `metadata` without the keys the server keeps for itself, for metadata that came from outside. */
+export function withoutInternalKeys(metadata: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(metadata).filter(([key]) => !INTERNAL_KEYS.includes(key))
+  );
+}
+
 /** The task as a client receives it: without the internal metadata keys. */
 export function publicTask(task: A2ATask): A2ATask {
   const all = task.metadata;
