@@ -298,6 +298,10 @@ export interface BridgeLimits {
   deliveryBackoffMs: number;
   /** The longest wait between attempts, in ms */
   deliveryBackoffMaxMs: number;
+  /** How long an adapter may take to hand one letter over before the attempt counts as failed, in ms */
+  deliveryTimeoutMs: number;
+  /** How long an adapter may take to start a session, in ms */
+  sessionStartTimeoutMs: number;
   /** The longest letter body, in characters */
   maxBodyLength: number;
 }
@@ -309,6 +313,8 @@ export const DEFAULT_LIMITS: BridgeLimits = {
   deliveryAttempts: 5,
   deliveryBackoffMs: 2_000,
   deliveryBackoffMaxMs: 60_000,
+  deliveryTimeoutMs: 60_000,
+  sessionStartTimeoutMs: 180_000,
   maxBodyLength: 200_000,
 };
 
