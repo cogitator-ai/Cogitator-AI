@@ -107,6 +107,19 @@ function mainCheckoutOf(worktree: string): string | undefined {
   return samePath(claimed, join(worktree, '.git')) ? dirname(commonDir) : undefined;
 }
 
+/**
+ * One spelling for a folder however it was reached: absolute, and with its symlinks resolved
+ * when it exists, so `/tmp/app` and `/private/tmp/app` are the same project.
+ */
+export function canonicalPath(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
 /** Whether `path` is `folder` or lies inside it. */
 export function isInside(folder: string, path: string): boolean {
   const inner = relative(resolve(folder), resolve(path));

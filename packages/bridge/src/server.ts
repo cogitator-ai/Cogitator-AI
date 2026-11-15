@@ -13,6 +13,7 @@ import type { BridgeDispatcher } from './dispatcher.js';
 import { BridgeError } from './errors.js';
 import {
   AcknowledgeParamsSchema,
+  DeliveredParamsSchema,
   BRIDGE_METHODS,
   BRIDGE_NOTIFICATIONS,
   BRIDGE_PROTOCOL_VERSION,
@@ -77,6 +78,8 @@ class Connection {
   private agent: string | undefined;
   private subscription: { job?: number } | undefined;
   private readonly peer: JsonRpcPeer;
+  /** Aborts when the socket closes, so a call that waits ends with its connection */
+  private readonly gone = new AbortController();
 
   constructor(
     private readonly socket: Socket,
@@ -87,6 +90,7 @@ class Connection {
       describeError,
       onError: (error) => options.onError?.(error),
     });
+    socket.once('close', () => this.gone.abort());
     this.handle();
   }
 
@@ -183,6 +187,16 @@ class Connection {
     );
     on(BRIDGE_METHODS.acknowledge, (value) =>
       dispatcher.acknowledge(this.caller(), params(AcknowledgeParamsSchema, value).letter)
+    );
+    on(BRIDGE_METHODS.wait, (value) =>
+      dispatcher.wait(
+        this.caller(),
+        (value ?? {}) as Parameters<BridgeDispatcher['wait']>[1],
+        this.gone.signal
+      )
+    );
+    on(BRIDGE_METHODS.delivered, (value) =>
+      dispatcher.delivered(this.caller(), params(DeliveredParamsSchema, value).letters)
     );
     on(BRIDGE_METHODS.listLetters, (value) =>
       dispatcher.letters((value ?? {}) as Parameters<BridgeDispatcher['letters']>[0])

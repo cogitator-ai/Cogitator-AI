@@ -5,9 +5,17 @@ import {
   readNdjson,
   type JsonRpcMessage,
 } from '@cogitator-ai/server-shared';
-import type { CreateJobResult, SendLetterResult } from './dispatcher.js';
 import { BridgeError } from './errors.js';
-import type { CreateJobInput, InboxInput, SendLetterInput } from './inputs.js';
+import {
+  DEFAULT_WAIT_MS,
+  type CreateJobInput,
+  type CreateJobResult,
+  type InboxInput,
+  type SendLetterInput,
+  type SendLetterResult,
+  type WaitInput,
+  type WaitResult,
+} from './inputs.js';
 import {
   BRIDGE_METHODS,
   BRIDGE_NOTIFICATIONS,
@@ -168,6 +176,21 @@ export class BridgeClient {
     return this.call(BRIDGE_METHODS.acknowledge, { letter });
   }
 
+  /**
+   * Waits for the session's mail, see `BridgeDispatcher.wait`. The connection answers nothing
+   * else until the wait ends: a process that waits uses a connection of its own. Closing the
+   * client ends the wait
+   */
+  wait(input: WaitInput = {}): Promise<WaitResult> {
+    const waitMs = input.timeoutMs ?? DEFAULT_WAIT_MS;
+    return this.call(BRIDGE_METHODS.wait, input, waitMs + this.timeoutMs);
+  }
+
+  /** Says the letters a wait returned reached the session */
+  delivered(letters: readonly string[]): Promise<Letter[]> {
+    return this.call(BRIDGE_METHODS.delivered, { letters });
+  }
+
   cancel(job: number, reason?: string): Promise<BridgeJob> {
     return this.call(BRIDGE_METHODS.cancelJob, { job, ...(reason !== undefined && { reason }) });
   }
@@ -240,7 +263,7 @@ export class BridgeClient {
 
   /** Ends the connection. Calls still waiting for an answer reject */
   async close(): Promise<void> {
-    this.peer.close();
+    this.peer.close(new BridgeError('not_running', 'The connection to the bridge was closed'));
     if (this.socket.destroyed) return;
     await new Promise<void>((resolve) => {
       this.socket.once('close', () => resolve());
@@ -248,9 +271,9 @@ export class BridgeClient {
     });
   }
 
-  private async call<T>(method: string, params: unknown): Promise<T> {
+  private async call<T>(method: string, params: unknown, timeoutMs = this.timeoutMs): Promise<T> {
     try {
-      return await this.peer.request<T>(method, params, { timeoutMs: this.timeoutMs });
+      return await this.peer.request<T>(method, params, { timeoutMs });
     } catch (error) {
       throw fromJsonRpcError(error);
     }

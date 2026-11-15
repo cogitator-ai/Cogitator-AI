@@ -10,7 +10,7 @@ import { BRIDGE_PROTOCOL_VERSION, type DispatcherInfo } from './protocol.js';
 import { serveBridge, type BridgeServer } from './server.js';
 import { SqliteBridgeStore } from './store/sqlite.js';
 import type { Lease } from './store/store.js';
-import type { BridgeAdapter } from './types.js';
+import type { BridgeAdapter } from './adapter.js';
 
 export interface HostBridgeOptions {
   /** The folder of the bridge's files: `COGITATOR_BRIDGE_HOME` by default, else `~/.cogitator/bridge` */

@@ -6,9 +6,12 @@ import {
   JobBudgetSchema,
   JobCheckSchema,
   LETTER_KINDS,
+  type BridgeJob,
   type JobBudget,
   type JobCheck,
+  type Letter,
   type LetterKind,
+  type RenderedLetter,
   type ReportOutcome,
 } from './types.js';
 
@@ -88,6 +91,20 @@ export interface SendLetterInput {
   outcome?: ReportOutcome;
 }
 
+export interface CreateJobResult {
+  job: BridgeJob;
+  letter: Letter;
+  /** True when the job was created before with the same `letterId`, and nothing changed now */
+  duplicate: boolean;
+}
+
+export interface SendLetterResult {
+  letter: Letter;
+  job: BridgeJob;
+  /** True when the letter was sent before with the same id, and nothing changed now */
+  duplicate: boolean;
+}
+
 /** How many letters one call to the inbox returns when it names no limit. */
 export const DEFAULT_INBOX_LIMIT = 20;
 
@@ -114,6 +131,40 @@ export interface InboxInput {
   /** Only letters accepted after this one, to look further than one call returns */
   afterSeq?: number;
 }
+
+/** How long a call waits for mail when it names no time. */
+export const DEFAULT_WAIT_MS = 10 * 60_000;
+
+/** The longest one call waits for mail. */
+export const MAX_WAIT_MS = 24 * 3_600_000;
+
+export const WaitInputSchema = z.strictObject({
+  timeoutMs: z.number().int().positive().max(MAX_WAIT_MS).optional(),
+  limit: z.number().int().positive().max(100).optional(),
+});
+
+export interface WaitInput {
+  /** How long to wait for a letter, 10 minutes by default and a day at most */
+  timeoutMs?: number;
+  /** The most letters to return, 20 by default and 100 at most */
+  limit?: number;
+}
+
+/**
+ * Why a wait ended: `letters` came, the time ran out (`timeout`), another waiter of the same
+ * session took its place (`replaced`), or the dispatcher or the connection closed (`closed`)
+ */
+export type WaitEnd = 'letters' | 'timeout' | 'replaced' | 'closed';
+
+export interface WaitResult {
+  /** The letters queued for the session, oldest first. Empty unless `reason` is `letters` */
+  letters: RenderedLetter[];
+  reason: WaitEnd;
+}
+
+export const DeliveredInputSchema = z.strictObject({
+  letters: z.array(LetterIdSchema).min(1).max(100),
+});
 
 export const JobsFilterSchema = z.strictObject({
   states: z.array(z.enum(JOB_STATES as [string, ...string[]])).optional(),
