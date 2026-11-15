@@ -161,6 +161,7 @@ export type {
   HostedSession,
   HostedSessionContext,
   HostedTurn,
+  HostedTurnContext,
   OpenHostedSession,
   ProviderPermissionMode,
   ProviderSessionsOptions,

@@ -28,9 +28,15 @@ export interface HostedTurn {
   abort?(reason?: unknown): void;
 }
 
+/** What a turn is started for. */
+export interface HostedTurnContext {
+  /** The job the turn carries out, when the job's first letter starts it */
+  job?: BridgeJob;
+}
+
 /** A session of an agent the host runs. One turn goes on at a time. */
 export interface HostedSession {
-  turn(text: string): HostedTurn;
+  turn(text: string, context?: HostedTurnContext): HostedTurn;
   close?(): Promise<void>;
 }
 
@@ -76,12 +82,22 @@ interface Running {
   job?: number;
 }
 
+/** A letter with the job it is about. */
+interface Mail {
+  letter: RenderedLetter;
+  job: BridgeJob;
+}
+
 interface Hosted {
   agentName: string;
   cwd: string;
   session: HostedSession;
   running?: Running;
-  waiting: RenderedLetter[];
+  waiting: Mail[];
+  /** True while the next letter to start is being chosen: a letter that arrives then waits */
+  choosing?: boolean;
+  /** Jobs that were over before their turn came: the agent never saw them, and hears no more */
+  unseen: Set<number>;
 }
 
 function asError(error: unknown): Error {
@@ -94,10 +110,11 @@ function asError(error: unknown): Error {
  * anything else that takes a text and answers. A job's first letter starts a turn, and the
  * agent's answer to it is the job's report: the agent needs no tool to report, and one that
  * failed reports that. A letter that arrives while a turn goes on reaches the agent in the
- * middle of it when the turn takes that, and otherwise starts the next turn. A job that is
- * canceled or fails stops the turn that carries it out, and is not started when it still
- * waited for its turn. The session is in
- * the address book before its first turn starts, so an agent that answers at once is heard.
+ * middle of it when the turn takes that, and otherwise starts the next turn. A letter about a
+ * job that still waits for its turn waits with it, and does not reach the turn of another job.
+ * A job that is canceled or fails stops the turn that carries it out, and is not started when it
+ * still waited for its turn. The session is in the address book before its first turn starts, so
+ * an agent that answers at once is heard.
  *
  * The sessions live in the host's process and end with it.
  */
@@ -122,16 +139,22 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
       });
   }
 
-  function start(hosted: Hosted, letter: RenderedLetter): void {
+  function start(hosted: Hosted, mail: Mail): void {
     let turn: HostedTurn;
+    const { letter } = mail;
     const job = letter.kind === 'task' ? letter.job : undefined;
     try {
-      turn = hosted.session.turn(letter.text);
+      turn = hosted.session.turn(letter.text, job === undefined ? {} : { job: mail.job });
     } catch (error) {
       turn = { result: Promise.reject(asError(error)) };
     }
     const running: Running = { turn, ...(job !== undefined && { job }) };
     hosted.running = running;
+    if (job !== undefined) {
+      hosted.waiting = hosted.waiting.filter(
+        (held) => held.letter.job !== job || !give(turn, held.letter)
+      );
+    }
     turn.result
       .then(
         (answer) => {
@@ -162,19 +185,32 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
 
   /**
    * Starts the turn of the oldest letter that waits. A job that was canceled or failed while its
-   * first letter waited is not started.
+   * first letter waited is not started, and what is written about it is dropped with it: the
+   * agent never saw the job.
    */
   async function startNext(hosted: Hosted): Promise<void> {
-    while (!closed && !hosted.running) {
-      const next = hosted.waiting.shift();
-      if (!next) return;
-      if (next.kind === 'task' && (await over(next.job))) continue;
-      if (closed || hosted.running) {
-        hosted.waiting.unshift(next);
-        return;
+    if (hosted.choosing) return;
+    hosted.choosing = true;
+    try {
+      while (!closed && !hosted.running) {
+        const next = hosted.waiting.shift();
+        if (!next) return;
+        if (next.letter.kind === 'task' && (await over(next.letter.job))) {
+          forget(hosted, next.letter.job);
+          continue;
+        }
+        if (closed) return;
+        start(hosted, next);
       }
-      start(hosted, next);
+    } finally {
+      hosted.choosing = false;
     }
+  }
+
+  /** Drops what waits about a job the agent never started, and what comes about it later. */
+  function forget(hosted: Hosted, job: number): void {
+    hosted.unseen.add(job);
+    hosted.waiting = hosted.waiting.filter((held) => held.letter.job !== job);
   }
 
   /** Stops the turn that carries out a job once the job is over: nobody waits for its answer. */
@@ -184,17 +220,28 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
     if (hosted.running === running) running.turn.abort?.(new Error(`Job #${job} is over`));
   }
 
-  function hand(hosted: Hosted, letter: RenderedLetter): void {
+  /** Hands a letter to a turn that goes on. False when the turn does not take it. */
+  function give(turn: HostedTurn, letter: RenderedLetter): boolean {
+    if (letter.kind === 'task') return false;
+    if (STEERED.includes(letter.kind) && turn.steer?.(letter.text)) return true;
+    return turn.followUp?.(letter.text) ?? false;
+  }
+
+  /** Whether a job's first letter still waits for its turn in the session. */
+  function awaitsTurn(hosted: Hosted, job: number): boolean {
+    return hosted.waiting.some((held) => held.letter.kind === 'task' && held.letter.job === job);
+  }
+
+  function hand(hosted: Hosted, mail: Mail): void {
+    if (hosted.unseen.has(mail.letter.job)) return;
     const turn = hosted.running?.turn;
     if (!turn) {
-      start(hosted, letter);
+      if (hosted.choosing) hosted.waiting.push(mail);
+      else start(hosted, mail);
       return;
     }
-    if (letter.kind !== 'task') {
-      if (STEERED.includes(letter.kind) && turn.steer?.(letter.text)) return;
-      if (turn.followUp?.(letter.text)) return;
-    }
-    hosted.waiting.push(letter);
+    if (!awaitsTurn(hosted, mail.letter.job) && give(turn, mail.letter)) return;
+    hosted.waiting.push(mail);
   }
 
   return {
@@ -220,11 +267,16 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
         project: request.project,
         job: request.job,
       });
+      if (closed) {
+        await session.close?.();
+        throw new Error('The host is closing');
+      }
       const hosted: Hosted = {
         agentName: request.agentName,
         cwd: request.cwd,
         session,
         waiting: [],
+        unseen: new Set(),
       };
       sessions.set(sessionId, hosted);
       await bridge?.register({
@@ -234,14 +286,15 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
         project: request.project,
         agentName: request.agentName,
       });
-      start(hosted, request.firstLetter);
+      if (await over(request.job.number)) forget(hosted, request.job.number);
+      else if (!closed) hand(hosted, { letter: request.firstLetter, job: request.job });
       return { sessionId, deliveredFirstLetter: true };
     },
-    async deliver({ agent, letter }: LetterDelivery): Promise<void> {
+    async deliver({ agent, letter, job }: LetterDelivery): Promise<void> {
       const hosted = sessions.get(agent.sessionId);
       if (!hosted) throw new Error(`The session of ${agent.name} does not run in this host`);
       hosted.agentName = agent.name;
-      hand(hosted, letter);
+      hand(hosted, { letter, job });
       void stopIfOver(hosted, letter.job);
     },
     async liveSessions(): Promise<LiveSession[]> {
@@ -392,7 +445,9 @@ export interface ProviderSessionsOptions {
  * session is a session of that agent, every turn a prompt. A turn of such an agent takes nothing
  * while it goes on, so letters wait for the next one. A provider works in the folder of its
  * workspace: one provider serves the jobs of that folder (`root`), a function makes a provider
- * for the folder of each job. Whoever made a provider closes it, the adapter those it made.
+ * for the folder of each session. A later job of the session for a folder outside the one its
+ * provider works in fails with that reason, rather than being done in the wrong place. Whoever
+ * made a provider closes it, the adapter those it made.
  *
  * @example
  * ```ts
@@ -413,11 +468,15 @@ export function providerSessions(options: ProviderSessionsOptions): OpenHostedSe
     );
   }
   return async (context) => {
-    if (shared && options.root !== undefined && !isInside(options.root, context.cwd)) {
-      throw new Error(
-        `this agent works in ${options.root}, and the job is for ${context.cwd}. Hand it a job in its own folder`
-      );
-    }
+    const folder = shared && options.root !== undefined ? options.root : context.cwd;
+    const elsewhere = (cwd: string): Error | undefined =>
+      isInside(folder, cwd)
+        ? undefined
+        : new Error(
+            `this agent works in ${folder}, and the job is for ${cwd}. Hand it a job in its own folder`
+          );
+    const refusal = elsewhere(context.cwd);
+    if (refusal) throw refusal;
     const make = options.provider as (
       context: HostedSessionContext
     ) => TurnProvider | Promise<TurnProvider>;
@@ -426,7 +485,9 @@ export function providerSessions(options: ProviderSessionsOptions): OpenHostedSe
     let mode = options.permissionMode ?? 'default';
     return {
       ...(!shared && provider.close && { close: () => provider.close?.() ?? Promise.resolve() }),
-      turn(text) {
+      turn(text, about) {
+        const misplaced = about?.job && elsewhere(about.job.cwd);
+        if (misplaced) return { result: Promise.reject(misplaced) };
         const stop = new AbortController();
         const result = provider
           .runTurn({
