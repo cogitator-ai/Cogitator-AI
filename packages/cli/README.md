@@ -75,7 +75,7 @@ Every command ends with examples in its `--help`.
 
 ### Output and exit codes
 
-Every command exits with `0` when it did what was asked, `1` when it could not (a failed check, deploy or install, a missing service) and `2` when the command line is wrong (an unknown option, command or value, with the closest valid name). Failures print the message and what to do about it on stderr; `COGITATOR_DEBUG=1` adds the stack trace. With `--json` (`add`, `doctor`, `eval`, `models`, `status`, `deploy`, `bridge status`, `bridge log`, `bridge doctor`, `bridge delegate`, `bridge send`, `bridge inbox`) the result goes to stdout as JSON, and a failure as `{ "ok": false, "error": { "message", "exitCode", "hints" } }`.
+Every command exits with `0` when it did what was asked, `1` when it could not (a failed check, deploy or install, a missing service) and `2` when the command line is wrong (an unknown option, command or value, with the closest valid name). Failures print the message and what to do about it on stderr, `COGITATOR_DEBUG=1` adds the stack trace. With `--json` (`add`, `doctor`, `eval`, `models`, `status`, `deploy`, `bridge status`, `bridge log`, `bridge doctor`, `bridge delegate`, `bridge send`, `bridge inbox`) the result goes to stdout as JSON, and a failure as `{ "ok": false, "error": { "message", "exitCode", "hints" } }`.
 
 ---
 
@@ -391,7 +391,7 @@ cogitator bridge log --json           # one line of JSON per entry
 cogitator bridge doctor [--json]      # whether Claude Code and Codex can be reached, and what to fix
 ```
 
-`serve` reaches Claude Code and Codex sessions through their own commands: it starts a session for a job (`claude --bg`, `codex exec`), hands letters to Codex threads (`codex queue`) and answers the hooks of Claude Code sessions that wait for mail. It refuses to start while another dispatcher runs and names its PID. `status` exits 0 when a dispatcher runs and 1 when none does. `log` reads the store itself, so it works after the dispatcher stopped, and prints what agents wrote on one line each without control characters. The files live in `~/.cogitator/bridge` (`bridge.db`, `bridge.sock`), `COGITATOR_BRIDGE_HOME` or `--home <dir>` moves them.
+`serve` reaches Claude Code and Codex sessions through their own commands: it starts a session for a job (`claude --bg`, `codex exec`), hands letters to Codex threads (`codex queue`) and answers the hooks of Claude Code sessions that wait for mail. With `--home <dir>` the sessions it starts are told that folder, so they call this dispatcher. A hook runs the command line the way `serve` itself was run, by absolute paths, so it does not depend on the `PATH` of a session. `COGITATOR_BRIDGE_COMMAND` names another way, such as `cogitator bridge`. What a Codex thread it started prints is kept in `sessions/` of the bridge's folder. It refuses to start while another dispatcher runs and names its PID. `status` exits 0 when a dispatcher runs and 1 when none does. `log` reads the store itself, so it works after the dispatcher stopped, and prints what agents wrote on one line each without control characters. The files live in `~/.cogitator/bridge` (`bridge.db`, `bridge.sock`), `COGITATOR_BRIDGE_HOME` or `--home <dir>` moves them.
 
 With `cogitator daemon start --bridge` the assistant daemon hosts the dispatcher, so no second process is needed.
 
@@ -406,9 +406,9 @@ cogitator bridge inbox                     # the letters that wait: --job <n>, -
 cogitator bridge wait                      # wait for mail and exit with 2 when it comes
 ```
 
-`delegate` prints the number of the job and returns at once, the answer arrives as a letter. `<to>` is `codex`, `claude`, the name of an agent, or `codex:new` for a fresh session. The text of `delegate` and `send` is the arguments, or stdin when there are none or they are `-`. `send --kind report --failed` reports a job that could not be done, `--reply-to <letter>` names the letter an answer is for. All three take `--json`.
+`delegate` prints the number of the job and returns at once, the answer arrives as a letter. `<to>` is `codex`, `claude`, the name of an agent, or `codex:new` for a fresh session. The text of `delegate` and `send` is the arguments, or stdin when there are none or they are `-`. A text that starts with a dash goes after `--`. `send --kind report --failed` reports a job that could not be done, `--reply-to <letter>` names the letter an answer is for. All three take `--json`.
 
-`wait` is what the wake hook of a Claude Code session runs: it waits for the mail of the session (`--timeout <seconds>`, 600 by default), and when a letter comes writes it to stderr and exits with code 2, which makes Claude Code wake the session with it. With `--hook claude-code` it takes the session from what Claude Code wrote to the hook's stdin. Without mail it exits with 0 and prints nothing. See the [`@cogitator-ai/bridge`](https://www.npmjs.com/package/@cogitator-ai/bridge#claude-code-and-codex) for the hook itself.
+`wait` is what the wake hook of a Claude Code session runs: it waits for the mail of the session (`--timeout <seconds>`, 600 by default), and when a letter comes writes it to stderr and exits with code 2, which makes Claude Code wake the session with it. With `--hook claude-code` it takes the session from what Claude Code wrote to the hook's stdin, and `--agent <name>` is the name the bridge gave a session it started. Under the letters it adds one line saying how to answer through the bridge. Without mail it exits with 0 and prints nothing. A failure, a mistyped option included, exits with 1 and never with 2, so an error cannot wake a session. See the [`@cogitator-ai/bridge`](https://www.npmjs.com/package/@cogitator-ai/bridge#claude-code-and-codex) for the hook itself.
 
 ---
 

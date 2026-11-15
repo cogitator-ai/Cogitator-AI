@@ -1,11 +1,14 @@
-import { claudeCodeAdapter, codexAdapter, type BridgeAdapter } from '@cogitator-ai/bridge';
+import { resolve } from 'node:path';
+import {
+  claudeCodeAdapter,
+  codexAdapter,
+  shellQuote,
+  type BridgeAdapter,
+} from '@cogitator-ai/bridge';
+import { BRIDGE_HOME_ENV } from './daemon.js';
 
 /** Says how sessions run the bridge's command line, when it is not how this process was run. */
 export const BRIDGE_COMMAND_ENV = 'COGITATOR_BRIDGE_COMMAND';
-
-function quote(value: string): string {
-  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
-}
 
 /**
  * How a hook of a session runs `cogitator bridge`: the way this process was run, by absolute
@@ -15,10 +18,24 @@ export function bridgeCommandOf(env: NodeJS.ProcessEnv = process.env): string {
   const given = env[BRIDGE_COMMAND_ENV]?.trim();
   if (given) return given;
   const script = process.argv[1];
-  return script ? `${quote(process.execPath)} ${quote(script)} bridge` : 'cogitator bridge';
+  return script
+    ? `${shellQuote(process.execPath)} ${shellQuote(script)} bridge`
+    : 'cogitator bridge';
 }
 
-/** The adapters of the harnesses the command line reaches: Claude Code and Codex. */
-export function bridgeAdapters(env: NodeJS.ProcessEnv = process.env): BridgeAdapter[] {
-  return [claudeCodeAdapter({ env, bridgeCommand: bridgeCommandOf(env) }), codexAdapter({ env })];
+/**
+ * The adapters of the harnesses the command line reaches: Claude Code and Codex. `home` is the
+ * folder of the bridge they work for when a flag named one: the sessions they start are told it,
+ * so they call the same dispatcher and not the default one.
+ */
+export function bridgeAdapters(
+  env: NodeJS.ProcessEnv = process.env,
+  home?: string
+): BridgeAdapter[] {
+  const scoped = home ? { ...env, [BRIDGE_HOME_ENV]: resolve(home) } : env;
+  const bridgeCommand = bridgeCommandOf(env);
+  return [
+    claudeCodeAdapter({ env: scoped, bridgeCommand }),
+    codexAdapter({ env: scoped, bridgeCommand }),
+  ];
 }

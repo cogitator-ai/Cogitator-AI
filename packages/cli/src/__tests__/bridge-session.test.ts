@@ -2,18 +2,20 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
+import { CommanderError } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BridgeClient,
   bridgePaths,
   claudeCodeAdapter,
   hostBridge,
+  shellQuote,
   type BridgeAdapter,
   type BridgeHost,
   type HealthCheck,
 } from '@cogitator-ai/bridge';
 import {
-  REPLY_HINT,
+  replyHint,
   runBridgeDelegate,
   runBridgeDoctor,
   runBridgeInbox,
@@ -21,7 +23,8 @@ import {
   runBridgeWait,
   type BridgeSessionContext,
 } from '../commands/bridge-session.js';
-import { bridgeCommandOf } from '../utils/bridge-adapters.js';
+import { bridgeAdapters, bridgeCommandOf } from '../utils/bridge-adapters.js';
+import { UsageError, exitCodeFor } from '../utils/cli.js';
 import { createProgram } from '../program.js';
 
 let home: string;
@@ -229,7 +232,7 @@ describe('bridge wait', () => {
       expect.stringMatching(/^\[agent bridge\] job #1 .* \| not typed by the user$/),
       'Write the tests',
       '',
-      REPLY_HINT,
+      replyHint(bridgeCommandOf({ COGITATOR_BRIDGE_HOME: home })),
     ]);
     const client = await watcher();
     await until(
@@ -270,7 +273,7 @@ describe('bridge wait', () => {
     expect(woken[0]).toContain('Review it');
   });
 
-  it('takes the name the bridge gave a session it started', async () => {
+  it('takes the name the bridge gave a session it started, and its first letter once the start is over', async () => {
     const started: string[] = [];
     let finishStart = (): void => undefined;
     const adapter: BridgeAdapter = {
@@ -293,12 +296,19 @@ describe('bridge wait', () => {
     const hooked = session(CLAUDE_ENV, 'claude-started', { adapters: [adapter] });
     const waiting = runBridgeWait({ hook: 'claude-code', timeout: 10, agent: started[0] }, hooked);
 
-    expect(await waiting).toBe(2);
-    const agents = await host.dispatcher.agents({ harness: 'claude-code' });
-    expect(agents).toMatchObject([
+    await until(
+      async () => (await host.dispatcher.status()).waiting.includes(started[0]),
+      'the hook of the session being started to wait under its name'
+    );
+    expect(await host.dispatcher.agents({ harness: 'claude-code' })).toMatchObject([
       { name: started[0], sessionId: 'claude-started', status: 'active' },
     ]);
+    expect(woken).toEqual([]);
+
     finishStart();
+
+    expect(await waiting).toBe(2);
+    expect(woken[0]).toContain('Review it');
     await host.dispatcher.idle();
     expect(await host.dispatcher.agents({ harness: 'claude-code' })).toHaveLength(1);
   });
@@ -311,6 +321,28 @@ describe('bridge wait', () => {
     const nobody = session('NOTHING', 'x', { adapters: [claudeCodeAdapter()] });
     expect(await runBridgeWait({ hook: 'claude-code' }, nobody)).toBe(1);
     expect(failed()).toContain('This command runs inside a session of an agent');
+  });
+});
+
+describe('a bridge in a folder named by --home', () => {
+  it('is the one every session command calls, whatever the environment says', async () => {
+    await startHost();
+    const elsewhere = { COGITATOR_BRIDGE_HOME: join(home, 'not-this-one') };
+    const asClaude = claude({ env: { ...elsewhere, [CLAUDE_ENV]: 'claude-1' } });
+    const asCodex = codex({ env: { ...elsewhere, [CODEX_ENV]: 'thread-1' } });
+
+    expect(await runBridgeInbox({ home }, asCodex)).toBe(0);
+    expect(await runBridgeDelegate('codex', ['Write the tests'], { home }, asClaude)).toBe(0);
+    const waited = await runBridgeWait({ home, timeout: 5 }, asCodex);
+    expect(waited).toBe(2);
+    expect(woken[0]).toContain(`--home ${home})`);
+    expect(await runBridgeSend(['Done'], { home, job: 1, kind: 'report' }, asCodex)).toBe(0);
+    expect(await runBridgeDoctor({ home }, asClaude)).toBe(0);
+    expect(output()).toContain('Dispatcher: runs');
+
+    failures = [];
+    expect(await runBridgeInbox({}, asCodex)).toBe(1);
+    expect(failed()).toContain('No bridge dispatcher is running');
   });
 });
 
@@ -413,12 +445,94 @@ describe('bridge doctor', () => {
   });
 });
 
+describe('how a woken session is told to answer', () => {
+  it('names the command line the way the session can run it', () => {
+    expect(replyHint('/usr/bin/node /opt/cli.js bridge')).toBe(
+      '(The agent bridge woke this session with the mail above. Answer through it, not in this chat: ' +
+        '/usr/bin/node /opt/cli.js bridge send --job <number> --kind <answer|question|report|note> "<text>")'
+    );
+  });
+});
+
+describe('what bridge wait exits with', () => {
+  it('never exits with the code that wakes a session unless it has mail', async () => {
+    const usage = new CommanderError(
+      1,
+      'commander.unknownOption',
+      "error: unknown option '--bogus'"
+    );
+    const badValue = new CommanderError(1, 'commander.invalidArgument', 'error: not a number');
+
+    expect(exitCodeFor(usage, ['bridge', 'wait', '--bogus'])).toBe(1);
+    expect(exitCodeFor(badValue, ['bridge', 'wait', '--timeout', '30.5'])).toBe(1);
+    expect(exitCodeFor(usage, ['bridge', 'send', '--bogus'])).toBe(2);
+    expect(
+      exitCodeFor(new CommanderError(0, 'commander.helpDisplayed', ''), ['bridge', 'wait'])
+    ).toBe(0);
+
+    await startHost();
+    const broken = codex({
+      stdin: async () => {
+        throw new UsageError('stdin is gone');
+      },
+      adapters: [claudeCodeAdapter()],
+    });
+    expect(await runBridgeWait({ hook: 'claude-code' }, broken)).toBe(1);
+    expect(woken).toEqual([]);
+  });
+
+  it('names the bridge it works for when that is not the default one', () => {
+    expect(replyHint('cogitator bridge', '/srv/my bridge')).toContain(
+      `send --job <number> --kind <answer|question|report|note> "<text>" --home '/srv/my bridge')`
+    );
+  });
+});
+
+describe('text that starts with a dash', () => {
+  it('goes after --, and the refusal says so', async () => {
+    const program = createProgram();
+    const said: string[] = [];
+    const quiet = (command: ReturnType<typeof createProgram>): void => {
+      command.configureOutput({ writeErr: (text) => said.push(text), writeOut: () => undefined });
+      for (const sub of command.commands) quiet(sub);
+    };
+    quiet(program);
+
+    await expect(
+      program.parseAsync(['bridge', 'send', '--job', '3', '--kind', 'answer', '- use the second'], {
+        from: 'user',
+      })
+    ).rejects.toMatchObject({ code: 'commander.unknownOption' });
+    expect(said.join('')).toContain('A text that starts with a dash goes after "--"');
+  });
+});
+
 describe('how a hook reaches the command line', () => {
   it('runs the way this process was run, unless told otherwise', () => {
-    expect(bridgeCommandOf({})).toBe(`${process.execPath} ${process.argv[1]} bridge`);
+    expect(bridgeCommandOf({})).toBe(
+      `${shellQuote(process.execPath)} ${shellQuote(process.argv[1] ?? '')} bridge`
+    );
     expect(bridgeCommandOf({ COGITATOR_BRIDGE_COMMAND: ' my-cogitator bridge ' })).toBe(
       'my-cogitator bridge'
     );
+  });
+
+  it('tells the sessions of a dispatcher in a folder of its own where that folder is', async () => {
+    const [claudeCode, codexThreads] = bridgeAdapters({ PATH: '/nowhere' }, home);
+    const hook = (await claudeCode.health?.({ cwd: project }))?.[0];
+    expect(hook?.status).toBe('fail');
+
+    const request = {
+      agentName: 'codex@demo',
+      harness: 'codex',
+      project,
+      cwd: project,
+      job: { number: 1 } as never,
+      firstLetter: { text: '[agent bridge] job #1', body: 'x', job: 1 } as never,
+    };
+    await expect(codexThreads.createSession?.(request)).rejects.toThrow('not installed');
+    expect(existsSync(join(home, 'sessions'))).toBe(true);
+    expect(bridgeAdapters({}).map((adapter) => adapter.harness)).toEqual(['claude-code', 'codex']);
   });
 });
 
