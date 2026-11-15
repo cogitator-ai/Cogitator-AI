@@ -343,6 +343,22 @@ describe('BridgeClient', () => {
     expect(first.length).toBe(heard);
   });
 
+  it('keeps a listener added while another one is being removed', async () => {
+    await startHost();
+    const claude = await clientFor(claudeCaller);
+    await clientFor(codexCaller);
+    const watcher = await clientFor();
+    const heard: JournalEntry[] = [];
+    const stopFirst = await watcher.subscribe(() => undefined);
+
+    const stopping = stopFirst();
+    await watcher.subscribe((entry) => heard.push(entry));
+    await stopping;
+
+    await claude.createJob({ to: 'codex', body: 'Write the tests' });
+    await until(() => heard.length >= 2, 'the second listener to hear the job');
+  });
+
   it('pages through an inbox too large for one answer without losing a letter', async () => {
     await startHost();
     const claude = await clientFor(claudeCaller);

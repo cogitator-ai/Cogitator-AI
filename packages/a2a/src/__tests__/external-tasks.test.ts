@@ -159,6 +159,26 @@ describe('tasks carried out outside the manager', () => {
       expect(messageText(stored.history?.at(-1))).toBe('Done');
     });
 
+    it('does not let a cancel or a client message made at once overwrite a move', async () => {
+      const first = await manager.createTask(userMessage('Do it'));
+      await manager.advanceTask(first.id, { state: 'input-required', message: 'Which one?' });
+      const [done, resumed] = await Promise.allSettled([
+        manager.advanceTask(first.id, { state: 'completed', message: 'Done' }),
+        manager.continueTask(first.id, userMessage('The first')),
+      ]);
+      expect([done.status, resumed.status]).toEqual(['fulfilled', 'rejected']);
+      expect((await manager.getTask(first.id)).status.state).toBe('completed');
+      expect(messageText((await manager.getTask(first.id)).history?.at(-1))).toBe('Done');
+
+      const second = await manager.createTask(userMessage('Do it'));
+      const [finished, canceled] = await Promise.allSettled([
+        manager.advanceTask(second.id, { state: 'completed', message: 'Done' }),
+        manager.cancelTask(second.id),
+      ]);
+      expect([finished.status, canceled.status]).toEqual(['fulfilled', 'rejected']);
+      expect((await manager.getTask(second.id)).status.state).toBe('completed');
+    });
+
     it('goes on after a move that failed', async () => {
       const task = await manager.createTask(userMessage('Do it'));
       const other = await manager.createTask(userMessage('Other'));

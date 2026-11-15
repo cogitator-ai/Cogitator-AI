@@ -73,7 +73,7 @@ A job is an [A2A](https://www.npmjs.com/package/@cogitator-ai/a2a) task undernea
 | `failed`         | Reported as failed, or failed by a limit                                           |
 | `canceled`       | Canceled by the agent that handed it over                                          |
 
-A job also carries who handed it over and who carries it out, the project and the folder inside it, its checks, its budget and its depth. A job handed over from inside another job is part of it: it ends no later than its parent, and is canceled when its parent is over. `verification` says whether the checks confirmed the result. A report is a claim, the verification is the fact, so an agent cannot set it: it is absent until the process that hosts the dispatcher records it with `dispatcher.recordVerification(job, { verified, summary })`, and it is not served on the socket.
+A job also carries who handed it over and who carries it out, the project and the folder inside it, its checks, its budget and its depth. A job handed over from inside another job is part of it: it ends no later than its parent, and is canceled when its parent is over, whether that one was reported on, failed or was canceled. `verification` says whether the checks confirmed the result. A report is a claim, the verification is the fact, so an agent cannot set it: it is absent until the process that hosts the dispatcher records it with `dispatcher.recordVerification(job, { verified, summary })`, and it is not served on the socket.
 
 ## Letters
 
@@ -90,7 +90,7 @@ A letter moves `queued`, `delivered`, `read`, `handled` and never back. `acknowl
 
 A retry is safe when the letter has an id: `send({ id })` and `createJob({ letterId })` change nothing the second time. The same id with other words is refused. A field the bridge does not know is refused too, instead of being dropped in silence.
 
-`inbox()` returns 20 letters at most (`limit`, up to 100) and no more text than one answer holds, and marks only the letters it returned: call it again for the rest. `inbox({ unhandled: true })` also returns what was taken before and not answered or put away, for a session that may have missed an answer. `letters()` and `readJournal()` return 200 entries at most, go on from the last one with `afterSeq`. The history of the A2A task under a job keeps the first 4000 characters of a long letter, the letter itself is kept whole.
+`inbox()` returns 20 letters at most (`limit`, up to 100) and no more text than one answer holds, and marks only the letters it returned: call it again for the rest. `inbox({ unhandled: true })` adds the newest of what was taken before and not answered or put away, for a session that may have missed an answer, and `afterSeq` looks further back or forward than one call returns. `letters()` and `readJournal()` return 200 entries at most, go on from the last one with `afterSeq`. The history of the A2A task under a job keeps the first 4000 characters of a long letter, the letter itself is kept whole.
 
 ## Who a letter is for
 
@@ -101,7 +101,7 @@ A session enters the address book the first time it calls the bridge, and gets a
 - a harness word and a session: `codex:reviewer` picks one by its session name or id
 - `codex:new` asks for a fresh session
 
-When no session fits and the harness has an adapter that can start one, the bridge starts it for the job. When several fit, the call is refused with their names and how long ago each was heard from. Every worktree of a repository is one project. A harness name is letters, digits, `.`, `_` and `-`, whatever the case, and a session name is letters, digits, spaces and the same three signs.
+When no session fits and the harness has an adapter that can start one, the bridge starts it for the job. When several fit, the call is refused with their names and how long ago each was heard from. Every worktree of a repository is one project. A harness name is letters, digits, `.`, `_` and `-`, whatever the case. A session is addressed by whatever it is called, or the start of it, as long as that does not begin with `-`.
 
 A session that has not called the bridge for 12 hours and has no job in progress is taken for gone, so yesterday's closed window does not stand in the way of today's. It is back under the same name the moment it calls again.
 
@@ -164,7 +164,7 @@ Without an adapter a session still takes part: its letters wait in its inbox.
 
 ## Trust
 
-The bridge is a tool of one person on one machine. The socket and the database are created for their owner only, a folder or a database that belongs to another user is refused, and every process of that user can connect: read any job and letter, and call as a session by naming its id. A job is done inside the project it is handed over in. Do not point `COGITATOR_BRIDGE_HOME` at a folder other users can write to. On Windows the dispatcher listens on a named pipe that other users of the same machine can reach, so run it only on a machine you do not share.
+The bridge is a tool of one person on one machine. The socket and the database are created for their owner only, a folder or a database that belongs to another user is refused, and every process of that user can connect: read any job and letter, and call as a session by naming its id. A job is done inside the project it is handed over in, or the worktree its caller works in. Do not point `COGITATOR_BRIDGE_HOME` at a folder other users can write to. On Windows the dispatcher listens on a named pipe that other users of the same machine can reach, so run it only on a machine you do not share.
 
 ## Errors
 

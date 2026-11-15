@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { harnessOfAlias } from './registry.js';
 import {
   DELIVERY_STATES,
   JOB_STATES,
@@ -98,6 +99,7 @@ export const InboxInputSchema = z.strictObject({
   peek: z.boolean().optional(),
   unhandled: z.boolean().optional(),
   limit: z.number().int().positive().max(100).optional(),
+  afterSeq: z.number().int().nonnegative().optional(),
 });
 
 export interface InboxInput {
@@ -109,6 +111,8 @@ export interface InboxInput {
   unhandled?: boolean;
   /** The most letters to return, 20 by default and 100 at most. The rest wait for the next call */
   limit?: number;
+  /** Only letters accepted after this one, to look further than one call returns */
+  afterSeq?: number;
 }
 
 export const JobsFilterSchema = z.strictObject({
@@ -117,13 +121,23 @@ export const JobsFilterSchema = z.strictObject({
   to: z.string().optional(),
   party: z.string().optional(),
   project: z.string().optional(),
+  parent: JobNumberSchema.optional(),
+  deadlineBy: z.number().int().nonnegative().optional(),
+  createdSince: z.number().int().nonnegative().optional(),
   limit: z.number().int().positive().max(1000).optional(),
 });
 
 export const AgentsFilterSchema = z.strictObject({
   project: z.string().optional(),
-  harness: z.string().optional(),
+  harness: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .transform((harness) => harnessOfAlias(harness))
+    .optional(),
   statuses: z.array(z.enum(['starting', 'active', 'gone'])).optional(),
+  seenBefore: z.number().int().nonnegative().optional(),
 });
 
 export const LettersFilterSchema = z.strictObject({
@@ -134,6 +148,7 @@ export const LettersFilterSchema = z.strictObject({
   kinds: z.array(z.enum(LETTER_KINDS as [string, ...string[]])).optional(),
   afterSeq: z.number().int().nonnegative().optional(),
   replyDueBy: z.number().int().nonnegative().optional(),
+  attemptsBelow: z.number().int().nonnegative().optional(),
   limit: z.number().int().positive().max(1000).optional(),
   newestFirst: z.boolean().optional(),
 });

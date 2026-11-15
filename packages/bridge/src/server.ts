@@ -210,6 +210,21 @@ function asError(error: unknown): Error {
 }
 
 /**
+ * Narrows the umask to the owner and returns what puts it back. A worker thread cannot change
+ * the umask of the process: there the socket is narrowed right after it is bound instead.
+ */
+function narrowUmask(): () => void {
+  try {
+    const previous = process.umask(0o177);
+    return () => {
+      process.umask(previous);
+    };
+  } catch {
+    return () => undefined;
+  }
+}
+
+/**
  * Removes what a dispatcher that died left at the socket path, a symlink included, without
  * following it.
  */
@@ -259,12 +274,12 @@ export async function serveBridge(options: BridgeServerOptions): Promise<BridgeS
     await listen(server, socketPath);
   } else {
     removeStale(socketPath);
-    const umask = process.umask(0o177);
+    const restore = narrowUmask();
     let listening: Promise<void>;
     try {
       listening = listen(server, socketPath);
     } finally {
-      process.umask(umask);
+      restore();
     }
     await listening;
     chmodSync(socketPath, 0o600);

@@ -427,7 +427,7 @@ cogitator daemon uninstall
 
 The PID file (`.cogitator/daemon.pid`) records the launched script, so `stop` never signals an unrelated process that reused the PID. Service definitions use absolute paths, the current `PATH`, and start on login (`loginctl enable-linger` keeps a systemd user service running after logout).
 
-`--bridge` makes the daemon also host the dispatcher of the [agent bridge](#cogitator-bridge) (experimental). The assistant does not depend on it: when another dispatcher already runs on the machine the daemon just does not host one. A bundle runs without the CLI, so `--bridge` is refused for it, run `cogitator bridge serve` next to it. A restart keeps hosting it without the flag, `restart --no-bridge` stops. `install --bridge` writes the current `COGITATOR_BRIDGE_HOME` into the service, which does not see your shell.
+`--bridge` makes the daemon also host the dispatcher of the [agent bridge](#cogitator-bridge) (experimental). The assistant does not depend on it: when another dispatcher already runs on the machine the daemon just does not host one. A bundle runs without the CLI, so `--bridge` is refused for it, run `cogitator bridge serve` next to it. A restart keeps hosting it without the flag, in the same folder, `restart --no-bridge` stops. `install --bridge` writes the current `COGITATOR_BRIDGE_HOME` into the service, which does not see your shell.
 
 ---
 

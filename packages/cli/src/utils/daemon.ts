@@ -31,6 +31,8 @@ export interface DaemonPidRecord {
   script?: string;
   /** The daemon was started with `--bridge`, so a restart hosts the bridge dispatcher again */
   bridge?: boolean;
+  /** The folder of the bridge the daemon was started with, when `COGITATOR_BRIDGE_HOME` moved it */
+  bridgeHome?: string;
 }
 
 export interface ResolveLaunchOptions {
@@ -125,7 +127,11 @@ export function parsePidRecord(content: string): DaemonPidRecord | null {
     const script =
       'script' in parsed && typeof parsed.script === 'string' ? parsed.script : undefined;
     const bridge = 'bridge' in parsed && parsed.bridge === true;
-    return { pid, script, ...(bridge && { bridge }) };
+    const bridgeHome =
+      'bridgeHome' in parsed && typeof parsed.bridgeHome === 'string'
+        ? parsed.bridgeHome
+        : undefined;
+    return { pid, script, ...(bridge && { bridge }), ...(bridgeHome && { bridgeHome }) };
   } catch {
     return null;
   }

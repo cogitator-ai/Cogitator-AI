@@ -22,9 +22,24 @@ export function newLetterId(): string {
 
 const TITLE_LENGTH = 80;
 
-/** The text on one line: runs of spaces, line breaks and control characters become one space. */
+/** Every way a text can start a new line, for a reader that draws any of them as one. */
+const LINE_BREAK = /\r\n|[\n\r\u0085\u2028\u2029]/u;
+
+/**
+ * The text on one line: runs of spaces, line breaks and control characters become one space, and
+ * characters that are not shown but change how text is drawn (direction overrides, zero-width
+ * signs) are dropped.
+ */
 export function oneLine(text: string): string {
-  return text.replace(/[\s\p{Cc}]+/gu, ' ').trim();
+  return text
+    .replace(/\p{Cf}+/gu, '')
+    .replace(/[\s\p{Cc}\u2028\u2029]+/gu, ' ')
+    .trim();
+}
+
+/** The lines of a text, whatever it breaks them with. */
+function linesOf(text: string): string[] {
+  return text.split(LINE_BREAK);
 }
 
 /** The first line of a body, cut to fit a title. */
@@ -41,8 +56,7 @@ export const SIGNATURE_MARK = '[agent bridge]';
  * what it repeats in its own notes, so words of an agent never read as words of the bridge.
  */
 export function quoted(text: string): string {
-  return text
-    .split('\n')
+  return linesOf(text)
     .map((line) => `> ${line}`)
     .join('\n');
 }
@@ -65,12 +79,14 @@ export function signatureOf(
 /**
  * The letter as its recipient sees it: the signature line, then the body. Only the first line is
  * a signature: a line of the body that starts like one is quoted, so a body cannot pass for a
- * second letter.
+ * second letter. Lines are told apart by every kind of line break, and come out separated by
+ * a plain one.
  */
 export function renderLetter(letter: Letter, job: Pick<BridgeJob, 'title'>): RenderedLetter {
-  const body = letter.body
-    .split('\n')
-    .map((line) => (line.trimStart().startsWith(SIGNATURE_MARK) ? `> ${line}` : line))
+  const body = linesOf(letter.body)
+    .map((line) =>
+      line.replace(/^[\s\p{Cf}\p{Cc}]+/u, '').startsWith(SIGNATURE_MARK) ? `> ${line}` : line
+    )
     .join('\n');
   return { ...letter, text: `${signatureOf(letter, job)}\n${body}` };
 }
