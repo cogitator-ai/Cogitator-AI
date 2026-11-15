@@ -13,7 +13,15 @@ export interface DaemonLaunch {
   command: string;
   args: string[];
   description: string;
+  /**
+   * What the daemon runs: an assistant config (`cogitator up`), a gateway module
+   * (`cogitator assistant`), or a bundle that runs by itself, without the CLI
+   */
+  kind: 'assistant' | 'gateway' | 'bundle';
 }
+
+/** Set in the daemon's environment by `--bridge`: the daemon also hosts the bridge dispatcher. */
+export const BRIDGE_HOST_ENV = 'COGITATOR_BRIDGE_HOST';
 
 export interface DaemonPidRecord {
   pid: number;
@@ -49,15 +57,22 @@ function launchFor(path: string, opts: ResolveLaunchOptions): DaemonLaunch {
       command: opts.nodePath,
       args: [opts.cliEntry, 'up', '--config', path],
       description: `assistant config ${path}`,
+      kind: 'assistant',
     };
   }
   if (isCogitatorBundle(path)) {
-    return { command: opts.nodePath, args: [path], description: `bundle ${path}` };
+    return {
+      command: opts.nodePath,
+      args: [path],
+      description: `bundle ${path}`,
+      kind: 'bundle',
+    };
   }
   return {
     command: opts.nodePath,
     args: [opts.cliEntry, 'assistant', '--quiet', '--config', path],
     description: `gateway config ${path}`,
+    kind: 'gateway',
   };
 }
 
@@ -161,6 +176,8 @@ export interface ServiceDefinition {
   cwd: string;
   logFile: string;
   path?: string;
+  /** The service also hosts the bridge dispatcher */
+  bridge?: boolean;
 }
 
 export function buildLaunchdPlist(def: ServiceDefinition): string {
@@ -169,6 +186,9 @@ export function buildLaunchdPlist(def: ServiceDefinition): string {
     .join('\n');
   const pathEntry = def.path
     ? `\n    <key>PATH</key>\n    <string>${escapeXml(def.path)}</string>`
+    : '';
+  const bridgeEntry = def.bridge
+    ? `\n    <key>${BRIDGE_HOST_ENV}</key>\n    <string>1</string>`
     : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -194,7 +214,7 @@ ${programArgs}
   <key>EnvironmentVariables</key>
   <dict>
     <key>COGITATOR_DAEMON</key>
-    <string>1</string>${pathEntry}
+    <string>1</string>${bridgeEntry}${pathEntry}
   </dict>
 </dict>
 </plist>
@@ -213,6 +233,7 @@ function systemdPathValue(path: string): string {
 export function buildSystemdUnit(def: ServiceDefinition): string {
   const execStart = [def.launch.command, ...def.launch.args].map(quoteSystemdArg).join(' ');
   const pathEnv = def.path ? `\nEnvironment=${quoteSystemdArg(`PATH=${def.path}`)}` : '';
+  const bridgeEnv = def.bridge ? `\nEnvironment=${BRIDGE_HOST_ENV}=1` : '';
 
   return `[Unit]
 Description=Cogitator AI Assistant
@@ -225,7 +246,7 @@ WorkingDirectory=${quoteSystemdArg(def.cwd)}
 ExecStart=${execStart}
 Restart=always
 RestartSec=5
-Environment=COGITATOR_DAEMON=1${pathEnv}
+Environment=COGITATOR_DAEMON=1${bridgeEnv}${pathEnv}
 StandardOutput=append:${systemdPathValue(def.logFile)}
 StandardError=append:${systemdPathValue(def.logFile)}
 

@@ -15,6 +15,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { log } from '../utils/logger.js';
 import { CommandError, exitWithFailure, examplesHelp } from '../utils/cli.js';
 import {
+  BRIDGE_HOST_ENV,
   DAEMON_LABEL,
   SYSTEMD_UNIT,
   buildLaunchdPlist,
@@ -57,19 +58,42 @@ function cliEntry(): string {
   }
 }
 
-function resolveLaunch(config: string | undefined): DaemonLaunch {
+interface LaunchFlags {
+  config?: string;
+  bridge?: boolean;
+}
+
+const CONFIG_OPTION = [
+  '-c, --config <path>',
+  'Entry to run: cogitator.yml, a gateway module, or a bundle (default: auto-detect)',
+] as const;
+
+const BRIDGE_OPTION = [
+  '--bridge',
+  'Also host the agent bridge dispatcher of this machine (experimental)',
+] as const;
+
+function resolveLaunch(flags: LaunchFlags): DaemonLaunch {
+  let launch: DaemonLaunch;
   try {
-    return resolveDaemonLaunch({
+    launch = resolveDaemonLaunch({
       cwd: process.cwd(),
       nodePath: process.execPath,
       cliEntry: cliEntry(),
-      config,
+      config: flags.config,
     });
   } catch (error) {
     throw new CommandError(error instanceof Error ? error.message : String(error), {
       hints: ['Run "cogitator init" or "cogitator wizard" to create a project first'],
     });
   }
+  if (flags.bridge && launch.kind === 'bundle') {
+    throw new CommandError(
+      'A bundle runs without the CLI, so it cannot host the bridge dispatcher',
+      { hints: ['Run the dispatcher next to it: cogitator bridge serve'] }
+    );
+  }
+  return launch;
 }
 
 function runningDaemon(): DaemonPidRecord | null {
@@ -103,7 +127,7 @@ async function stopDaemon(record: DaemonPidRecord): Promise<'stopped' | 'killed'
   return 'killed';
 }
 
-function startDaemon(config: string | undefined): void {
+function startDaemon(flags: LaunchFlags): void {
   const existing = runningDaemon();
   if (existing) {
     log.warn(`Daemon already running (PID: ${existing.pid})`);
@@ -111,7 +135,7 @@ function startDaemon(config: string | undefined): void {
     return;
   }
 
-  const launch = resolveLaunch(config);
+  const launch = resolveLaunch(flags);
   mkdirSync(dataDir(), { recursive: true });
 
   const out = openSync(logFile(), 'a');
@@ -121,7 +145,11 @@ function startDaemon(config: string | undefined): void {
       detached: true,
       stdio: ['ignore', out, out],
       cwd: process.cwd(),
-      env: { ...process.env, COGITATOR_DAEMON: '1' },
+      env: {
+        ...process.env,
+        COGITATOR_DAEMON: '1',
+        ...(flags.bridge && { [BRIDGE_HOST_ENV]: '1' }),
+      },
     });
     child.on('error', (error) => {
       log.error(`Failed to start daemon: ${error.message}`);
@@ -141,6 +169,7 @@ function startDaemon(config: string | undefined): void {
   writeFileSync(pidFile(), serializePidRecord({ pid, script: launch.args[0] }));
   log.success(`Daemon started (PID: ${pid})`);
   log.dim(`Running ${launch.description}`);
+  if (flags.bridge) log.dim('Hosting the bridge dispatcher: cogitator bridge status');
   log.dim(`Logs: ${logFile()}`);
 }
 
@@ -181,12 +210,10 @@ export const daemonCommand = new Command('daemon')
 daemonCommand
   .command('start')
   .description('Start the assistant as a background daemon')
-  .option(
-    '-c, --config <path>',
-    'Entry to run: cogitator.yml, a gateway module, or a bundle (default: auto-detect)'
-  )
-  .action((options: { config?: string }) => {
-    startDaemon(options.config);
+  .option(...CONFIG_OPTION)
+  .option(...BRIDGE_OPTION)
+  .action((options: LaunchFlags) => {
+    startDaemon(options);
   });
 
 daemonCommand
@@ -212,11 +239,9 @@ daemonCommand
 daemonCommand
   .command('restart')
   .description('Restart the daemon')
-  .option(
-    '-c, --config <path>',
-    'Entry to run: cogitator.yml, a gateway module, or a bundle (default: auto-detect)'
-  )
-  .action(async (options: { config?: string }) => {
+  .option(...CONFIG_OPTION)
+  .option(...BRIDGE_OPTION)
+  .action(async (options: LaunchFlags) => {
     const record = runningDaemon();
     if (record) {
       log.step('Stopping current daemon...');
@@ -226,7 +251,7 @@ daemonCommand
     }
 
     log.step('Starting daemon...');
-    startDaemon(options.config);
+    startDaemon(options);
   });
 
 daemonCommand
@@ -291,24 +316,23 @@ daemonCommand
 daemonCommand
   .command('install')
   .description('Install as a user service (launchd on macOS, systemd on Linux)')
-  .option(
-    '-c, --config <path>',
-    'Entry to run: cogitator.yml, a gateway module, or a bundle (default: auto-detect)'
-  )
-  .action((options: { config?: string }) => {
+  .option(...CONFIG_OPTION)
+  .option(...BRIDGE_OPTION)
+  .action((options: LaunchFlags) => {
     if (process.platform !== 'darwin' && process.platform !== 'linux') {
       throw new CommandError(`Unsupported platform: ${process.platform}`, {
         hints: ['Manual setup required for Windows'],
       });
     }
 
-    const launch = resolveLaunch(options.config);
+    const launch = resolveLaunch(options);
     mkdirSync(dataDir(), { recursive: true });
     const definition = {
       launch,
       cwd: process.cwd(),
       logFile: logFile(),
       path: process.env.PATH,
+      ...(options.bridge && { bridge: true }),
     };
 
     if (process.platform === 'darwin') {

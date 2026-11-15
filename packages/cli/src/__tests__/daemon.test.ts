@@ -36,7 +36,19 @@ describe('resolveDaemonLaunch', () => {
       `#!/usr/bin/env node\nimport { createRequire as ${BUNDLE_MARKER} } from "module";`
     );
     writeFileSync(join(cwd, 'cogitator.yml'), 'name: x');
-    expect(launch()).toMatchObject({ command: NODE, args: [join(cwd, 'dist/cogitator.mjs')] });
+    expect(launch()).toMatchObject({
+      command: NODE,
+      args: [join(cwd, 'dist/cogitator.mjs')],
+      kind: 'bundle',
+    });
+  });
+
+  it('says what it runs, so a flag that needs the CLI can refuse a bundle', () => {
+    writeFileSync(join(cwd, 'cogitator.yml'), 'name: x');
+    expect(launch().kind).toBe('assistant');
+    mkdirSync(join(cwd, 'src'));
+    writeFileSync(join(cwd, 'src/gateway.ts'), 'export const gateway = {};');
+    expect(launch('src/gateway.ts').kind).toBe('gateway');
   });
 
   it('starts legacy bundles (no marker) through the assistant command', () => {
@@ -134,6 +146,7 @@ describe('service definitions', () => {
       command: NODE,
       args: [CLI, 'up', '--config', '/home/me/My Bot & Co/cogitator.yml'],
       description: '',
+      kind: 'assistant' as const,
     },
     cwd: '/home/me/My Bot & Co',
     logFile: '/home/me/My Bot & Co/.cogitator/daemon.log',
@@ -158,6 +171,17 @@ describe('service definitions', () => {
     );
     expect(unit).toContain('WorkingDirectory="/home/me/My Bot & Co"');
     expect(unit).toContain('Environment=PATH=/usr/local/bin:/usr/bin');
+  });
+
+  it('tells the service to host the bridge dispatcher only when asked', () => {
+    expect(buildLaunchdPlist(definition)).not.toContain('COGITATOR_BRIDGE_HOST');
+    expect(buildSystemdUnit(definition)).not.toContain('COGITATOR_BRIDGE_HOST');
+
+    const withBridge = { ...definition, bridge: true };
+    expect(buildLaunchdPlist(withBridge)).toContain(
+      '<key>COGITATOR_BRIDGE_HOST</key>\n    <string>1</string>'
+    );
+    expect(buildSystemdUnit(withBridge)).toContain('Environment=COGITATOR_BRIDGE_HOST=1\n');
   });
 
   it('escapes percent signs for systemd specifiers', () => {

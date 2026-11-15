@@ -44,6 +44,7 @@
     "@clack/prompts": "^1.8.1",
     "@cogitator-ai/acp": "workspace:*",
     "@cogitator-ai/app-server": "workspace:*",
+    "@cogitator-ai/bridge": "workspace:*",
     "@cogitator-ai/channels": "workspace:*",
     "@cogitator-ai/config": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
