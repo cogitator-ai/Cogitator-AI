@@ -226,7 +226,7 @@ const host = await hostBridge({
 });
 ```
 
-Now `delegate qwen "Review the diff"` from a Claude Code window starts a run of `reviewer` and wakes the window with its answer. Every session keeps its own thread, so with memory configured the agent remembers its earlier turns. An answer or a note that arrives while a run goes on steers it in the middle, a second job waits for its own turn. A job that is canceled stops the run that carries it out. A run that pauses for an approval or for a question of a tool fails its job, since nobody is there to answer: give a hosted agent the permission rules it needs before it starts.
+Now `delegate qwen "Review the diff"` from a Claude Code window starts a run of `reviewer` and wakes the window with its answer. Every session keeps its own thread, so with memory configured the agent remembers its earlier turns. An answer or a note that arrives while a run goes on steers it in the middle, a second job waits for its own turn, and so does what is written about it meanwhile. A job that is canceled stops the run that carries it out, and one canceled before its turn is never started. A run that pauses for an approval or for a question of a tool fails its job, since nobody is there to answer: give a hosted agent the permission rules it needs before it starts.
 
 An agent of the [Agent Client Protocol](/docs/integrations/acp), such as Gemini CLI, is hosted the same way through `AcpAgentProvider`. Its permissions are decided by the provider's rules, since no person sits at a session the bridge started. A provider works in the folder of its workspace whatever folder a job names, so say where that is with `root` (a job for another folder is refused), or give `provider` as a function that makes one for the folder of each session:
 
@@ -249,7 +249,9 @@ const gemini = hostedAdapter({
 });
 ```
 
-`open` returns a session: anything with a `turn(text)` whose `result` resolves with the agent's answer, so a session of your own is a few lines. Hosted sessions live in the host's process and end with it.
+A session of a provider stays in the folder it was opened for: a later job for a folder outside it fails with that reason.
+
+`open` returns a session: anything with a `turn(text, { job })` whose `result` resolves with the agent's answer, so a session of your own is a few lines. Hosted sessions live in the host's process and end with it.
 
 ## Adapters
 

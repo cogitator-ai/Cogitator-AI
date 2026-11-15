@@ -6,6 +6,7 @@ import {
   type HostedRun,
   type HostedSessionContext,
   type HostedTurn,
+  type HostedTurnContext,
   type ProviderTurn,
 } from '../adapters/hosted';
 import { makeKit, MINUTE, type Kit } from './bridge-kit';
@@ -30,6 +31,7 @@ function deferred<T>() {
 function scripted(options: { steer?: boolean; followUp?: boolean } = {}) {
   const turns: {
     text: string;
+    job: number | undefined;
     steered: string[];
     followed: string[];
     aborted: boolean;
@@ -41,10 +43,11 @@ function scripted(options: { steer?: boolean; followUp?: boolean } = {}) {
   const open = (context: HostedSessionContext) => {
     opened.push(context);
     return {
-      turn(text: string): HostedTurn {
+      turn(text: string, about?: HostedTurnContext): HostedTurn {
         const result = deferred<string>();
         const turn = {
           text,
+          job: about?.job?.number,
           steered: [] as string[],
           followed: [] as string[],
           aborted: false,
@@ -78,6 +81,13 @@ function scripted(options: { steer?: boolean; followUp?: boolean } = {}) {
     };
   };
   return { open, turns, opened, closedCount: () => closed };
+}
+
+/** Lets what is on its way run, without waiting for a session that is still being opened */
+async function ticks(): Promise<void> {
+  for (let round = 0; round < 5; round += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 }
 
 async function settle(kitNow: Kit): Promise<void> {
@@ -241,6 +251,95 @@ describe('sessions the host runs', () => {
     agent.turns[1].end('Done');
     await settle(kit);
     expect((await bridge.job(3)).state).toBe('completed');
+    expect(agent.turns).toHaveLength(2);
+    expect(kit.errors).toEqual([]);
+  });
+
+  it('keeps what is written about a job that waits for its turn for that turn', async () => {
+    const agent = scripted({ steer: true, followUp: true });
+    kit = await makeKit({ adapters: [hostedAdapter({ harness: 'qwen', open: agent.open })] });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Review the diff' });
+    await settle(kit);
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Run the linter' });
+    await settle(kit);
+    await bridge.send(claude.name, { job: 2, kind: 'note', body: 'Only the bridge package' });
+    await bridge.send(claude.name, { job: 1, kind: 'note', body: 'Skip the generated files' });
+    await settle(kit);
+
+    expect(agent.turns).toHaveLength(1);
+    expect(agent.turns[0].job).toBe(1);
+    expect(agent.turns[0].steered).toHaveLength(1);
+    expect(agent.turns[0].steered[0]).toContain('Skip the generated files');
+    expect(agent.turns[0].followed).toEqual([]);
+
+    agent.turns[0].end('Looks fine');
+    await settle(kit);
+
+    expect(agent.turns).toHaveLength(2);
+    expect(agent.turns[1].job).toBe(2);
+    expect(agent.turns[1].text).toContain('Run the linter');
+    expect(agent.turns[1].steered).toHaveLength(1);
+    expect(agent.turns[1].steered[0]).toContain('Only the bridge package');
+    agent.turns[1].end('No warnings');
+    await settle(kit);
+    expect(agent.turns).toHaveLength(2);
+    expect(kit.errors).toEqual([]);
+  });
+
+  it('tells no turn about a job that was canceled before its own', async () => {
+    const agent = scripted({ steer: true, followUp: true });
+    kit = await makeKit({ adapters: [hostedAdapter({ harness: 'qwen', open: agent.open })] });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Review the diff' });
+    await settle(kit);
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Run the linter' });
+    await settle(kit);
+    await bridge.send(claude.name, { job: 2, kind: 'note', body: 'Only the bridge package' });
+    await bridge.cancel(claude.name, 2, 'Not needed any more');
+    await settle(kit);
+
+    expect(agent.turns[0].steered).toEqual([]);
+    expect(agent.turns[0].followed).toEqual([]);
+    expect(agent.turns[0].aborted).toBe(false);
+    agent.turns[0].end('Looks fine');
+    await settle(kit);
+
+    expect(agent.turns).toHaveLength(1);
+    expect((await bridge.job(1)).state).toBe('completed');
+    expect(kit.errors).toEqual([]);
+  });
+
+  it('does not start a job that was canceled while its session was opening', async () => {
+    const agent = scripted();
+    const opening = deferred<undefined>();
+    kit = await makeKit({
+      adapters: [
+        hostedAdapter({
+          harness: 'qwen',
+          open: async (context) => {
+            await opening.promise;
+            return agent.open(context);
+          },
+        }),
+      ],
+    });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Review the diff' });
+    await ticks();
+    await bridge.cancel(claude.name, 1, 'Not needed any more');
+    await ticks();
+
+    opening.resolve(undefined);
+    await settle(kit);
+
+    expect(agent.opened).toHaveLength(1);
+    expect(agent.turns).toEqual([]);
+    expect((await bridge.job(1)).state).toBe('canceled');
+
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Run the linter' });
+    await settle(kit);
+    expect(agent.turns.map((turn) => turn.job)).toEqual([2]);
     expect(kit.errors).toEqual([]);
   });
 
@@ -539,6 +638,55 @@ describe('agents behind a session provider as hosted sessions', () => {
     );
     await expect(open({ ...context, cwd: '/work/demo/packages/core' })).resolves.toBeDefined();
     expect(() => providerSessions({ provider })).toThrow('providerSessions needs `root`');
+  });
+
+  it('fails a later job of a session for a folder its provider does not work in', async () => {
+    const ran: string[] = [];
+    const provider = {
+      async runTurn(turn: ProviderTurn) {
+        ran.push(turn.input[0].text.split('\n')[1]);
+        return { output: 'done' };
+      },
+    };
+    kit = await makeKit({
+      adapters: [
+        hostedAdapter({
+          harness: 'gemini',
+          open: providerSessions({ provider: () => provider }),
+        }),
+      ],
+    });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, {
+      to: 'gemini',
+      body: 'Review core',
+      cwd: 'packages/core',
+    });
+    await settle(kit);
+    const [gemini] = await bridge.agents({ harness: 'gemini' });
+    expect(gemini.cwd).toBe('/work/demo/packages/core');
+
+    await bridge.createJob(claude.name, {
+      to: gemini.name,
+      body: 'Review cli',
+      cwd: 'packages/cli',
+    });
+    await bridge.createJob(claude.name, {
+      to: gemini.name,
+      body: 'Review the tests of core',
+      cwd: 'packages/core/src/__tests__',
+    });
+    await settle(kit);
+
+    expect(ran).toEqual(['Review core', 'Review the tests of core']);
+    expect((await bridge.job(1)).state).toBe('completed');
+    expect((await bridge.job(3)).state).toBe('completed');
+    expect((await bridge.job(2)).state).toBe('failed');
+    const [refusal] = await bridge.letters({ job: 2, kinds: ['report'] });
+    expect(refusal.body).toBe(
+      'The agent failed: this agent works in /work/demo/packages/core, and the job is for /work/demo/packages/cli. Hand it a job in its own folder'
+    );
+    expect(kit.errors).toEqual([]);
   });
 
   it('makes a provider for the folder of each session, and closes the ones it made', async () => {
