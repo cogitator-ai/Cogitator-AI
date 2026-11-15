@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   allocateAgentName,
@@ -121,8 +121,40 @@ describe('findProjectRoot', () => {
       join(worktree, '.git'),
       `gitdir: ${join(main, '.git', 'worktrees', 'feature')}\n`
     );
+    writeFileSync(
+      join(main, '.git', 'worktrees', 'feature', 'gitdir'),
+      `${join(worktree, '.git')}\n`
+    );
 
     expect(findProjectRoot(join(worktree, 'src'))).toBe(main);
+  });
+
+  it('does not let a folder join a project that does not name it as its worktree', () => {
+    const main = join(dir, 'repo');
+    const stranger = join(dir, 'stranger');
+    mkdirSync(join(main, '.git', 'worktrees', 'feature'), { recursive: true });
+    mkdirSync(stranger, { recursive: true });
+    writeFileSync(
+      join(stranger, '.git'),
+      `gitdir: ${join(main, '.git', 'worktrees', 'feature')}\n`
+    );
+
+    expect(findProjectRoot(stranger)).toBe(stranger);
+    writeFileSync(join(main, '.git', 'worktrees', 'feature', 'gitdir'), '/somewhere/else/.git\n');
+    expect(findProjectRoot(stranger)).toBe(stranger);
+  });
+
+  it('reads no .git that is not a small plain file', () => {
+    const outside = findProjectRoot(dir);
+    const big = join(dir, 'big');
+    const linked = join(dir, 'linked');
+    mkdirSync(big);
+    mkdirSync(linked);
+    writeFileSync(join(big, '.git'), `gitdir: ${'x'.repeat(10_000)}`);
+    if (process.platform !== 'win32') symlinkSync('/dev/zero', join(linked, '.git'));
+
+    expect([big, outside]).toContain(findProjectRoot(big));
+    expect([linked, outside]).toContain(findProjectRoot(linked));
   });
 
   it('is the folder itself for a submodule, whose .git file points elsewhere', () => {
@@ -279,6 +311,18 @@ describe('address book', () => {
     expect(resolveAddress(store, 'codex', context)).toMatchObject({
       agent: { name: 'codex-2@demo' },
     });
+  });
+
+  it('takes a session name that is safe to pass on, and no other', () => {
+    const spawning = { ...context, canSpawn: () => true };
+    const invalid = expect.objectContaining({ code: 'invalid_input' });
+
+    expect(resolveAddress(store, 'codex:Rate limiter 2', spawning)).toMatchObject({
+      sessionName: 'Rate limiter 2',
+    });
+    expect(() => resolveAddress(store, 'codex:--dangerous-flag', spawning)).toThrow(invalid);
+    expect(() => resolveAddress(store, 'codex:a|b', spawning)).toThrow(invalid);
+    expect(() => resolveAddress(store, 'codex:a\nb', spawning)).toThrow(invalid);
   });
 
   it('refuses an empty address and one with nothing after the colon', () => {

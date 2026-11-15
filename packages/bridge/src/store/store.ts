@@ -45,6 +45,8 @@ export interface AgentFilter {
   project?: string;
   harness?: string;
   statuses?: readonly AgentStatus[];
+  /** Agents whose last call to the bridge was before this time, ms since the epoch */
+  seenBefore?: number;
 }
 
 export interface JobTaskFilter {
@@ -54,6 +56,12 @@ export interface JobTaskFilter {
   /** Jobs the agent handed over or carries out */
   party?: string;
   project?: string;
+  /** Jobs whose deadline is at or before this time, ms since the epoch */
+  deadlineBy?: number;
+  /** Jobs handed over from inside this job */
+  parent?: number;
+  /** Jobs created at or after this time, ms since the epoch */
+  createdSince?: number;
   limit?: number;
 }
 
@@ -65,8 +73,8 @@ export interface LetterFilter {
   kinds?: readonly LetterKind[];
   /** Letters accepted after this one */
   afterSeq?: number;
-  /** Letters whose next delivery attempt is due at or before this time, ms since the epoch */
-  attemptDueBy?: number;
+  /** Letters an adapter tried to deliver fewer times than this */
+  attemptsBelow?: number;
   /** Letters whose recipient had to react at or before this time, ms since the epoch */
   replyDueBy?: number;
   limit?: number;
@@ -142,6 +150,8 @@ export interface BridgeStore {
   updateLetter(id: string, patch: LetterPatch): Letter;
   listLetters(filter?: LetterFilter): Letter[];
   countLetters(filter?: LetterFilter): number;
+  /** The agents that have letters in the queue */
+  queuedRecipients(): string[];
 
   appendJournal(entry: Omit<JournalEntry, 'seq'>): JournalEntry;
   readJournal(query?: JournalQuery): JournalEntry[];

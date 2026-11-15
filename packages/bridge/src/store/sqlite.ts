@@ -1,7 +1,8 @@
 import type BetterSqlite3 from 'better-sqlite3';
-import { chmodSync, mkdirSync } from 'node:fs';
+import { chmodSync, closeSync, constants, lstatSync, mkdirSync, openSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
+  TASK_AGENT_KEY,
   compareTasksNewestFirst,
   isTaskVisibleTo,
   taskCreatedAt,
@@ -59,10 +60,17 @@ const SCHEMA = `
     job_from TEXT,
     job_to TEXT,
     job_project TEXT,
+    job_deadline_at INTEGER,
+    job_parent INTEGER,
+    job_created_at INTEGER,
     data TEXT NOT NULL
   );
   CREATE INDEX tasks_context ON tasks (context_id);
   CREATE INDEX tasks_updated ON tasks (updated_at DESC, id DESC);
+  CREATE INDEX tasks_job_state ON tasks (state, job_deadline_at) WHERE job_number IS NOT NULL;
+  CREATE INDEX tasks_job_to ON tasks (job_to, state) WHERE job_number IS NOT NULL;
+  CREATE INDEX tasks_job_from ON tasks (job_from, job_created_at) WHERE job_number IS NOT NULL;
+  CREATE INDEX tasks_job_parent ON tasks (job_parent) WHERE job_parent IS NOT NULL;
 
   CREATE TABLE job_numbers (
     number INTEGER PRIMARY KEY AUTOINCREMENT
@@ -83,6 +91,7 @@ const SCHEMA = `
   );
   CREATE UNIQUE INDEX agents_session ON agents (harness, session_id) WHERE session_id <> '';
   CREATE INDEX agents_project ON agents (project, harness);
+  CREATE INDEX agents_seen ON agents (status, last_seen_at);
 
   CREATE TABLE letters (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -255,12 +264,49 @@ function toJournalEntry(row: JournalRow): JournalEntry {
   };
 }
 
-/** Keeps the file to its owner. A filesystem without modes leaves it to the folder's protection. */
-function ownerOnly(path: string): void {
+/**
+ * Makes sure the folder and the database are this user's and nobody else's before anything is
+ * written to them: the database is created with mode 0600 from the start (SQLite gives its
+ * `-wal` and `-shm` files the same mode), a file that is already there is narrowed, and a folder
+ * or a file that belongs to someone else is refused. A filesystem without owners and modes
+ * (Windows) keeps the protection of the user's profile.
+ *
+ * @throws BridgeError `storage` when the folder or the file belongs to another user, or the
+ * file is not a plain file
+ */
+function makePrivate(path: string): void {
+  const folder = dirname(path);
+  if (process.platform === 'win32') {
+    mkdirSync(folder, { recursive: true });
+    return;
+  }
+  mkdirSync(folder, { recursive: true, mode: 0o700 });
+  const uid = process.getuid?.();
+  if (uid !== undefined && statSync(folder).uid !== uid) {
+    throw new BridgeError(
+      'storage',
+      `The bridge folder ${folder} belongs to another user. Point COGITATOR_BRIDGE_HOME at a folder of your own`
+    );
+  }
   try {
-    chmodSync(path, 0o600);
+    closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR, 0o600));
+    return;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  const file = lstatSync(path);
+  if (!file.isFile() || (uid !== undefined && file.uid !== uid)) {
+    throw new BridgeError(
+      'storage',
+      `The bridge database ${path} is not a plain file of this user. Remove it or point COGITATOR_BRIDGE_HOME elsewhere`
+    );
+  }
+  for (const each of [path, `${path}-wal`, `${path}-shm`]) {
+    try {
+      chmodSync(each, 0o600);
+    } catch (error) {
+      if (each === path || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
 }
 
@@ -326,8 +372,8 @@ class SqliteTaskStore implements TaskStore {
     this.db
       .prepare(
         `${verb} INTO tasks
-           (id, context_id, state, created_at, updated_at, job_number, job_from, job_to, job_project, data)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           (id, context_id, state, created_at, updated_at, job_number, job_from, job_to, job_project, job_deadline_at, job_parent, job_created_at, data)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         task.id,
@@ -339,6 +385,9 @@ class SqliteTaskStore implements TaskStore {
         job?.from ?? null,
         job?.to ?? null,
         job?.project ?? null,
+        job ? ms(job.deadlineAt) : null,
+        job?.parent ?? null,
+        job ? ms(job.createdAt) : null,
         JSON.stringify(task)
       );
   }
@@ -393,9 +442,10 @@ export class SqliteBridgeStore implements BridgeStore {
     const inMemory = path === MEMORY_PATH;
     let db: BetterSqlite3.Database;
     try {
-      if (!readonly && !inMemory) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      if (!readonly && !inMemory) makePrivate(path);
       db = readonly ? new Database(path, { fileMustExist: true }) : new Database(path);
     } catch (error) {
+      if (error instanceof BridgeError) throw error;
       throw new BridgeError(
         'storage',
         `Cannot open the bridge database ${path}: ${error instanceof Error ? error.message : String(error)}`
@@ -410,7 +460,6 @@ export class SqliteBridgeStore implements BridgeStore {
         if (!inMemory) {
           db.pragma('journal_mode = WAL');
           db.pragma('synchronous = NORMAL');
-          ownerOnly(path);
         }
       }
       SqliteBridgeStore.migrate(db, path, readonly);
@@ -422,14 +471,17 @@ export class SqliteBridgeStore implements BridgeStore {
   }
 
   private static migrate(db: BetterSqlite3.Database, path: string, readonly: boolean): void {
-    const version = db.pragma('user_version', { simple: true }) as number;
-    if (version > BRIDGE_SCHEMA_VERSION) {
-      throw new BridgeError(
-        'storage',
-        `The bridge database ${path} was written by a newer version (schema ${version}, this one reads ${BRIDGE_SCHEMA_VERSION}). Update @cogitator-ai/bridge`
-      );
-    }
-    if (version === BRIDGE_SCHEMA_VERSION) return;
+    const check = (): boolean => {
+      const version = db.pragma('user_version', { simple: true }) as number;
+      if (version > BRIDGE_SCHEMA_VERSION) {
+        throw new BridgeError(
+          'storage',
+          `The bridge database ${path} was written by a newer version (schema ${version}, this one reads ${BRIDGE_SCHEMA_VERSION}). Update @cogitator-ai/bridge`
+        );
+      }
+      return version === BRIDGE_SCHEMA_VERSION;
+    };
+    if (check()) return;
     if (readonly) {
       throw new BridgeError(
         'storage',
@@ -437,9 +489,10 @@ export class SqliteBridgeStore implements BridgeStore {
       );
     }
     db.transaction(() => {
+      if (check()) return;
       db.exec(SCHEMA);
       db.pragma(`user_version = ${BRIDGE_SCHEMA_VERSION}`);
-    })();
+    }).immediate();
   }
 
   async transaction<T>(work: () => Promise<T>): Promise<T> {
@@ -550,6 +603,18 @@ export class SqliteBridgeStore implements BridgeStore {
       where.push('job_project = ?');
       binds.push(filter.project);
     }
+    if (filter.deadlineBy !== undefined) {
+      where.push('job_deadline_at <= ?');
+      binds.push(filter.deadlineBy);
+    }
+    if (filter.parent !== undefined) {
+      where.push('job_parent = ?');
+      binds.push(filter.parent);
+    }
+    if (filter.createdSince !== undefined) {
+      where.push('job_created_at >= ?');
+      binds.push(filter.createdSince);
+    }
     const limit = filter.limit !== undefined ? 'LIMIT ?' : '';
     if (filter.limit !== undefined) binds.push(filter.limit);
     return this.db
@@ -626,6 +691,10 @@ export class SqliteBridgeStore implements BridgeStore {
       where.push(`status IN (${placeholders(filter.statuses.length)})`);
       binds.push(...filter.statuses);
     }
+    if (filter.seenBefore !== undefined) {
+      where.push('last_seen_at < ?');
+      binds.push(filter.seenBefore);
+    }
     const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
     return this.db
       .prepare<Bind[], AgentRow>(`SELECT * FROM agents ${clause} ORDER BY registered_at, name`)
@@ -652,6 +721,7 @@ export class SqliteBridgeStore implements BridgeStore {
             ...task,
             metadata: {
               ...task.metadata,
+              ...(task.metadata?.[TASK_AGENT_KEY] === from && { [TASK_AGENT_KEY]: to }),
               [BRIDGE_JOB_KEY]: {
                 ...record,
                 from: record.from === from ? to : record.from,
@@ -757,6 +827,15 @@ export class SqliteBridgeStore implements BridgeStore {
     return row?.total ?? 0;
   }
 
+  queuedRecipients(): string[] {
+    return this.db
+      .prepare<[], { recipient: string }>(
+        "SELECT DISTINCT recipient FROM letters WHERE state = 'queued' ORDER BY recipient"
+      )
+      .all()
+      .map((row) => row.recipient);
+  }
+
   private letterQuery(filter: LetterFilter): { clause: string; binds: Bind[] } | undefined {
     const where: string[] = [];
     const binds: Bind[] = [];
@@ -786,9 +865,9 @@ export class SqliteBridgeStore implements BridgeStore {
       where.push('seq > ?');
       binds.push(filter.afterSeq);
     }
-    if (filter.attemptDueBy !== undefined) {
-      where.push('next_attempt_at IS NOT NULL AND next_attempt_at <= ?');
-      binds.push(filter.attemptDueBy);
+    if (filter.attemptsBelow !== undefined) {
+      where.push('attempts < ?');
+      binds.push(filter.attemptsBelow);
     }
     if (filter.replyDueBy !== undefined) {
       where.push('reply_due_at IS NOT NULL AND reply_due_at <= ?');

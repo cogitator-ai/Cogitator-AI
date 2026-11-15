@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CreatedSession, LetterDelivery } from '../types';
-import { FakeAdapter, makeKit, type Kit } from './bridge-kit';
+import { BridgeDispatcher } from '../dispatcher';
+import { FakeAdapter, makeKit, MINUTE, type Kit } from './bridge-kit';
 
 let kit: Kit;
 
@@ -42,11 +43,51 @@ describe('delivery through an adapter', () => {
     expect((await bridge.readJournal({ job: 1 })).map((entry) => entry.type)).toContain(
       'letter.delivered'
     );
-    expect((await bridge.job(1)).state).toBe('submitted');
+    expect(letter.replyDueAt).toBeUndefined();
+    expect((await bridge.job(1)).state).toBe('working');
 
     await bridge.send(codex.name, { job: 1, kind: 'note', body: 'On it' });
     expect((await bridge.letters({ job: 1, kinds: ['task'] }))[0].state).toBe('read');
     expect(kit.errors).toEqual([]);
+  });
+
+  it('counts a job the harness took as taken: a session that works in silence is not failed', async () => {
+    const adapter = new FakeAdapter();
+    kit = await makeKit({ adapters: [adapter] });
+    const { bridge, claude, codex, clock } = kit;
+    await bridge.createJob(claude.name, {
+      to: 'codex',
+      body: 'Write the tests',
+      budget: { replyTimeoutMs: 5 * MINUTE },
+    });
+    await bridge.idle();
+
+    clock.advance(30 * MINUTE);
+    expect(await bridge.sweep()).toEqual({ failed: [], reminded: [] });
+    expect((await bridge.job(1)).state).toBe('working');
+
+    const { job } = await bridge.send(codex.name, { job: 1, kind: 'report', body: 'Done' });
+    expect(job.state).toBe('completed');
+  });
+
+  it('still reminds of a question that was delivered and not answered', async () => {
+    const adapter = new FakeAdapter();
+    kit = await makeKit({ adapters: [adapter] });
+    const { bridge, claude, clock } = kit;
+    await bridge.createJob(claude.name, {
+      to: 'codex',
+      body: 'Write the tests',
+      budget: { replyTimeoutMs: 5 * MINUTE },
+    });
+    const { letter } = await bridge.send(claude.name, {
+      job: 1,
+      kind: 'question',
+      body: 'How far?',
+    });
+    await bridge.idle();
+
+    clock.advance(5 * MINUTE);
+    expect((await bridge.sweep()).reminded).toEqual([letter.id]);
   });
 
   it('leaves the mail of a harness without an adapter in its inbox', async () => {
@@ -171,6 +212,31 @@ describe('delivery through an adapter', () => {
     ]);
   });
 
+  it('is not held up by any number of letters it gave up on', async () => {
+    const adapter = new FakeAdapter({
+      deliver: async (delivery: LetterDelivery) => {
+        if (delivery.letter.body.startsWith('Poison')) throw new Error('rejected');
+      },
+    });
+    kit = await makeKit({ adapters: [adapter], limits: { deliveryAttempts: 1 } });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Carrier', budget: { letters: 500 } });
+    await bridge.idle();
+    for (let index = 0; index < 120; index += 1) {
+      await bridge.send(claude.name, { job: 1, kind: 'note', body: `Poison ${index}` });
+    }
+    await bridge.idle();
+
+    await bridge.send(claude.name, { job: 1, kind: 'note', body: 'Healthy' });
+    await bridge.idle();
+
+    expect(adapter.delivered.map((delivery) => delivery.letter.body)).toEqual([
+      'Carrier',
+      'Healthy',
+    ]);
+    expect(await bridge.letters({ job: 1, states: ['queued'], limit: 1000 })).toHaveLength(120);
+  });
+
   it('counts a delivery that hangs as failed', async () => {
     const adapter = new FakeAdapter({ deliver: () => new Promise(() => undefined) });
     kit = await makeKit({ adapters: [adapter], limits: { deliveryTimeoutMs: 20 } });
@@ -291,7 +357,7 @@ describe('a session started for a job', () => {
     expect((await bridge.inbox(claude.name))[0].body).toContain('workspace not trusted');
     await expect(
       bridge.createJob(claude.name, { to: 'gemini@demo', body: 'Again' })
-    ).rejects.toThrow(/There is no agent gemini@demo/);
+    ).rejects.toThrow(/gemini@demo is gone/);
     expect(kit.errors).toEqual([]);
   });
 
@@ -309,6 +375,113 @@ describe('a session started for a job', () => {
 
     expect((await kit.bridge.job(1)).reason).toMatch(/returned no session id/);
     expect((await kit.bridge.job(2)).reason).toMatch(/took longer than 20 ms/);
+  });
+
+  it('fails every job that waited for a session that could not be started', async () => {
+    const started = deferred<CreatedSession>();
+    const adapter = sessionAdapter(() => started.promise);
+    kit = await makeKit({ adapters: [adapter] });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'gemini', body: 'First' });
+    const second = await bridge.createJob(claude.name, { to: 'gemini', body: 'Second' });
+    expect(second.job.to).toBe('gemini@demo');
+
+    started.reject(new Error('workspace not trusted'));
+    await bridge.idle();
+
+    expect((await bridge.jobs()).map((job) => job.state)).toEqual(['failed', 'failed']);
+    expect(adapter.sessions).toHaveLength(1);
+  });
+
+  it('keeps the job of a session that came up by itself although its start timed out', async () => {
+    const adapter = new FakeAdapter({
+      harness: 'gemini',
+      createSession: () => new Promise(() => undefined),
+    });
+    kit = await makeKit({ adapters: [adapter], limits: { sessionStartTimeoutMs: 30 } });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'gemini', body: 'Write the tests' });
+    await bridge.register({
+      harness: 'gemini',
+      sessionId: 'g-1',
+      cwd: '/work/demo',
+      project: '/work/demo',
+      agentName: 'gemini@demo',
+    });
+    await bridge.idle();
+
+    expect((await bridge.agents({ harness: 'gemini' }))[0]).toMatchObject({ status: 'active' });
+    expect((await bridge.job(1)).state).toBe('working');
+    expect(adapter.delivered.map((delivery) => delivery.letter.kind)).toEqual(['task']);
+  });
+
+  it('is given up on by the next dispatcher when the one that was starting it is gone', async () => {
+    const adapter = new FakeAdapter({
+      harness: 'gemini',
+      createSession: () => new Promise(() => undefined),
+    });
+    kit = await makeKit({ adapters: [adapter] });
+    const { bridge, claude, store, clock } = kit;
+    await bridge.createJob(claude.name, { to: 'gemini', body: 'Write the tests' });
+    expect((await bridge.sweep()).failed).toEqual([]);
+
+    const restarted = sessionAdapter(async () => ({ sessionId: 'g-2' }));
+    const next = new BridgeDispatcher({ store, now: clock.now, adapters: [restarted] });
+    expect((await next.sweep()).failed).toEqual([1]);
+
+    expect((await next.job(1)).reason).toBe(
+      'the session of gemini@demo never started: the dispatcher stopped while starting it'
+    );
+    expect((await next.agents({ harness: 'gemini' }))[0].status).toBe('gone');
+    expect((await next.inbox(claude.name))[0].body).toContain('never started');
+
+    const again = await next.createJob(claude.name, { to: 'gemini', body: 'Write the tests' });
+    await next.idle();
+    expect(again.job.to).toBe('gemini-2@demo');
+    expect((await next.agents({ harness: 'gemini', statuses: ['active'] }))[0].sessionId).toBe(
+      'g-2'
+    );
+    kit.close = async () => store.close();
+  });
+
+  it('is not started while as many sessions as may start at once are starting', async () => {
+    const adapter = new FakeAdapter({
+      harness: 'gemini',
+      createSession: () => new Promise(() => undefined),
+    });
+    kit = await makeKit({
+      adapters: [adapter],
+      limits: { maxStartingSessions: 1, sessionStartTimeoutMs: 40 },
+    });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'gemini:first', body: 'One' });
+
+    await expect(
+      bridge.createJob(claude.name, { to: 'gemini:second', body: 'Two' })
+    ).rejects.toThrow(/already starting 1 sessions/);
+    expect(adapter.sessions).toHaveLength(1);
+  });
+
+  it('is not claimed by a session of another project that names it', async () => {
+    const started = deferred<CreatedSession>();
+    const adapter = sessionAdapter(() => started.promise);
+    kit = await makeKit({ adapters: [adapter] });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'gemini', body: 'Write the tests' });
+
+    const stranger = await bridge.register({
+      harness: 'gemini',
+      sessionId: 'g-x',
+      cwd: '/work/other',
+      project: '/work/other',
+      agentName: 'gemini@demo',
+    });
+
+    expect(stranger.name).toBe('gemini@other');
+    expect(await bridge.inbox(stranger.name)).toEqual([]);
+    started.resolve({ sessionId: 'g-1' });
+    await bridge.idle();
+    expect((await bridge.job(1)).to).toBe('gemini@demo');
   });
 
   it('is recognised when it calls the bridge before its adapter reports back', async () => {
@@ -365,19 +538,42 @@ describe('a session started for a job', () => {
 });
 
 describe('a session that went away', () => {
-  it('gets its mail once it calls the bridge again', async () => {
+  it('gets the mail that came in the meantime once it calls the bridge again', async () => {
     const adapter = new FakeAdapter();
-    kit = await makeKit({ adapters: [adapter] });
-    const { bridge, claude, codex, store } = kit;
-    store.putAgent({ ...codex, status: 'gone' });
-
-    await bridge.createJob(claude.name, { to: 'codex@demo', body: 'x' }).catch(() => undefined);
-    store.putAgent({ ...codex, status: 'active' });
-    await bridge.createJob(claude.name, { to: 'codex', body: 'Do it' });
+    kit = await makeKit({ adapters: [adapter], limits: { agentIdleMs: 60 * MINUTE } });
+    const { bridge, claude, codex, clock } = kit;
+    await bridge.createJob(claude.name, {
+      to: 'codex',
+      body: 'A long one',
+      budget: { durationMs: 20 * 60 * MINUTE, replyTimeoutMs: 6 * 60 * MINUTE },
+    });
     await bridge.idle();
-    const before = adapter.delivered.length;
-    store.putAgent({ ...codex, status: 'gone' });
-    await bridge.createJob(claude.name, { to: 'codex-9@demo', body: 'x' }).catch(() => undefined);
+    await bridge.send(codex.name, { job: 1, kind: 'report', body: 'Done' });
+    clock.advance(2 * 60 * MINUTE);
+    await bridge.register({
+      harness: 'claude-code',
+      sessionId: 'session-claude',
+      cwd: '/work/demo',
+      project: '/work/demo',
+    });
+    await bridge.sweep();
+    expect((await bridge.agents({ statuses: ['gone'] })).map((agent) => agent.name)).toEqual([
+      'codex@demo',
+    ]);
+    kit.store.insertLetter({
+      id: 'late',
+      job: 1,
+      kind: 'note',
+      from: 'bridge',
+      to: codex.name,
+      body: 'While you were away',
+      state: 'queued',
+      createdAt: new Date(clock.now()).toISOString(),
+      attempts: 0,
+    });
+    await bridge.sweep();
+    await bridge.idle();
+    expect(adapter.delivered.map((delivery) => delivery.letter.id)).not.toContain('late');
 
     const back = await bridge.register({
       harness: 'codex',
@@ -387,8 +583,7 @@ describe('a session that went away', () => {
     });
     await bridge.idle();
 
-    expect(back.status).toBe('active');
-    expect(adapter.delivered.length).toBe(before);
-    expect(before).toBe(1);
+    expect(back).toMatchObject({ name: 'codex@demo', status: 'active' });
+    expect(adapter.delivered.map((delivery) => delivery.letter.id)).toContain('late');
   });
 });

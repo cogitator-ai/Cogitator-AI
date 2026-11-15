@@ -119,10 +119,25 @@ export interface ResolveAddressContext {
   caller: string;
   /** Whether the bridge can start a session of the harness */
   canSpawn: (harness: string) => boolean;
+  /** Ms since the epoch, to say how long ago each of several sessions was heard from */
+  now?: number;
 }
 
-function describe(agent: AgentRecord): string {
-  return agent.sessionName ? `${agent.name} ("${agent.sessionName}")` : agent.name;
+function heardFrom(agent: AgentRecord, now: number | undefined): string | undefined {
+  if (agent.status === 'starting') return 'starting';
+  if (now === undefined) return undefined;
+  const minutes = Math.max(0, Math.round((now - Date.parse(agent.lastSeenAt)) / 60_000));
+  if (minutes < 1) return 'heard from just now';
+  if (minutes < 90) return `heard from ${minutes} min ago`;
+  return `heard from ${Math.round(minutes / 60)} h ago`;
+}
+
+function describe(agent: AgentRecord, now?: number): string {
+  const details = [
+    agent.sessionName ? `"${agent.sessionName}"` : undefined,
+    heardFrom(agent, now),
+  ].filter((detail) => detail !== undefined);
+  return details.length > 0 ? `${agent.name} (${details.join(', ')})` : agent.name;
 }
 
 function matchSession(candidates: AgentRecord[], wanted: string): AgentRecord[] {
@@ -157,8 +172,15 @@ export function resolveAddress(
 
   if (text.includes('@')) {
     const agent = store.getAgent(text);
-    if (!agent || agent.status === 'gone') {
+    if (!agent) {
       throw new BridgeError('unknown_agent', `There is no agent ${text}`, { address: text });
+    }
+    if (agent.status === 'gone') {
+      throw new BridgeError(
+        'unknown_agent',
+        `${text} is gone: its session could not be started, or has not called the bridge for a long time. It is back as soon as it calls again`,
+        { address: text }
+      );
     }
     if (agent.name === context.caller) {
       throw new BridgeError('invalid_input', 'An agent cannot hand a job to itself');
@@ -175,6 +197,12 @@ export function resolveAddress(
       `The address "${text}" names no session after the colon`
     );
   }
+  if (wanted !== undefined && !/^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u.test(wanted)) {
+    throw new BridgeError(
+      'invalid_input',
+      `A session is named with letters, digits, spaces, ".", "_" and "-", starting with a letter or a digit. "${wanted.replace(/\p{Cc}/gu, ' ')}" is not such a name`
+    );
+  }
 
   const candidates = store
     .listAgents({ project: context.project, harness, statuses: ['active', 'starting'] })
@@ -183,7 +211,7 @@ export function resolveAddress(
     if (context.canSpawn(harness)) {
       return { kind: 'spawn', harness, ...(sessionName && { sessionName }) };
     }
-    const known = candidates.map(describe);
+    const known = candidates.map((agent) => describe(agent, context.now));
     throw new BridgeError(
       'no_session',
       known.length > 0
@@ -200,7 +228,7 @@ export function resolveAddress(
     if (matches.length === 0) return spawn(wanted);
     throw new BridgeError(
       'ambiguous_agent',
-      `"${wanted}" fits several ${harness} sessions: ${matches.map(describe).join(', ')}. Use the agent's name`,
+      `"${wanted}" fits several ${harness} sessions: ${matches.map((agent) => describe(agent, context.now)).join(', ')}. Use the agent's name`,
       { harness, sessions: matches.map((agent) => agent.name) }
     );
   }
@@ -208,7 +236,7 @@ export function resolveAddress(
   if (candidates.length === 0) return spawn();
   throw new BridgeError(
     'ambiguous_agent',
-    `Several ${harness} sessions work in this project: ${candidates.map(describe).join(', ')}. ` +
+    `Several ${harness} sessions work in this project: ${candidates.map((agent) => describe(agent, context.now)).join(', ')}. ` +
       `Name one (${text}:<session name> or its agent name), or ask for a fresh one with ${text}:${NEW_SESSION}`,
     { harness, sessions: candidates.map((agent) => agent.name) }
   );

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
-import { statSync } from 'node:fs';
-import { TaskManager, textPart, toMessage } from '@cogitator-ai/a2a';
+import { chmodSync, mkdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { TASK_AGENT_KEY, TaskManager, textPart, toMessage } from '@cogitator-ai/a2a';
 import { SqliteBridgeStore, BRIDGE_SCHEMA_VERSION } from '../store/sqlite';
 import { BridgeError } from '../errors';
 import { BRIDGE_JOB_KEY, DEFAULT_LIMITS, type BridgeJobRecord } from '../types';
@@ -20,6 +20,7 @@ function jobRecord(overrides: Partial<BridgeJobRecord> = {}): BridgeJobRecord {
     budget: DEFAULT_LIMITS.budget,
     lettersUsed: 0,
     depth: 1,
+    createdAt: at(),
     deadlineAt: at(3_600_000),
     ...overrides,
   };
@@ -82,6 +83,42 @@ describe('SqliteBridgeStore', () => {
       expect(numbers({ from: 'codex@demo' })).toEqual([2]);
       expect(numbers({ project: '/work/other' })).toEqual([3]);
       expect(numbers({ limit: 2 })).toEqual([3, 2]);
+    });
+
+    it('finds the jobs handed over from inside a job, and those created since a time', async () => {
+      const tasks = new TaskManager({ taskStore: store.tasks });
+      const create = async (record: Partial<BridgeJobRecord>) => {
+        const number = store.nextJobNumber();
+        await tasks.createTask(userMessage('x'), undefined, {
+          metadata: { [BRIDGE_JOB_KEY]: jobRecord({ number, ...record }) },
+        });
+      };
+      await create({});
+      await create({ parent: 1, createdAt: at(5_000) });
+      await create({ parent: 1, createdAt: at(9_000) });
+      const numbers = (filter: Parameters<typeof store.jobTasks>[0]) =>
+        store.jobTasks(filter).map((task) => jobOf(task)?.number);
+
+      expect(numbers({ parent: 1 })).toEqual([3, 2]);
+      expect(numbers({ parent: 2 })).toEqual([]);
+      expect(numbers({ createdSince: T0 + 5_000 })).toEqual([3, 2]);
+      expect(numbers({ from: 'claude@demo', createdSince: T0 + 9_001 })).toEqual([]);
+    });
+
+    it('finds the jobs that are past their deadline', async () => {
+      const tasks = new TaskManager({ taskStore: store.tasks });
+      for (const deadlineAt of [at(1_000), at(5_000)]) {
+        const number = store.nextJobNumber();
+        await tasks.createTask(userMessage('x'), undefined, {
+          metadata: { [BRIDGE_JOB_KEY]: jobRecord({ number, deadlineAt }) },
+        });
+      }
+      const overdue = (deadlineBy: number) =>
+        store.jobTasks({ deadlineBy }).map((task) => jobOf(task)?.number);
+
+      expect(overdue(T0 + 999)).toEqual([]);
+      expect(overdue(T0 + 1_000)).toEqual([1]);
+      expect(overdue(T0 + 5_000)).toEqual([2, 1]);
     });
 
     it('lists tasks as the A2A store contract asks: filters, visibility, newest first, paging', async () => {
@@ -170,6 +207,24 @@ describe('SqliteBridgeStore', () => {
       expect(names({ statuses: [] })).toEqual([]);
     });
 
+    it('finds the agents that were last heard from before a time', () => {
+      store.putAgent(agentRecord({ lastSeenAt: at(1_000) }));
+      store.putAgent(
+        agentRecord({
+          name: 'codex@demo',
+          harness: 'codex',
+          sessionId: 's2',
+          lastSeenAt: at(9_000),
+        })
+      );
+
+      const names = (seenBefore: number) =>
+        store.listAgents({ statuses: ['active'], seenBefore }).map((agent) => agent.name);
+      expect(names(T0 + 1_000)).toEqual([]);
+      expect(names(T0 + 1_001)).toEqual(['claude@demo']);
+      expect(names(T0 + 10_000)).toEqual(['claude@demo', 'codex@demo']);
+    });
+
     it('merges an agent into another: its letters and jobs change hands', async () => {
       const tasks = new TaskManager({ taskStore: store.tasks });
       store.putAgent(
@@ -177,7 +232,8 @@ describe('SqliteBridgeStore', () => {
       );
       store.putAgent(agentRecord({ name: 'codex-2@demo', harness: 'codex', sessionId: 's9' }));
       const number = store.nextJobNumber();
-      await tasks.createTask(userMessage('x'), undefined, {
+      const task = await tasks.createTask(userMessage('x'), undefined, {
+        agentName: 'codex@demo',
         metadata: { [BRIDGE_JOB_KEY]: jobRecord({ number, to: 'codex@demo' }) },
       });
       store.insertLetter(letterInput({ id: 'a', to: 'codex@demo' }));
@@ -192,6 +248,7 @@ describe('SqliteBridgeStore', () => {
       expect(store.getLetter('b')?.from).toBe('codex-2@demo');
       expect(jobOf(store.taskOfJob(number)!)?.to).toBe('codex-2@demo');
       expect(store.jobTasks({ to: 'codex-2@demo' })).toHaveLength(1);
+      expect((await store.tasks.get(task.id))?.metadata?.[TASK_AGENT_KEY]).toBe('codex-2@demo');
     });
   });
 
@@ -235,6 +292,22 @@ describe('SqliteBridgeStore', () => {
       expect(updated.nextAttemptAt).toBeUndefined();
     });
 
+    it('finds the letters that still have delivery attempts left, and who has mail waiting', () => {
+      store.insertLetter(letterInput({ id: 'a', attempts: 5 }));
+      store.insertLetter(letterInput({ id: 'b', attempts: 4 }));
+      store.insertLetter(letterInput({ id: 'c', to: 'gemini@demo', state: 'read' }));
+      store.insertLetter(letterInput({ id: 'd', to: 'claude@demo', from: 'codex@demo' }));
+
+      const next = store.listLetters({
+        to: 'codex@demo',
+        states: ['queued'],
+        attemptsBelow: 5,
+        limit: 1,
+      });
+      expect(next.map((letter) => letter.id)).toEqual(['b']);
+      expect(store.queuedRecipients()).toEqual(['claude@demo', 'codex@demo']);
+    });
+
     it('throws for an update of a letter it does not have', () => {
       expect(() => store.updateLetter('nope', { state: 'read' })).toThrow(BridgeError);
     });
@@ -263,8 +336,6 @@ describe('SqliteBridgeStore', () => {
       expect(ids({ from: 'codex@demo' })).toEqual(['b']);
       expect(ids({ kinds: ['question', 'permission'] })).toEqual(['b']);
       expect(ids({ afterSeq: store.getLetter('a')!.seq })).toEqual(['b', 'c']);
-      expect(ids({ attemptDueBy: T0 + 5_000 })).toEqual(['c']);
-      expect(ids({ attemptDueBy: T0 + 4_999 })).toEqual([]);
       expect(ids({ replyDueBy: T0 + 10_000 })).toEqual(['b']);
       expect(ids({ states: [] })).toEqual([]);
       expect(store.countLetters({ job: 1 })).toBe(2);
@@ -442,7 +513,9 @@ describe('SqliteBridgeStore', () => {
       try {
         expect(second.getLetter('ltr_1')?.body).toBe('Write the tests');
         expect(second.nextJobNumber()).toBe(2);
+        second.appendJournal({ at: at(), type: 'job.created', job: 1 });
         if (process.platform !== 'win32') {
+          expect(statSync(`${path}-wal`).mode & 0o777).toBe(0o600);
           expect(statSync(path).mode & 0o777).toBe(0o600);
           expect(statSync(join(dir, 'nested')).mode & 0o777).toBe(0o700);
         }
@@ -479,6 +552,60 @@ describe('SqliteBridgeStore', () => {
         expect(reader.readJournal()).toHaveLength(1);
       } finally {
         reader.close();
+      }
+    });
+
+    it('keeps the database and its side files to the owner from the first write, in a folder others can enter', async () => {
+      if (process.platform === 'win32') return;
+      const open = join(dir, 'shared');
+      mkdirSync(open, { mode: 0o755 });
+      const path = join(open, 'bridge.db');
+
+      const first = await SqliteBridgeStore.open(path);
+      try {
+        first.appendJournal({ at: at(), type: 'job.created', job: 1 });
+        for (const file of [path, `${path}-wal`, `${path}-shm`]) {
+          expect(statSync(file).mode & 0o777, file).toBe(0o600);
+        }
+      } finally {
+        first.close();
+      }
+    });
+
+    it('narrows a database that was left open to others', async () => {
+      if (process.platform === 'win32') return;
+      const path = join(dir, 'bridge.db');
+      (await SqliteBridgeStore.open(path)).close();
+      chmodSync(path, 0o644);
+
+      const again = await SqliteBridgeStore.open(path);
+      again.close();
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    });
+
+    it('refuses a database path that is not a plain file', async () => {
+      if (process.platform === 'win32') return;
+      const target = join(dir, 'elsewhere.db');
+      writeFileSync(target, '');
+      symlinkSync(target, join(dir, 'bridge.db'));
+
+      await expect(SqliteBridgeStore.open(join(dir, 'bridge.db'))).rejects.toThrow(
+        /not a plain file of this user/
+      );
+    });
+
+    it('lets two processes open a fresh database at once', async () => {
+      const path = join(dir, 'bridge.db');
+      const opened = await Promise.all([
+        SqliteBridgeStore.open(path),
+        SqliteBridgeStore.open(path),
+        SqliteBridgeStore.open(path),
+      ]);
+      try {
+        opened[0].appendJournal({ at: at(), type: 'job.created', job: 1 });
+        expect(opened[2].readJournal()).toHaveLength(1);
+      } finally {
+        for (const each of opened) each.close();
       }
     });
 

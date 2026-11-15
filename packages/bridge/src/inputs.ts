@@ -21,12 +21,13 @@ export const LetterIdSchema = z
 
 const JobNumberSchema = z.number().int().positive();
 
-export const CreateJobInputSchema = z.object({
-  to: z.string().trim().min(1).max(512),
+const NO_CONTROL = /^[^\p{Cc}]*$/u;
+
+export const CreateJobInputSchema = z.strictObject({
+  to: z.string().trim().min(1).max(512).regex(NO_CONTROL, 'An address is one line'),
   body: z.string().refine((body) => body.trim().length > 0, 'The job needs a description'),
-  title: z.string().trim().min(1).max(200).optional(),
+  title: z.string().trim().min(1).max(200).regex(NO_CONTROL, 'A title is one line').optional(),
   cwd: z.string().min(1).max(4096).optional(),
-  worktree: z.string().min(1).max(4096).optional(),
   checks: z.array(JobCheckSchema).max(50).optional(),
   budget: JobBudgetSchema.partial().optional(),
   parent: JobNumberSchema.optional(),
@@ -41,9 +42,11 @@ export interface CreateJobInput {
   body: string;
   /** A short name of the job, the first line of the body by default */
   title?: string;
-  /** The folder the job is done in, the caller's by default. Relative to the caller's folder */
+  /**
+   * The folder the job is done in, the caller's by default. Relative to the caller's folder,
+   * and always inside the caller's project
+   */
   cwd?: string;
-  worktree?: string;
   checks?: JobCheck[];
   budget?: Partial<JobBudget>;
   /** The job this one is part of, when the caller carries out several */
@@ -58,7 +61,7 @@ const SENDABLE_KINDS = LETTER_KINDS.filter((kind) => kind !== 'task') as [
 ];
 
 export const SendLetterInputSchema = z
-  .object({
+  .strictObject({
     job: JobNumberSchema,
     kind: z.enum(SENDABLE_KINDS),
     body: z.string().refine((body) => body.trim().length > 0, 'The letter is empty'),
@@ -84,10 +87,17 @@ export interface SendLetterInput {
   outcome?: ReportOutcome;
 }
 
-export const InboxInputSchema = z.object({
+/** How many letters one call to the inbox returns when it names no limit. */
+export const DEFAULT_INBOX_LIMIT = 20;
+
+/** How many jobs, letters or journal entries one call returns when it names no limit. */
+export const DEFAULT_LIST_LIMIT = 200;
+
+export const InboxInputSchema = z.strictObject({
   job: JobNumberSchema.optional(),
   peek: z.boolean().optional(),
   unhandled: z.boolean().optional(),
+  limit: z.number().int().positive().max(100).optional(),
 });
 
 export interface InboxInput {
@@ -97,9 +107,11 @@ export interface InboxInput {
   peek?: boolean;
   /** Also the letters taken before and not answered or dismissed since */
   unhandled?: boolean;
+  /** The most letters to return, 20 by default and 100 at most. The rest wait for the next call */
+  limit?: number;
 }
 
-export const JobsFilterSchema = z.object({
+export const JobsFilterSchema = z.strictObject({
   states: z.array(z.enum(JOB_STATES as [string, ...string[]])).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
@@ -108,31 +120,32 @@ export const JobsFilterSchema = z.object({
   limit: z.number().int().positive().max(1000).optional(),
 });
 
-export const AgentsFilterSchema = z.object({
+export const AgentsFilterSchema = z.strictObject({
   project: z.string().optional(),
   harness: z.string().optional(),
   statuses: z.array(z.enum(['starting', 'active', 'gone'])).optional(),
 });
 
-export const LettersFilterSchema = z.object({
+export const LettersFilterSchema = z.strictObject({
   job: JobNumberSchema.optional(),
   from: z.string().optional(),
   to: z.string().optional(),
   states: z.array(z.enum(DELIVERY_STATES as [string, ...string[]])).optional(),
   kinds: z.array(z.enum(LETTER_KINDS as [string, ...string[]])).optional(),
   afterSeq: z.number().int().nonnegative().optional(),
+  replyDueBy: z.number().int().nonnegative().optional(),
   limit: z.number().int().positive().max(1000).optional(),
   newestFirst: z.boolean().optional(),
 });
 
-export const JournalQuerySchema = z.object({
+export const JournalQuerySchema = z.strictObject({
   afterSeq: z.number().int().nonnegative().optional(),
   job: JobNumberSchema.optional(),
   limit: z.number().int().positive().max(5000).optional(),
   tail: z.number().int().positive().max(5000).optional(),
 });
 
-export const VerificationInputSchema = z.object({
+export const VerificationInputSchema = z.strictObject({
   verified: z.boolean(),
   summary: z.string().max(20_000).optional(),
 });

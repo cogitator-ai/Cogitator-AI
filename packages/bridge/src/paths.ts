@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 /** Where the bridge of this machine keeps its files. */
 export interface BridgePaths {
@@ -53,35 +53,64 @@ export function bridgePaths(options: BridgePathsOptions = {}): BridgePaths {
   return { home, database: join(home, 'bridge.db'), socket };
 }
 
+/** A `.git` file is a line or two. Anything larger is not one, and is not read. */
+const MAX_GIT_FILE_BYTES = 4096;
+
 function gitEntry(dir: string): 'dir' | 'file' | undefined {
-  const path = join(dir, '.git');
-  if (!existsSync(path)) return undefined;
   try {
-    return statSync(path).isDirectory() ? 'dir' : 'file';
+    const stat = statSync(join(dir, '.git'));
+    if (stat.isDirectory()) return 'dir';
+    return stat.isFile() && stat.size <= MAX_GIT_FILE_BYTES ? 'file' : undefined;
   } catch {
     return undefined;
   }
 }
 
-/**
- * The main checkout a linked worktree belongs to, read from its `.git` file
- * (`gitdir: <main>/.git/worktrees/<name>`), or undefined when the file says something else,
- * as the `.git` file of a submodule does.
- */
-function mainCheckoutOf(worktree: string): string | undefined {
-  let content: string;
+/** The text of a small plain file, or undefined: a pipe, a device or a large file is not read. */
+function readSmallFile(path: string): string | undefined {
   try {
-    content = readFileSync(join(worktree, '.git'), 'utf-8');
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size > MAX_GIT_FILE_BYTES) return undefined;
+    return readFileSync(path, 'utf-8');
   } catch {
     return undefined;
   }
-  const match = /^gitdir:\s*(.+)$/m.exec(content);
+}
+
+function samePath(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return resolve(a) === resolve(b);
+  }
+}
+
+/**
+ * The main checkout a linked worktree belongs to, read from its `.git` file
+ * (`gitdir: <main>/.git/worktrees/<name>`), or undefined when the file says something else, as
+ * the `.git` file of a submodule does, or when the main checkout does not name this folder as
+ * its worktree: a folder cannot join a project by claiming it.
+ */
+function mainCheckoutOf(worktree: string): string | undefined {
+  const content = readSmallFile(join(worktree, '.git'));
+  const match = content === undefined ? null : /^gitdir:\s*(.+)$/m.exec(content);
   if (!match) return undefined;
-  const gitDir = isAbsolute(match[1].trim()) ? match[1].trim() : resolve(worktree, match[1].trim());
+  const named = match[1].trim();
+  const gitDir = isAbsolute(named) ? named : resolve(worktree, named);
   const worktrees = dirname(gitDir);
   if (basename(worktrees) !== 'worktrees') return undefined;
   const commonDir = dirname(worktrees);
-  return basename(commonDir) === '.git' ? dirname(commonDir) : undefined;
+  if (basename(commonDir) !== '.git') return undefined;
+  const back = readSmallFile(join(gitDir, 'gitdir'))?.trim();
+  if (!back) return undefined;
+  const claimed = isAbsolute(back) ? back : resolve(gitDir, back);
+  return samePath(claimed, join(worktree, '.git')) ? dirname(commonDir) : undefined;
+}
+
+/** Whether `path` is `folder` or lies inside it. */
+export function isInside(folder: string, path: string): boolean {
+  const inner = relative(resolve(folder), resolve(path));
+  return inner === '' || (!inner.startsWith('..') && !isAbsolute(inner));
 }
 
 /**

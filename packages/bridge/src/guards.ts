@@ -1,5 +1,11 @@
 import { BridgeError } from './errors.js';
-import type { BridgeJobRecord, BridgeLimits, JobBudget } from './types.js';
+import {
+  BridgeLimitsSchema,
+  type BridgeJobRecord,
+  type BridgeLimits,
+  type JobBudget,
+  type LetterKind,
+} from './types.js';
 
 /** Limits given in part, the rest taken from the defaults. */
 export interface BridgeLimitsInput extends Partial<Omit<BridgeLimits, 'budget' | 'maxBudget'>> {
@@ -7,14 +13,28 @@ export interface BridgeLimitsInput extends Partial<Omit<BridgeLimits, 'budget' |
   maxBudget?: Partial<JobBudget>;
 }
 
+/**
+ * The limits a dispatcher runs with: what was given, the defaults for the rest.
+ *
+ * @throws BridgeError `invalid_input` for a limit that is not a whole number in its range, or a
+ * default budget over the most a job may ask for
+ */
 export function resolveLimits(defaults: BridgeLimits, input: BridgeLimitsInput = {}): BridgeLimits {
   const { budget, maxBudget, ...rest } = input;
-  const limits: BridgeLimits = {
+  const parsed = BridgeLimitsSchema.safeParse({
     ...defaults,
     ...rest,
     budget: { ...defaults.budget, ...budget },
     maxBudget: { ...defaults.maxBudget, ...maxBudget },
-  };
+  });
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new BridgeError(
+      'invalid_input',
+      `The bridge limit ${issue.path.join('.') || '(unknown key)'} is not valid: ${issue.message}`
+    );
+  }
+  const limits = parsed.data;
   for (const key of ['letters', 'durationMs', 'replyTimeoutMs'] as const) {
     if (limits.budget[key] > limits.maxBudget[key]) {
       throw new BridgeError(
@@ -23,18 +43,17 @@ export function resolveLimits(defaults: BridgeLimits, input: BridgeLimitsInput =
       );
     }
   }
-  if (limits.maxDepth < 1) throw new BridgeError('invalid_input', 'maxDepth must be at least 1');
   return limits;
 }
 
 /**
- * The depth of a job handed over by an agent that itself carries out jobs of the given depths:
- * one more than the deepest of them, 1 for an agent that carries out none.
+ * The depth of a job handed over from inside a job of depth `parentDepth`: one more, and 1 for a
+ * job that is part of no other.
  *
  * @throws BridgeError `depth_exceeded` when that is deeper than jobs may nest
  */
-export function nextDepth(carriedOutDepths: readonly number[], limits: BridgeLimits): number {
-  const depth = 1 + Math.max(0, ...carriedOutDepths);
+export function nextDepth(parentDepth: number | undefined, limits: BridgeLimits): number {
+  const depth = 1 + (parentDepth ?? 0);
   if (depth > limits.maxDepth) {
     throw new BridgeError(
       'depth_exceeded',
@@ -71,13 +90,18 @@ export function resolveBudget(
   return budget;
 }
 
-/** What a job has run out of, if anything, when one more letter is about to be sent at `now`. */
+/**
+ * What a job has run out of, if anything, when one more letter is about to be sent at `now`. The
+ * report that ends the job is never held back by the count of letters: refusing it would throw
+ * away finished work.
+ */
 export function exhaustedBudget(
   job: Pick<BridgeJobRecord, 'budget' | 'lettersUsed' | 'deadlineAt'>,
-  now: number
+  now: number,
+  kind?: LetterKind
 ): 'letters' | 'time' | undefined {
   if (now >= Date.parse(job.deadlineAt)) return 'time';
-  if (job.lettersUsed >= job.budget.letters) return 'letters';
+  if (kind !== 'report' && job.lettersUsed >= job.budget.letters) return 'letters';
   return undefined;
 }
 
