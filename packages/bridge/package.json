@@ -22,11 +22,17 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js",
+      "default": "./dist/testing/index.js"
     }
   },
   "sideEffects": false,
   "files": [
     "dist",
+    "fakes",
     "README.md"
   ],
   "scripts": {
