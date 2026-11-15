@@ -32,6 +32,23 @@ describe('tasks carried out outside the manager', () => {
       expect(stored.metadata?.['example:job']).toEqual({ number: 7, checks: ['pnpm test'] });
     });
 
+    it('drops the keys the manager keeps for itself, so a client cannot pick an owner', async () => {
+      const task = await manager.createTask(userMessage('Do it'), undefined, {
+        metadata: {
+          'cogitator:owner': 'mallory',
+          'cogitator:agent': 'someone-else',
+          'cogitator:createdAt': '1999-01-01T00:00:00.000Z',
+          extra: true,
+        },
+      });
+
+      expect(task.metadata?.['cogitator:owner']).toBeUndefined();
+      expect(task.metadata?.[TASK_AGENT_KEY]).toBeUndefined();
+      expect(task.metadata?.['cogitator:createdAt']).not.toBe('1999-01-01T00:00:00.000Z');
+      expect(task.metadata?.extra).toBe(true);
+      expect(await manager.listTasks({ visibleTo: null })).toHaveLength(1);
+    });
+
     it('keeps its own keys over the same keys of the given metadata', async () => {
       const task = await manager.createTask(userMessage('Do it'), undefined, {
         agentName: 'writer',
@@ -125,6 +142,62 @@ describe('tasks carried out outside the manager', () => {
       });
       const finished = await running;
       expect(messageText(finished.status.message)).toBe('From the run');
+    });
+
+    it('runs two moves made at once one after the other, the later one seeing the earlier', async () => {
+      const task = await manager.createTask(userMessage('Do it'));
+
+      const [done, late] = await Promise.allSettled([
+        manager.advanceTask(task.id, { state: 'completed', message: 'Done' }),
+        manager.advanceTask(task.id, { state: 'working' }),
+      ]);
+
+      expect(done.status).toBe('fulfilled');
+      expect(late.status).toBe('rejected');
+      const stored = await manager.getTask(task.id);
+      expect(stored.status.state).toBe('completed');
+      expect(messageText(stored.history?.at(-1))).toBe('Done');
+    });
+
+    it('goes on after a move that failed', async () => {
+      const task = await manager.createTask(userMessage('Do it'));
+      const other = await manager.createTask(userMessage('Other'));
+
+      await expect(manager.advanceTask('nope', { state: 'working' })).rejects.toThrow(A2AError);
+      await manager.advanceTask(task.id, { state: 'working' });
+      await manager.advanceTask(other.id, { state: 'working' });
+
+      expect((await manager.getTask(task.id)).status.state).toBe('working');
+    });
+
+    it('does not move a task a paused run of the manager waits on', async () => {
+      const task = await manager.createTask(userMessage('Delete the folder'));
+      const cogitator: CogitatorLike = {
+        run: async () => ({
+          output: '',
+          status: 'paused',
+          pendingApprovals: [
+            { toolCallId: 'call_1', toolName: 'rm', arguments: {}, description: 'Delete it' },
+          ],
+          runId: 'run_1',
+          agentId: 'agent_1',
+          threadId: 'thread_1',
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, cost: 0, duration: 1 },
+          toolCalls: [],
+        }),
+      };
+      const paused = await manager.executeTask(
+        task,
+        cogitator,
+        {},
+        userMessage('Delete the folder')
+      );
+      expect(paused.status.state).toBe('input-required');
+
+      await expect(manager.advanceTask(task.id, { state: 'completed' })).rejects.toMatchObject({
+        jsonRpcError: { data: { taskId: task.id, state: 'input-required' } },
+      });
+      expect((await manager.getTask(task.id)).status.state).toBe('input-required');
     });
 
     it('throws taskNotFound for an unknown task', async () => {

@@ -31,6 +31,7 @@ import {
   TASK_OWNER_KEY,
   taskCreatedAt,
   taskOwner,
+  withoutInternalKeys,
 } from './ownership.js';
 import {
   TASK_PENDING_APPROVALS_KEY,
@@ -73,7 +74,8 @@ export interface CreateTaskOptions {
   agentName?: string;
   /**
    * Metadata the task starts with, stored in the same write that creates it. The keys the
-   * manager keeps itself (owner, agent, creation time) win over the same keys here
+   * manager keeps for itself (owner, agent, creation time, what a paused run waits on) are
+   * dropped from it, so metadata passed on from a client cannot set them
    */
   metadata?: Record<string, unknown>;
 }
@@ -180,6 +182,8 @@ export class TaskManager extends EventEmitter {
   private store: TaskStore;
   private activeTasks = new Map<string, AbortController>();
   private continuing = new Set<string>();
+  /** The last `advanceTask` of each task, so the moves of one task run one after another */
+  private advancing = new Map<string, Promise<unknown>>();
 
   constructor(config?: TaskManagerConfig) {
     super();
@@ -209,7 +213,7 @@ export class TaskManager extends EventEmitter {
       history: [{ ...message, taskId: id, contextId: resolvedContextId }],
       artifacts: [],
       metadata: {
-        ...(metadata && structuredClone(metadata)),
+        ...(metadata && structuredClone(withoutInternalKeys(metadata))),
         [TASK_CREATED_AT_KEY]: now,
         ...(ownerId !== undefined && { [TASK_OWNER_KEY]: ownerId }),
         ...(agentName !== undefined && { [TASK_AGENT_KEY]: agentName }),
@@ -414,19 +418,40 @@ export class TaskManager extends EventEmitter {
   /**
    * Moves a task that something outside the manager carries out (another process, a person, an
    * agent of another runtime) to its next state. The message is recorded as the agent's: added to
-   * the history and kept as the status message. A task in a terminal state, or one a run of this
-   * manager is executing, does not move.
+   * the history and kept as the status message. Moves of one task run one after another, so two
+   * made at once do not overwrite each other. A task does not move when it is in a terminal
+   * state, when a run of this manager is executing it, or when a run of this manager paused on
+   * it and waits for approvals or answers: that task is continued by the client's message.
    *
    * @throws A2AError `taskNotFound` for an unknown task, `taskNotContinuable` for a task that is
-   * finished or that this manager is executing
+   * finished or that a run of this manager executes or waits on
    */
-  async advanceTask(taskId: string, options: AdvanceTaskOptions): Promise<A2ATask> {
+  advanceTask(taskId: string, options: AdvanceTaskOptions): Promise<A2ATask> {
+    const previous = this.advancing.get(taskId) ?? Promise.resolve();
+    const move = previous.then(
+      () => this.advance(taskId, options),
+      () => this.advance(taskId, options)
+    );
+    const settled = move.catch(() => undefined);
+    this.advancing.set(taskId, settled);
+    void settled.then(() => {
+      if (this.advancing.get(taskId) === settled) this.advancing.delete(taskId);
+    });
+    return move;
+  }
+
+  private async advance(taskId: string, options: AdvanceTaskOptions): Promise<A2ATask> {
     if (this.activeTasks.has(taskId) || this.continuing.has(taskId)) {
       throw new A2AError(errors.taskNotContinuable(taskId, 'working'));
     }
     const task = await this.store.get(taskId);
     if (!task) throw new A2AError(errors.taskNotFound(taskId));
-    if (isTerminalState(task.status.state)) {
+    if (
+      isTerminalState(task.status.state) ||
+      taskPausedRun(task) ||
+      taskPendingApprovals(task)?.length ||
+      taskPendingQuestions(task)?.length
+    ) {
       throw new A2AError(errors.taskNotContinuable(taskId, task.status.state));
     }
 
