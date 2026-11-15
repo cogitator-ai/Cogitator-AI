@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BridgeAdapter } from '../adapter';
 import { claudeCodeAdapter, claudeWaitHook, hasClaudeWaitHook } from '../adapters/claude';
@@ -13,10 +14,10 @@ import { installFakeHarnesses, type FakeHarnesses } from '../testing/fake-harnes
 import type { CallerIdentity } from '../types';
 import { socketDir } from './helpers';
 
-const TSX = fileURLToPath(new URL('../../node_modules/.bin/tsx', import.meta.url));
+const TSX = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
 const WAIT = fileURLToPath(new URL('./fixtures/wait.ts', import.meta.url));
 /** How the hook of a session reaches the bridge in these tests: the wait of the command line */
-const BRIDGE_COMMAND = `${TSX} ${WAIT} bridge`;
+const BRIDGE_COMMAND = `${process.execPath} --import ${TSX} ${WAIT} bridge`;
 
 const posix = process.platform !== 'win32';
 
@@ -606,9 +607,11 @@ describe.skipIf(!posix)('the Codex adapter', () => {
 
     await conductor.send({ job: 1, kind: 'note', body: 'Skip the generated files' });
     await fakes.waitForTurn('codex', threadId, (next) => next.input.includes('Skip the generated'));
-    const deliveries = (await conductor.readJournal({ job: 1 })).filter(
-      (entry) => entry.type === 'letter.delivered'
-    );
+    const deliveries = await until(async () => {
+      const entries = await conductor.readJournal({ job: 1 });
+      const found = entries.filter((entry) => entry.type === 'letter.delivered');
+      return found.length === 2 ? found : undefined;
+    }, 'both deliveries to be recorded');
     expect(deliveries.map((entry) => entry.data)).toEqual([
       { note: CODEX_NOT_RESUMED_NOTE },
       undefined,
