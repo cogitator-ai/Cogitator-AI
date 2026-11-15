@@ -15,7 +15,6 @@ export const BRIDGE_METHODS = {
   getJob: 'jobs/get',
   listJobs: 'jobs/list',
   cancelJob: 'jobs/cancel',
-  verifyJob: 'jobs/verify',
   send: 'letters/send',
   inbox: 'letters/inbox',
   acknowledge: 'letters/acknowledge',
@@ -46,12 +45,6 @@ export const JobNumberParamsSchema = z.object({ job: z.number().int().positive()
 export const CancelJobParamsSchema = z.object({
   job: z.number().int().positive(),
   reason: z.string().max(2000).optional(),
-});
-
-export const VerifyJobParamsSchema = z.object({
-  job: z.number().int().positive(),
-  verified: z.boolean(),
-  summary: z.string().max(20_000).optional(),
 });
 
 export const AcknowledgeParamsSchema = z.object({ letter: z.string().min(1).max(128) });

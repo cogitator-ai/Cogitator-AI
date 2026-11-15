@@ -690,7 +690,11 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
     });
   }
 
-  /** Records whether the checks of a job confirmed its result. */
+  /**
+   * Records whether the checks of a job confirmed its result. It is a call of the process that
+   * hosts the dispatcher and is not served on the socket: the agent that carries a job out
+   * must not be the one to say its result holds.
+   */
   async recordVerification(
     number: number,
     verification: Pick<JobVerification, 'verified' | 'summary'>
@@ -870,7 +874,13 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
         this.assertWritable?.();
         return work(tx);
       });
-      for (const entry of tx.entries) this.emit('journal', entry);
+      for (const entry of tx.entries) {
+        try {
+          this.emit('journal', entry);
+        } catch (error) {
+          this.onError(asError(error));
+        }
+      }
       for (const spawn of tx.spawns) this.startSession(spawn.agent, spawn.job, spawn.letter);
       for (const agent of tx.wake) this.wake(agent);
       return result;

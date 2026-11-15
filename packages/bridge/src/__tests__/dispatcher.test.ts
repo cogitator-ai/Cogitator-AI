@@ -174,6 +174,20 @@ describe('a job from hand-over to report', () => {
     expect(heard.map((entry) => entry.seq)).toEqual(journal.map((entry) => entry.seq));
   });
 
+  it('keeps a call that is stored even when someone listening to the journal throws', async () => {
+    kit = await makeKit();
+    const { bridge, claude } = kit;
+    bridge.on('journal', () => {
+      throw new Error('listener broke');
+    });
+
+    const { job } = await bridge.createJob(claude.name, { to: 'codex', body: 'Do it' });
+
+    expect(job.number).toBe(1);
+    expect((await bridge.job(1)).state).toBe('submitted');
+    expect(kit.errors.map((error) => error.message)).toEqual(['listener broke', 'listener broke']);
+  });
+
   it('is an A2A task underneath, with the conversation as its history', async () => {
     kit = await makeKit();
     const { bridge, claude, codex, store } = kit;

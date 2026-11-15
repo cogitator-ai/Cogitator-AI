@@ -99,13 +99,20 @@ async function main() {
     console.log(`   refused: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  console.log('\n6. The worker reports, the orchestrator records what the checks showed');
-  await worker.send({ job: job.number, kind: 'report', body: 'Done: 14 tests pass' });
-  const verified = await orchestrator.recordVerification(job.number, {
+  console.log(
+    '\n6. The worker reports. Its word is a claim: the host records what the checks showed'
+  );
+  const reported = await worker.send({
+    job: job.number,
+    kind: 'report',
+    body: 'Done: 14 tests pass',
+  });
+  console.log(`   job is ${reported.job.state}, verified: ${reported.job.verification?.verified}`);
+  const verified = await host.dispatcher.recordVerification(job.number, {
     verified: true,
     summary: '14 of 14 pass',
   });
-  console.log(`   job is ${verified.state}, verified: ${verified.verification?.verified}`);
+  console.log(`   after the checks ran, verified: ${verified.verification?.verified}`);
 
   console.log('\n7. A job for a session whose harness has an adapter is pushed to it');
   const second = await orchestrator.createJob({ to: watcher.agent!.name, body: 'Review job 1' });

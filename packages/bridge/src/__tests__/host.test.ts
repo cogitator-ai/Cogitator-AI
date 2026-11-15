@@ -260,9 +260,6 @@ describe('BridgeClient', () => {
     await expect(claude.job(7)).rejects.toMatchObject({ code: 'unknown_job', data: { job: 7 } });
     await expect(claude.acknowledge('nope')).rejects.toMatchObject({ code: 'unknown_letter' });
     await expect(claude.cancel(7)).rejects.toMatchObject({ code: 'unknown_job' });
-    await expect(claude.recordVerification(7, { verified: true })).rejects.toMatchObject({
-      code: 'unknown_job',
-    });
   });
 
   it('hears the journal as it grows, of one job or of all', async () => {
@@ -330,6 +327,32 @@ describe('BridgeClient', () => {
       id: 1,
       error: { code: -32001, data: { code: 'invalid_input' } },
     });
+  });
+
+  it('does not let a connection say that the result of a job holds', async () => {
+    const host = await startHost();
+    const claude = await clientFor(claudeCaller);
+    const codex = await clientFor(codexCaller);
+    await claude.createJob({ to: 'codex', body: 'Write the tests' });
+    await codex.send({ job: 1, kind: 'report', body: 'Done' });
+    const answer = await new Promise<string>((resolve, reject) => {
+      const socket = connect(host.paths.socket);
+      socket.once('error', reject);
+      socket.once('data', (chunk) => {
+        resolve(chunk.toString('utf-8'));
+        socket.destroy();
+      });
+      socket.write(
+        `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'jobs/verify', params: { job: 1, verified: true } })}\n`
+      );
+    });
+
+    expect(JSON.parse(answer)).toMatchObject({ id: 1, error: { code: -32601 } });
+    expect((await claude.job(1)).verification).toBeUndefined();
+    expect(
+      (await host.dispatcher.recordVerification(1, { verified: true })).verification?.verified
+    ).toBe(true);
+    expect((await claude.job(1)).verification?.verified).toBe(true);
   });
 
   it('answers a line that is not JSON and a method it does not have, and keeps the connection', async () => {
