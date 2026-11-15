@@ -60,7 +60,15 @@ export type { AddressResolution, ResolveAddressContext } from './registry.js';
 export { renderLetter, signatureOf } from './letters.js';
 export { isFinishedJobState, jobOf, jobRecordOf } from './job-record.js';
 export type { BridgeLimitsInput } from './guards.js';
-export type { CreateJobInput, InboxInput, SendLetterInput } from './inputs.js';
+export { DEFAULT_WAIT_MS, MAX_WAIT_MS } from './inputs.js';
+export type {
+  CreateJobInput,
+  InboxInput,
+  SendLetterInput,
+  WaitEnd,
+  WaitInput,
+  WaitResult,
+} from './inputs.js';
 
 export { SqliteBridgeStore, BRIDGE_SCHEMA_VERSION } from './store/sqlite.js';
 export type { OpenBridgeStoreOptions } from './store/sqlite.js';
@@ -92,12 +100,10 @@ export type {
   AdapterCapabilities,
   AgentRecord,
   AgentStatus,
-  BridgeAdapter,
   BridgeJob,
   BridgeJobRecord,
   BridgeLimits,
   CallerIdentity,
-  CreatedSession,
   DeliveryState,
   JobBudget,
   JobCheck,
@@ -106,9 +112,23 @@ export type {
   JournalEntry,
   JournalEntryType,
   Letter,
-  LetterDelivery,
   LetterKind,
   RenderedLetter,
   ReportOutcome,
-  SessionRequest,
 } from './types.js';
+export type {
+  BridgeAdapter,
+  BridgeCalls,
+  CreatedSession,
+  DeliveryReceipt,
+  HealthCheck,
+  HealthContext,
+  HealthStatus,
+  IdentifyContext,
+  LetterDelivery,
+  LiveSession,
+  SessionRequest,
+} from './adapter.js';
+
+export { mailText, waitForMail } from './waiter.js';
+export type { WaitForMailOptions, WaitForMailResult } from './waiter.js';

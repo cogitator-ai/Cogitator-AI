@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { CreatedSession, LetterDelivery } from '../types';
+import type { CreatedSession, LetterDelivery } from '../adapter';
 import { BridgeDispatcher } from '../dispatcher';
 import { FakeAdapter, makeKit, MINUTE, type Kit } from './bridge-kit';
 

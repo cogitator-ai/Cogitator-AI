@@ -347,6 +347,8 @@ export interface BridgeLimits {
   jobsPerHour: number;
   /** How many sessions adapters may be starting at once */
   maxStartingSessions: number;
+  /** How often adapters that can list their sessions are asked which of them still run */
+  presenceCheckMs: number;
 }
 
 export const BridgeLimitsSchema = z.strictObject({
@@ -367,6 +369,7 @@ export const BridgeLimitsSchema = z.strictObject({
   maxOpenJobs: z.number().int().positive().max(10_000),
   jobsPerHour: z.number().int().positive().max(100_000),
   maxStartingSessions: z.number().int().positive().max(100),
+  presenceCheckMs: z.number().int().positive().max(86_400_000),
 });
 
 export const DEFAULT_LIMITS: BridgeLimits = {
@@ -383,47 +386,5 @@ export const DEFAULT_LIMITS: BridgeLimits = {
   maxOpenJobs: 20,
   jobsPerHour: 60,
   maxStartingSessions: 2,
+  presenceCheckMs: 60_000,
 };
-
-/** A letter on its way to a session, as an adapter gets it. */
-export interface LetterDelivery {
-  agent: AgentRecord;
-  letter: RenderedLetter;
-  job: BridgeJob;
-}
-
-/** What the bridge asks of an adapter that starts a session for a job. */
-export interface SessionRequest {
-  /** The name the bridge gave the session, to hand to it as `COGITATOR_BRIDGE_AGENT` */
-  agentName: string;
-  harness: string;
-  project: string;
-  cwd: string;
-  sessionName?: string;
-  job: BridgeJob;
-  /** The job's first letter, for a harness that takes the first message when it starts a session */
-  firstLetter: RenderedLetter;
-}
-
-export interface CreatedSession {
-  sessionId: string;
-  sessionName?: string;
-  /** Whether the session got `firstLetter` when it started, so the bridge does not deliver it again */
-  deliveredFirstLetter?: boolean;
-}
-
-/**
- * How the bridge reaches the sessions of one harness. Without an adapter a session still takes
- * part: it reads its inbox whenever it calls the bridge.
- */
-export interface BridgeAdapter {
-  /** The harness it reaches, in lower case: letters, digits, `.`, `_` and `-` */
-  readonly harness: string;
-  /** The mechanism letters travel by, recorded with every session of the harness */
-  readonly delivery: string;
-  readonly capabilities: AdapterCapabilities;
-  /** Hands the letter to the session. Rejects when it could not, and the bridge tries again */
-  deliver(delivery: LetterDelivery): Promise<void>;
-  /** Starts a session for a job. Present when `capabilities.createSession` is true */
-  createSession?(request: SessionRequest): Promise<CreatedSession>;
-}

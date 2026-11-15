@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BridgeError } from '../errors';
 import { BRIDGE_SENDER, type CallerIdentity, type JournalEntry } from '../types';
@@ -95,8 +95,9 @@ describe('register', () => {
     ).rejects.toThrow(code('invalid_input'));
   });
 
-  it('lets a session in a worktree next to the main checkout hand a job over', async () => {
-    const { dir, remove } = tempDir();
+  it('lets a session in a worktree next to the main checkout hand a job over, whatever link it came by', async () => {
+    const { dir: made, remove } = tempDir();
+    const dir = realpathSync(made);
     try {
       const main = join(dir, 'app');
       const worktree = join(dir, 'app-wt', 'feature');
@@ -122,6 +123,10 @@ describe('register', () => {
       expect(here.job.cwd).toBe(worktree);
       expect(sub.job.cwd).toBe(join(worktree, 'packages', 'a'));
       expect(inMain.job.cwd).toBe(main);
+      const linked = join(dir, 'link');
+      symlinkSync(main, linked);
+      const viaLink = await bridge.register({ harness: 'glm', sessionId: 'z1', cwd: linked });
+      expect(viaLink).toMatchObject({ cwd: main, project: main });
       await expect(
         bridge.createJob(inTree.name, { to: 'qwen', body: 'Out', cwd: dir })
       ).rejects.toThrow(/outside both/);
@@ -1392,6 +1397,7 @@ describe('status and close', () => {
       activeJobs: 1,
       queuedLetters: 1,
       adapters: ['gemini'],
+      waiting: [],
     });
   });
 

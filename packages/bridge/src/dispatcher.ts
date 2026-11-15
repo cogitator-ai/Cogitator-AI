@@ -17,15 +17,23 @@ import {
   CreateJobInputSchema,
   DEFAULT_INBOX_LIMIT,
   DEFAULT_LIST_LIMIT,
+  DEFAULT_WAIT_MS,
+  DeliveredInputSchema,
   InboxInputSchema,
   JobsFilterSchema,
   JournalQuerySchema,
   LettersFilterSchema,
   SendLetterInputSchema,
   VerificationInputSchema,
+  WaitInputSchema,
   type CreateJobInput,
+  type CreateJobResult,
   type InboxInput,
   type SendLetterInput,
+  type SendLetterResult,
+  type WaitEnd,
+  type WaitInput,
+  type WaitResult,
 } from './inputs.js';
 import { isFinishedJobState, jobOf, jobRecordOf } from './job-record.js';
 import {
@@ -39,7 +47,7 @@ import {
   repeats,
   titleOf,
 } from './letters.js';
-import { findCheckoutRoot, findProjectRoot, isInside } from './paths.js';
+import { canonicalPath, findCheckoutRoot, findProjectRoot, isInside } from './paths.js';
 import { allocateAgentName, resolveAddress } from './registry.js';
 import type {
   AgentFilter,
@@ -57,12 +65,10 @@ import {
   INBOX_DELIVERY,
   NO_CAPABILITIES,
   type AgentRecord,
-  type BridgeAdapter,
   type BridgeJob,
   type BridgeJobRecord,
   type BridgeLimits,
   type CallerIdentity,
-  type CreatedSession,
   type DeliveryState,
   type JobState,
   type JobVerification,
@@ -71,6 +77,7 @@ import {
   type LetterKind,
   type RenderedLetter,
 } from './types.js';
+import type { BridgeAdapter, BridgeCalls, CreatedSession } from './adapter.js';
 
 export interface BridgeDispatcherOptions {
   store: BridgeStore;
@@ -91,19 +98,7 @@ export interface BridgeDispatcherOptions {
   assertWritable?: () => void;
 }
 
-export interface CreateJobResult {
-  job: BridgeJob;
-  letter: Letter;
-  /** True when the job was created before with the same `letterId`, and nothing changed now */
-  duplicate: boolean;
-}
-
-export interface SendLetterResult {
-  letter: Letter;
-  job: BridgeJob;
-  /** True when the letter was sent before with the same id, and nothing changed now */
-  duplicate: boolean;
-}
+export type { CreateJobResult, SendLetterResult } from './inputs.js';
 
 export interface SweepResult {
   /** Jobs failed for running out of time or for a letter nobody reacted to */
@@ -118,6 +113,8 @@ export interface DispatcherStatus {
   queuedLetters: number;
   /** The harnesses the dispatcher has an adapter for */
   adapters: string[];
+  /** The agents with a waiter armed: a letter for one of them wakes its session at once */
+  waiting: string[];
 }
 
 export interface BridgeDispatcherEvents {
@@ -174,6 +171,14 @@ const STATE_RANK: Readonly<Record<DeliveryState, number>> = {
 };
 
 /** What a call wrote that only counts once it is stored. */
+/** A process of a session waiting for its mail, see `BridgeDispatcher.wait`. */
+interface Waiter {
+  /** The most letters it takes at once */
+  limit: number;
+  /** Ends the wait. Ending it again changes nothing */
+  end(reason: WaitEnd, letters?: RenderedLetter[]): void;
+}
+
 interface Transaction {
   entries: JournalEntry[];
   /** Agents with new mail */
@@ -244,7 +249,7 @@ function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
  * await bridge.send(codex.name, { job: job.number, kind: 'report', body: 'Done: 14 tests' });
  * ```
  */
-export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
+export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> implements BridgeCalls {
   readonly limits: BridgeLimits;
   private readonly store: BridgeStore;
   private readonly tasks: TaskManager;
@@ -261,6 +266,12 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
    * adapter reports back, since it may have handed the job's first letter over itself
    */
   private readonly starting = new Set<string>();
+  /** The waiter of each agent that has one, see `wait` */
+  private readonly waiters = new Map<string, Waiter>();
+  /** The sessions each harness listed as running the last time its adapter was asked */
+  private readonly present = new Map<string, Set<string>>();
+  private readonly listing = new Set<string>();
+  private presenceCheckedAt = Number.NEGATIVE_INFINITY;
   /** Set once `close` was called: nothing new is delivered, what runs is waited for */
   private closing = false;
   private closed = false;
@@ -281,6 +292,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       }
       this.adapters.set(harness, adapter);
     }
+    for (const adapter of this.adapters.values()) adapter.attach?.(this);
   }
 
   /**
@@ -292,8 +304,8 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
     const caller = parse(CallerIdentitySchema, identity, 'Cannot register the session');
     return this.mutate(async (tx) => {
       const now = this.iso();
-      const cwd = resolvePath(caller.cwd);
-      const project = caller.project ? resolvePath(caller.project) : findProjectRoot(cwd);
+      const cwd = canonicalPath(caller.cwd);
+      const project = canonicalPath(caller.project ?? findProjectRoot(cwd));
       const adapter = this.adapters.get(caller.harness);
       const reach = {
         delivery: adapter?.delivery ?? INBOX_DELIVERY,
@@ -440,9 +452,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       }
       const budget = resolveBudget(request.budget, this.limits);
       const cwd = request.cwd
-        ? isAbsolute(request.cwd)
-          ? resolvePath(request.cwd)
-          : resolvePath(from.cwd, request.cwd)
+        ? canonicalPath(isAbsolute(request.cwd) ? request.cwd : resolvePath(from.cwd, request.cwd))
         : from.cwd;
       if (!isInside(from.project, cwd) && !isInside(findCheckoutRoot(from.cwd), cwd)) {
         throw new BridgeError(
@@ -747,6 +757,95 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
   }
 
   /**
+   * Waits for the caller's mail: answers at once when letters are queued for it, otherwise as
+   * soon as one arrives, or with none when `timeoutMs` passes. This is how a session nothing can
+   * be pushed into still wakes: a process of its harness waits here and hands what it gets to
+   * the session, as `cogitator bridge wait` does in a hook of Claude Code. The letters stay
+   * queued until the waiter says it handed them over (`delivered`), so a waiter that dies with
+   * them in hand loses nothing. A session has one waiter: a new one ends the one before it.
+   * Aborting `signal` ends the wait, as the socket server does when the connection closes.
+   */
+  async wait(caller: string, input: WaitInput = {}, signal?: AbortSignal): Promise<WaitResult> {
+    const request = parse(WaitInputSchema, input, 'Cannot wait for letters');
+    const limit = request.limit ?? DEFAULT_INBOX_LIMIT;
+    const outcome = await this.asCaller(
+      caller,
+      async (): Promise<WaitResult | { later: Promise<WaitResult> }> => {
+        const agent = this.requireCaller(caller);
+        this.waiters.get(agent.name)?.end('replaced');
+        const letters = this.queuedFor(agent.name, limit);
+        if (letters.length > 0) return { letters, reason: 'letters' };
+        if (signal?.aborted || this.closing) return { letters: [], reason: 'closed' };
+        return {
+          later: this.arm(agent.name, limit, request.timeoutMs ?? DEFAULT_WAIT_MS, signal),
+        };
+      }
+    );
+    return 'later' in outcome ? outcome.later : outcome;
+  }
+
+  /**
+   * Says the caller's waiter handed these letters to its session. A job handed over this way
+   * counts as taken, as one an adapter pushed does. A letter that is not queued any more, such
+   * as one the session read from its inbox meanwhile, stays as it is.
+   *
+   * @throws BridgeError `unknown_letter` for a letter that is not addressed to the caller
+   */
+  async delivered(caller: string, letterIds: readonly string[]): Promise<Letter[]> {
+    const { letters: ids } = parse(
+      DeliveredInputSchema,
+      { letters: [...letterIds] },
+      'Cannot mark the letters delivered'
+    );
+    return this.asCaller(caller, async (tx) => {
+      const agent = this.requireCaller(caller);
+      const marked: Letter[] = [];
+      for (const id of new Set(ids)) {
+        if (this.store.getLetter(id)?.to !== agent.name) {
+          throw new BridgeError('unknown_letter', `There is no letter ${id} addressed to you`, {
+            letter: id,
+          });
+        }
+        await this.markDelivered(tx, id, { via: 'wait' });
+        const letter = this.store.getLetter(id);
+        if (letter) marked.push(letter);
+      }
+      return marked;
+    });
+  }
+
+  private arm(
+    name: string,
+    limit: number,
+    timeoutMs: number,
+    signal: AbortSignal | undefined
+  ): Promise<WaitResult> {
+    return new Promise<WaitResult>((resolve) => {
+      const waiter: Waiter = {
+        limit,
+        end: (reason, letters = []) => {
+          if (this.waiters.get(name) === waiter) this.waiters.delete(name);
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', onAbort);
+          resolve({ letters, reason });
+        },
+      };
+      const timer = setTimeout(() => waiter.end('timeout'), timeoutMs);
+      const onAbort = () => waiter.end('closed');
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.waiters.set(name, waiter);
+    });
+  }
+
+  /** The letters queued for an agent, oldest first, as many as one answer carries. */
+  private queuedFor(name: string, limit: number): RenderedLetter[] {
+    const queued = this.store.listLetters({ to: name, states: ['queued'], limit });
+    return fitting(queued, (letter) => 2 * letter.body.length).map((letter) =>
+      renderLetter(letter, this.requireJob(letter.job).job)
+    );
+  }
+
+  /**
    * Says the caller is done with a letter that needs no answer. A question, a permission request
    * and a job's first letter are not dismissed this way: they are marked read, and are done with
    * once answered or reported on.
@@ -900,6 +999,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       activeJobs: this.store.jobTasks({ states: ACTIVE_JOB_STATES }).length,
       queuedLetters: this.store.countLetters({ states: ['queued'] }),
       adapters: [...this.adapters.keys()],
+      waiting: [...this.waiters.keys()].sort(),
     }));
   }
 
@@ -970,7 +1070,52 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       for (const agent of this.store.queuedRecipients()) tx.wake.add(agent);
       return { failed: [...new Set(failed)], reminded };
     });
+    this.checkPresence();
     return result;
+  }
+
+  /**
+   * Asks the adapters that can list their sessions which of them still run, once in
+   * `limits.presenceCheckMs`. A session that was listed and no longer is, and has no waiter
+   * armed, is gone and its jobs fail with that reason, rather than after the reply timeout.
+   * One that was never listed (its harness shows it nowhere) is left to the idle rule, unless
+   * the adapter runs every session of its harness itself (`ownsSessions`).
+   */
+  private checkPresence(): void {
+    if (this.closing) return;
+    const now = this.now();
+    if (now - this.presenceCheckedAt < this.limits.presenceCheckMs) return;
+    this.presenceCheckedAt = now;
+    for (const [harness, adapter] of this.adapters) {
+      if (!adapter.liveSessions || this.listing.has(harness)) continue;
+      this.listing.add(harness);
+      this.track(
+        within(
+          adapter.liveSessions(),
+          this.limits.deliveryTimeoutMs,
+          `Listing the ${harness} sessions`
+        )
+          .then((sessions) =>
+            this.mutate(async (tx) => {
+              const live = new Set(sessions.map((session) => session.sessionId));
+              const before = this.present.get(harness);
+              this.present.set(harness, live);
+              if (!before && !adapter.ownsSessions) return;
+              for (const agent of this.store.listAgents({ harness, statuses: ['active'] })) {
+                if (live.has(agent.sessionId)) continue;
+                if (!adapter.ownsSessions && !before?.has(agent.sessionId)) continue;
+                if (this.waiters.has(agent.name) || this.starting.has(agent.name)) continue;
+                await this.agentGone(
+                  tx,
+                  agent,
+                  `the session of ${agent.name} is not running any more`
+                );
+              }
+            })
+          )
+          .finally(() => this.listing.delete(harness))
+      );
+    }
   }
 
   /**
@@ -996,6 +1141,8 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       seenBefore: now - this.limits.agentIdleMs,
     });
     for (const agent of silent) {
+      if (this.waiters.has(agent.name)) continue;
+      if (this.present.get(agent.harness)?.has(agent.sessionId)) continue;
       const busy = this.store.jobTasks({ party: agent.name, states: ACTIVE_JOB_STATES, limit: 1 });
       if (busy.length > 0) continue;
       this.store.putAgent({ ...agent, status: 'gone' });
@@ -1033,13 +1180,23 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
   }
 
   /**
-   * Waits for the calls being handled, the deliveries and the session starts they began, then
-   * takes no more. A delivery that hangs is given up on after `limits.deliveryTimeoutMs` and a
+   * Ends the waits, waits for the calls being handled, the deliveries and the session starts they
+   * began, closes the adapters, then takes no more. A delivery that hangs is given up on after `limits.deliveryTimeoutMs` and a
    * session start after `limits.sessionStartTimeoutMs`, so this always ends.
    */
   async close(): Promise<void> {
     this.closing = true;
+    for (const waiter of [...this.waiters.values()]) waiter.end('closed');
     await this.idle();
+    await Promise.all(
+      [...this.adapters.values()].map(async (adapter) => {
+        try {
+          await adapter.close?.();
+        } catch (error) {
+          this.onError(asError(error));
+        }
+      })
+    );
     this.closed = true;
   }
 
@@ -1443,7 +1600,11 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
    * taken: the harness has it and woke the session, which may work without calling the bridge
    * until it reports. The letter is read only once the session calls about the job.
    */
-  private async markDelivered(tx: Transaction, letterId: string): Promise<void> {
+  private async markDelivered(
+    tx: Transaction,
+    letterId: string,
+    data?: Record<string, unknown>
+  ): Promise<void> {
     const letter = this.store.getLetter(letterId);
     if (letter?.state !== 'queued') return;
     const taken = expectationOf(letter.kind) === 'pickup';
@@ -1457,6 +1618,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
       job: letter.job,
       letter: letter.id,
       agent: letter.to,
+      ...(data && { data }),
     });
     if (taken && this.requireJob(letter.job).job.state === 'submitted') {
       await this.transition(tx, letter.job, 'working');
@@ -1489,8 +1651,15 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
         if (this.starting.has(name)) return undefined;
         const agent = this.store.getAgent(name);
         if (agent?.status !== 'active') return undefined;
+        const waiter = this.waiters.get(name);
+        if (waiter) {
+          const letters = this.queuedFor(name, waiter.limit);
+          if (letters.length > 0) waiter.end('letters', letters);
+          return undefined;
+        }
         const adapter = this.adapters.get(agent.harness);
-        if (!adapter?.capabilities.push) return undefined;
+        const deliver = adapter?.capabilities.push ? adapter.deliver?.bind(adapter) : undefined;
+        if (!deliver) return undefined;
         const letter = this.store.listLetters({
           to: name,
           states: ['queued'],
@@ -1500,21 +1669,25 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
         if (!letter) return undefined;
         if (letter.nextAttemptAt && Date.parse(letter.nextAttemptAt) > this.now()) return undefined;
         const { job } = this.requireJob(letter.job);
-        return { agent, adapter, job, letter: renderLetter(letter, job) };
+        return { agent, deliver, job, letter: renderLetter(letter, job) };
       });
       if (!next) return;
 
+      let note: string | undefined;
       try {
-        await within(
-          next.adapter.deliver({ agent: next.agent, letter: next.letter, job: next.job }),
+        const receipt = await within(
+          next.deliver({ agent: next.agent, letter: next.letter, job: next.job }),
           this.limits.deliveryTimeoutMs,
           `Delivering the letter ${next.letter.id} to ${name}`
         );
+        note = receipt?.note;
       } catch (error) {
         await this.mutate(async (tx) => this.deliveryFailed(tx, next.letter.id, asError(error)));
         return;
       }
-      await this.mutate((tx) => this.markDelivered(tx, next.letter.id));
+      await this.mutate((tx) =>
+        this.markDelivered(tx, next.letter.id, note ? { note } : undefined)
+      );
     }
   }
 

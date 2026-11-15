@@ -18,6 +18,8 @@ export const BRIDGE_METHODS = {
   send: 'letters/send',
   inbox: 'letters/inbox',
   acknowledge: 'letters/acknowledge',
+  wait: 'letters/wait',
+  delivered: 'letters/delivered',
   listLetters: 'letters/list',
   listAgents: 'agents/list',
   readJournal: 'journal/read',
@@ -48,6 +50,10 @@ export const CancelJobParamsSchema = z.object({
 });
 
 export const AcknowledgeParamsSchema = z.object({ letter: z.string().min(1).max(128) });
+
+export const DeliveredParamsSchema = z.object({
+  letters: z.array(z.string().min(1).max(128)).min(1).max(100),
+});
 
 export const SubscribeJournalParamsSchema = z.object({
   /** Only the entries of one job */

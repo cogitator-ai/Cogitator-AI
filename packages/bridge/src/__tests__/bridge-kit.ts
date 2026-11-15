@@ -1,13 +1,14 @@
 import { BridgeDispatcher, type BridgeDispatcherOptions } from '../dispatcher';
 import { SqliteBridgeStore } from '../store/sqlite';
 import type {
-  AdapterCapabilities,
-  AgentRecord,
   BridgeAdapter,
   CreatedSession,
+  DeliveryReceipt,
   LetterDelivery,
+  LiveSession,
   SessionRequest,
-} from '../types';
+} from '../adapter';
+import type { AdapterCapabilities, AgentRecord } from '../types';
 import { T0 } from './helpers';
 
 export class Clock {
@@ -21,8 +22,10 @@ export class Clock {
 export interface FakeAdapterOptions {
   harness?: string;
   capabilities?: Partial<AdapterCapabilities>;
-  deliver?: (delivery: LetterDelivery) => Promise<void>;
+  deliver?: (delivery: LetterDelivery) => Promise<DeliveryReceipt | void>;
   createSession?: (request: SessionRequest) => Promise<CreatedSession>;
+  /** The sessions the harness lists as running, asked every time */
+  liveSessions?: () => Promise<LiveSession[]>;
 }
 
 /** An adapter that remembers what it was asked to do. */
@@ -33,7 +36,8 @@ export class FakeAdapter implements BridgeAdapter {
   readonly delivered: LetterDelivery[] = [];
   readonly sessions: SessionRequest[] = [];
   readonly createSession?: (request: SessionRequest) => Promise<CreatedSession>;
-  private readonly onDeliver?: (delivery: LetterDelivery) => Promise<void>;
+  readonly liveSessions?: () => Promise<LiveSession[]>;
+  private readonly onDeliver?: (delivery: LetterDelivery) => Promise<DeliveryReceipt | void>;
 
   constructor(options: FakeAdapterOptions = {}) {
     this.harness = options.harness ?? 'codex';
@@ -45,6 +49,7 @@ export class FakeAdapter implements BridgeAdapter {
       ...options.capabilities,
     };
     this.onDeliver = options.deliver;
+    if (options.liveSessions) this.liveSessions = options.liveSessions;
     if (options.createSession) {
       const create = options.createSession;
       this.createSession = async (request) => {
@@ -54,9 +59,10 @@ export class FakeAdapter implements BridgeAdapter {
     }
   }
 
-  async deliver(delivery: LetterDelivery): Promise<void> {
-    await this.onDeliver?.(delivery);
+  async deliver(delivery: LetterDelivery): Promise<DeliveryReceipt | void> {
+    const receipt = await this.onDeliver?.(delivery);
     this.delivered.push(delivery);
+    return receipt;
   }
 
   get texts(): string[] {
