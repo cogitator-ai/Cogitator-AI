@@ -191,6 +191,23 @@ describe('a process that waits for the mail of a session', () => {
     );
   });
 
+  it('ends at once when it is told to stop while it still connects', async () => {
+    await startHost();
+    const stop = new AbortController();
+    const started = Date.now();
+    const waiting = waitForMail({
+      socketPath: socket(),
+      caller: codexCaller,
+      timeoutMs: 20_000,
+      signal: stop.signal,
+    });
+    await Promise.resolve();
+    stop.abort();
+
+    expect((await waiting).reason).toBe('closed');
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
   it('frees the session at the dispatcher when the waiting process is killed', async () => {
     const host = await startHost();
     const codex = await clientFor(codexCaller);

@@ -108,15 +108,20 @@ function mainCheckoutOf(worktree: string): string | undefined {
 }
 
 /**
- * One spelling for a folder however it was reached: absolute, and with its symlinks resolved
- * when it exists, so `/tmp/app` and `/private/tmp/app` are the same project.
+ * One spelling for a folder however it was reached: absolute, and with the symlinks of as much
+ * of it as exists resolved, so `/tmp/app` and `/private/tmp/app` are the same project, and a
+ * folder not made yet inside either is inside both.
  */
 export function canonicalPath(path: string): string {
   const absolute = resolve(path);
-  try {
-    return realpathSync(absolute);
-  } catch {
-    return absolute;
+  const missing: string[] = [];
+  for (let current = absolute; ; current = dirname(current)) {
+    try {
+      return join(realpathSync(current), ...missing.reverse());
+    } catch {
+      if (dirname(current) === current) return absolute;
+      missing.push(basename(current));
+    }
   }
 }
 

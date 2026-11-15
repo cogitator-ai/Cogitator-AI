@@ -74,6 +74,10 @@ export async function waitForMail(options: WaitForMailOptions): Promise<WaitForM
       continue;
     }
 
+    if (signal?.aborted) {
+      await client.close();
+      return { reason: 'closed', letters: [], confirm: none };
+    }
     const onAbort = () => void client.close();
     signal?.addEventListener('abort', onAbort, { once: true });
     try {

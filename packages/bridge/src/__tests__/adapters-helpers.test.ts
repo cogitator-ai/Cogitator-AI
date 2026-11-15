@@ -64,6 +64,11 @@ describe('the hook that wakes a Claude Code session', () => {
       "/usr/bin/node '/opt/my tools/cli.js' bridge wait --hook claude-code --timeout 540 --agent claude-2@demo"
     );
     expect(claudeWaitCommand({ timeoutS: 30 })).toContain('--timeout 1');
+    expect(claudeWaitCommand({ timeoutS: 90.5 })).toMatch(/--timeout 30$/);
+    expect(claudeWaitHook({ timeoutS: 90.5 }).hooks.Stop[0].hooks[0].timeout).toBe(91);
+    expect(claudeWaitCommand({ bridgeHome: '/srv/my bridge' })).toBe(
+      "cogitator bridge wait --hook claude-code --timeout 43140 --home '/srv/my bridge'"
+    );
     expect(claudeWaitCommand({ agentName: "it's@demo" })).toContain("--agent 'it'\\''s@demo'");
   });
 
@@ -235,6 +240,25 @@ describe('running a command of a harness', () => {
     );
   });
 
+  it('does not wait for a process the command left behind with its pipes', async () => {
+    const started = Date.now();
+    const result = await runCommand(process.execPath, [
+      '-e',
+      `const { spawn } = require('node:child_process');
+       spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { stdio: 'inherit', detached: true }).unref();
+       process.stdout.write('started');`,
+    ]);
+
+    expect(result).toMatchObject({ code: 0, stdout: 'started' });
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  it('says the folder is missing rather than the command', async () => {
+    await expect(
+      runCommand(process.execPath, ['--version'], { cwd: join(temp.dir, 'no-such-folder') })
+    ).rejects.toThrow(`The folder ${join(temp.dir, 'no-such-folder')} does not exist`);
+  });
+
   it('gives up on a command that does not end', async () => {
     await expect(
       runCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeoutMs: 200 })
@@ -278,6 +302,26 @@ describe('what a session the bridge starts is given', () => {
       COGITATOR_BRIDGE_HARNESS: 'codex',
       COGITATOR_BRIDGE_AGENT: 'codex-2@demo',
     });
+    const fromInside = sessionEnv(
+      {
+        CLAUDECODE: '1',
+        CLAUDE_CODE_ENTRYPOINT: 'cli',
+        CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/1.sock',
+        CLAUDE_CODE_MESSAGING_TOKEN: 'secret',
+        CLAUDE_PROJECT_DIR: '/work/other',
+        CLAUDE_CONFIG_DIR: '/custom/claude',
+        CLAUDE_CODE_USE_BEDROCK: '1',
+        COGITATOR_BRIDGE_HOME: '/srv/bridge',
+      },
+      { harness: 'codex', agentName: 'codex@demo' }
+    );
+    expect(fromInside).toEqual({
+      CLAUDE_CONFIG_DIR: '/custom/claude',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      COGITATOR_BRIDGE_HOME: '/srv/bridge',
+      COGITATOR_BRIDGE_HARNESS: 'codex',
+      COGITATOR_BRIDGE_AGENT: 'codex@demo',
+    });
     expect(
       sessionEnv({}, { harness: 'codex', agentName: 'a', sessionName: 'reviewer' })
         .COGITATOR_BRIDGE_SESSION_NAME
@@ -300,5 +344,8 @@ describe('what a session the bridge starts is given', () => {
       '[agent bridge] job #7 "Port the parser" | task from claude@demo to codex@demo | letter ltr_1 | not typed by the user',
       'This letter is 120001 characters long, too long to hand over here. Read it from the bridge: cogitator bridge inbox --job 7',
     ]);
+    expect(tooLongNotice(long, '/usr/bin/node /opt/cli.js bridge')).toContain(
+      'Read it from the bridge: /usr/bin/node /opt/cli.js bridge inbox --job 7'
+    );
   });
 });

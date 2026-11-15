@@ -20,6 +20,7 @@ import {
   pause,
   runCommand,
   sessionEnv,
+  shellQuote,
   tooLongNotice,
 } from './exec.js';
 
@@ -39,6 +40,8 @@ export interface ClaudeWaitHookOptions {
   timeoutS?: number;
   /** The name the bridge gave the session, for one it started itself */
   agentName?: string;
+  /** The folder of the bridge's files, when it is not the default one */
+  bridgeHome?: string;
 }
 
 export interface ClaudeHookSettings {
@@ -55,20 +58,17 @@ export interface ClaudeHookSettings {
   };
 }
 
-function quoteArgument(value: string): string {
-  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
-}
-
 /** The command a hook of a Claude Code session runs to wait for the session's mail. */
 export function claudeWaitCommand(options: ClaudeWaitHookOptions = {}): string {
   const timeoutS = options.timeoutS ?? DEFAULT_HOOK_TIMEOUT_S;
-  const waitS = Math.max(1, timeoutS - HOOK_MARGIN_S);
+  const waitS = Math.max(1, Math.floor(timeoutS - HOOK_MARGIN_S));
   return [
     options.bridgeCommand ?? 'cogitator bridge',
     'wait',
     `--hook ${HARNESSES.claudeCode}`,
     `--timeout ${waitS}`,
-    ...(options.agentName ? [`--agent ${quoteArgument(options.agentName)}`] : []),
+    ...(options.agentName ? [`--agent ${shellQuote(options.agentName)}`] : []),
+    ...(options.bridgeHome ? [`--home ${shellQuote(options.bridgeHome)}`] : []),
   ].join(' ');
 }
 
@@ -88,7 +88,7 @@ export function claudeWaitHook(options: ClaudeWaitHookOptions = {}): ClaudeHookS
             {
               type: 'command',
               command: claudeWaitCommand(options),
-              timeout: options.timeoutS ?? DEFAULT_HOOK_TIMEOUT_S,
+              timeout: Math.ceil(options.timeoutS ?? DEFAULT_HOOK_TIMEOUT_S),
               async: true,
               asyncRewake: true,
             },
@@ -138,6 +138,7 @@ const ListedSessionSchema = z.object({
   sessionId: z.string().optional(),
   cwd: z.string().optional(),
   name: z.string().optional(),
+  pid: z.number().optional(),
   status: z.string().optional(),
 });
 
@@ -178,6 +179,12 @@ export interface ClaudeCodeAdapterOptions {
   command?: string;
   /** How a session's hook runs the bridge's command line, `cogitator bridge` by default */
   bridgeCommand?: string;
+  /**
+   * The folder of the bridge's files the sessions call, when it is not the default one:
+   * `COGITATOR_BRIDGE_HOME` of `env` when that is set. A hook is told it on its command line,
+   * since Claude Code does not promise a background session the environment it was started in
+   */
+  bridgeHome?: string;
   /** The environment of the commands and of the sessions it starts, `process.env` by default */
   env?: NodeJS.ProcessEnv;
   /** The permission mode of the sessions it starts, Claude Code's own default when absent */
@@ -234,13 +241,15 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
   const configPath = options.configPath ?? join(configDir || homedir(), '.claude.json');
   const userSettingsPath =
     options.userSettingsPath ?? join(configDir || join(homedir(), '.claude'), 'settings.json');
+  const bridgeHome = options.bridgeHome ?? (env.COGITATOR_BRIDGE_HOME?.trim() || undefined);
   const hook = {
+    ...(bridgeHome !== undefined && { bridgeHome }),
     ...(options.bridgeCommand !== undefined && { bridgeCommand: options.bridgeCommand }),
     ...(options.hookTimeoutS !== undefined && { timeoutS: options.hookTimeoutS }),
   };
 
   async function listed(): Promise<z.output<typeof ListedSessionSchema>[]> {
-    const result = await runCommand(command, ['agents', '--json'], { env });
+    const result = await runCommand(command, ['agents', '--json', '--all'], { env });
     if (result.code !== 0) throw new Error(`claude agents --json failed: ${failureOf(result)}`);
     const parsed = z.array(ListedSessionSchema).safeParse(JSON.parse(result.stdout || '[]'));
     if (!parsed.success)
@@ -277,7 +286,9 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
         ...(request.sessionName ? ['--name', request.sessionName] : []),
         ...(options.permissionMode ? ['--permission-mode', options.permissionMode] : []),
         ...(options.sessionArgs ?? []),
-        whole ? request.firstLetter.text : tooLongNotice(request.firstLetter),
+        whole
+          ? request.firstLetter.text
+          : tooLongNotice(request.firstLetter, options.bridgeCommand, bridgeHome),
       ],
       {
         cwd: request.cwd,
@@ -298,7 +309,13 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
         `claude --bg did not say which session it started: ${failureOf({ ...result, stderr: '' })}`
       );
     }
-    const session = await sessionOf(shortId);
+    let session: { sessionId: string; name?: string };
+    try {
+      session = await sessionOf(shortId);
+    } catch (error) {
+      await runCommand(command, ['stop', shortId], { env }).catch(() => undefined);
+      throw error;
+    }
     return {
       sessionId: session.sessionId,
       ...(session.name && { sessionName: session.name }),
@@ -306,6 +323,11 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     };
   }
 
+  /**
+   * The sessions whose process is alive. Background sessions that finished are asked for too
+   * (`--all`) and told apart by their process, so a session is never missed for being between
+   * two turns
+   */
   async function liveSessions(): Promise<LiveSession[]> {
     let sessions: z.output<typeof ListedSessionSchema>[];
     try {
@@ -315,7 +337,7 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
       throw error;
     }
     return sessions.flatMap((session) =>
-      session.sessionId
+      session.sessionId && (session.pid !== undefined || session.status !== undefined)
         ? [
             {
               sessionId: session.sessionId,

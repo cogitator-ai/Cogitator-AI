@@ -586,4 +586,23 @@ describe('a session that went away', () => {
     expect(back).toMatchObject({ name: 'codex@demo', status: 'active' });
     expect(adapter.delivered.map((delivery) => delivery.letter.id)).toContain('late');
   });
+
+  it('starts no session for a job handed over while the dispatcher closes', async () => {
+    const started: string[] = [];
+    const adapter = new FakeAdapter({
+      harness: 'gemini',
+      createSession: async (request) => {
+        started.push(request.agentName);
+        return { sessionId: 'g1' };
+      },
+    });
+    kit = await makeKit({ adapters: [adapter] });
+    const { bridge, claude } = kit;
+    const closing = bridge.close();
+    const late = bridge.createJob(claude.name, { to: 'gemini', body: 'Review it' });
+
+    await Promise.allSettled([closing, late]);
+
+    expect(started).toEqual([]);
+  });
 });

@@ -27,9 +27,19 @@ const JobNumberSchema = z.number().int().positive();
 
 const NO_CONTROL = /^[^\p{Cc}]*$/u;
 
+/**
+ * A NUL character cannot be handed to a harness: no command line argument holds one, so a
+ * letter with it would never leave the queue.
+ */
+const withoutNul = (text: string): boolean => !text.includes('\0');
+const NUL_REFUSED = 'The text has a NUL character, which no harness takes';
+
 export const CreateJobInputSchema = z.strictObject({
   to: z.string().trim().min(1).max(512).regex(NO_CONTROL, 'An address is one line'),
-  body: z.string().refine((body) => body.trim().length > 0, 'The job needs a description'),
+  body: z
+    .string()
+    .refine((body) => body.trim().length > 0, 'The job needs a description')
+    .refine(withoutNul, NUL_REFUSED),
   title: z.string().trim().min(1).max(200).regex(NO_CONTROL, 'A title is one line').optional(),
   cwd: z.string().min(1).max(4096).optional(),
   checks: z.array(JobCheckSchema).max(50).optional(),
@@ -68,7 +78,10 @@ export const SendLetterInputSchema = z
   .strictObject({
     job: JobNumberSchema,
     kind: z.enum(SENDABLE_KINDS),
-    body: z.string().refine((body) => body.trim().length > 0, 'The letter is empty'),
+    body: z
+      .string()
+      .refine((body) => body.trim().length > 0, 'The letter is empty')
+      .refine(withoutNul, NUL_REFUSED),
     id: LetterIdSchema.optional(),
     inReplyTo: LetterIdSchema.optional(),
     outcome: z.enum(['completed', 'failed']).optional(),

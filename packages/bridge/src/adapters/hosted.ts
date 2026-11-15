@@ -91,7 +91,8 @@ function asError(error: unknown): Error {
  * anything else that takes a text and answers. A job's first letter starts a turn, and the
  * agent's answer to it is the job's report: the agent needs no tool to report, and one that
  * failed reports that. A letter that arrives while a turn goes on reaches the agent in the
- * middle of it when the turn takes that, and otherwise starts the next turn.
+ * middle of it when the turn takes that, and otherwise starts the next turn. The session is in
+ * the address book before its first turn starts, so an agent that answers at once is heard.
  *
  * The sessions live in the host's process and end with it.
  */
@@ -188,6 +189,13 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
         waiting: [],
       };
       sessions.set(sessionId, hosted);
+      await bridge?.register({
+        harness: options.harness,
+        sessionId,
+        cwd: request.cwd,
+        project: request.project,
+        agentName: request.agentName,
+      });
       start(hosted, request.firstLetter);
       return { sessionId, deliveredFirstLetter: true };
     },

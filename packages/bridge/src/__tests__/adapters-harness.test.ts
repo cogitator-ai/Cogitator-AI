@@ -246,6 +246,24 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
     expect(await fakes.claudeSessions()).toHaveLength(1);
   });
 
+  it('tells the sessions it starts which bridge to call when it is not the default one', async () => {
+    fakes.trustFolder(project);
+    await startHost([claudeAdapter()]);
+    const conductor = await orchestrator();
+    await conductor.createJob({ to: 'claude', body: 'Review the diff' });
+    await until(
+      async () => (await conductor.agents({ harness: 'claude-code', statuses: ['active'] }))[0],
+      'the session to start'
+    );
+
+    const [session] = await fakes.claudeSessions();
+    const record = JSON.parse(
+      readFileSync(join(fakes.home, 'claude', 'sessions', `${session.sessionId}.json`), 'utf8')
+    ) as { settings?: unknown };
+    expect(JSON.stringify(record.settings)).toContain(`--home ${home}`);
+    expect(JSON.stringify(claudeWaitHook())).not.toContain('--home');
+  });
+
   it('explains what to do when Claude Code does not trust the folder', async () => {
     await startHost([claudeAdapter()]);
     const conductor = await orchestrator();
@@ -301,13 +319,17 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
     ).rejects.toThrow('claude --bg failed: You have hit your usage limit');
   });
 
-  it('lists the sessions that run, and none when Claude Code is not installed', async () => {
+  it('lists the sessions whose process is alive, and none when Claude Code is not installed', async () => {
     const adapter = claudeAdapter();
     const window = await fakes.openClaudeWindow({ cwd: project, name: 'reviewer' });
 
     expect(await adapter.liveSessions?.()).toEqual([
       { sessionId: window, cwd: realpathSync(project), name: 'reviewer', busy: false },
     ]);
+    await fakes.run('claude', ['stop', window]);
+    expect(await fakes.claudeSessions({ all: true })).toHaveLength(1);
+    expect(await adapter.liveSessions?.()).toEqual([]);
+
     const absent = claudeCodeAdapter({ env: { PATH: join(home, 'nothing') } });
     expect(await absent.liveSessions?.()).toEqual([]);
   });
@@ -541,6 +563,40 @@ describe.skipIf(!posix)('the Codex adapter', () => {
     expect(log).toMatch(/^codex-codex_.*\.log$/);
     expect(readFileSync(join(home, 'sessions', log), 'utf8')).toContain('"type":"turn.completed"');
     expect(errors).toEqual([]);
+  });
+
+  it('stops a thread it never learned the id of, so it does not work on unseen', async () => {
+    const stalled = join(home, 'stalled-codex');
+    writeFileSync(stalled, `#!/bin/sh\necho $$ > "${join(home, 'stalled.pid')}"\nexec sleep 30\n`, {
+      mode: 0o755,
+    });
+    const adapter = codexAdapter({
+      command: stalled,
+      env: env(),
+      logDir: join(home, 'sessions'),
+      threadStartedMs: 300,
+    });
+
+    await expect(
+      adapter.createSession?.({
+        agentName: 'codex@demo',
+        harness: 'codex',
+        project,
+        cwd: project,
+        job: { number: 1 } as never,
+        firstLetter: { text: '[agent bridge] job #1', body: 'x', job: 1 } as never,
+      })
+    ).rejects.toThrow('codex exec did not say which thread it started');
+
+    const pid = Number(readFileSync(join(home, 'stalled.pid'), 'utf8'));
+    await until(() => {
+      try {
+        process.kill(pid, 0);
+        return undefined;
+      } catch {
+        return true;
+      }
+    }, 'the stalled process to be stopped');
   });
 
   it('does not hand a session the session id of the harness the dispatcher runs under', async () => {

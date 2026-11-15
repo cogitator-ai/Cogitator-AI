@@ -167,7 +167,7 @@ export type {
   ProviderTurn,
   TurnProvider,
 } from './adapters/hosted.js';
-export { CommandMissingError } from './adapters/exec.js';
+export { CommandMissingError, shellQuote } from './adapters/exec.js';
 
 export { mailText, waitForMail } from './waiter.js';
 export type { WaitForMailOptions, WaitForMailResult } from './waiter.js';
