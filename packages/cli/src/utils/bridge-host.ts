@@ -1,4 +1,10 @@
-import { hostBridge, isBridgeError, type BridgeHost } from '@cogitator-ai/bridge';
+import {
+  hostBridge,
+  isBridgeError,
+  type BridgeAdapter,
+  type BridgeHost,
+} from '@cogitator-ai/bridge';
+import { bridgeAdapters } from './bridge-adapters.js';
 import { BRIDGE_HOST_ENV } from './daemon.js';
 import { log } from './logger.js';
 
@@ -17,16 +23,19 @@ const cliLog: BridgeHostLog = {
  * Hosts the bridge dispatcher inside a daemon started with `--bridge` (which sets
  * `COGITATOR_BRIDGE_HOST=1`). The assistant never depends on it: when another dispatcher already
  * runs on the machine this process just does not host one, and a dispatcher that cannot start
- * is a warning, not a failure. Returns the host to close on shutdown, or undefined.
+ * is a warning, not a failure. It reaches Claude Code and Codex sessions through `adapters`.
+ * Returns the host to close on shutdown, or undefined.
  */
 export async function hostBridgeInDaemon(
   env: NodeJS.ProcessEnv = process.env,
-  report: BridgeHostLog = cliLog
+  report: BridgeHostLog = cliLog,
+  adapters: readonly BridgeAdapter[] = bridgeAdapters(env)
 ): Promise<BridgeHost | undefined> {
   if (env[BRIDGE_HOST_ENV] !== '1') return undefined;
   try {
     const host = await hostBridge({
       env,
+      adapters,
       onError: (error) => report.warn(`Bridge: ${error.message}`),
     });
     report.info(`Bridge dispatcher hosted here (socket ${host.paths.socket})`);

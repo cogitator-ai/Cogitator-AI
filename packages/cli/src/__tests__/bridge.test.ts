@@ -85,6 +85,7 @@ beforeEach(() => {
     env: { COGITATOR_BRIDGE_HOME: home },
     signal: stop.signal,
     pollMs: 10,
+    adapters: [],
   };
 });
 
@@ -410,12 +411,13 @@ describe('the dispatcher inside the daemon', () => {
   };
 
   it('is hosted only when the daemon was started with --bridge', async () => {
-    expect(await hostBridgeInDaemon({ COGITATOR_BRIDGE_HOME: home }, quiet)).toBeUndefined();
+    expect(await hostBridgeInDaemon({ COGITATOR_BRIDGE_HOME: home }, quiet, [])).toBeUndefined();
     expect(existsSync(join(home, 'bridge.db'))).toBe(false);
 
     const host = await hostBridgeInDaemon(
       { COGITATOR_BRIDGE_HOME: home, COGITATOR_BRIDGE_HOST: '1' },
-      quiet
+      quiet,
+      []
     );
     if (host) hosts.push(host);
 
@@ -427,26 +429,31 @@ describe('the dispatcher inside the daemon', () => {
     await startHost();
     const env = { COGITATOR_BRIDGE_HOME: home, COGITATOR_BRIDGE_HOST: '1' };
 
-    expect(await hostBridgeInDaemon(env, quiet)).toBeUndefined();
+    expect(await hostBridgeInDaemon(env, quiet, [])).toBeUndefined();
     expect(output()).toContain('already running');
     expect(output()).toContain('this daemon does not host one');
 
     const broken = { ...env, COGITATOR_BRIDGE_HOME: `/tmp/${'x'.repeat(150)}` };
-    expect(await hostBridgeInDaemon(broken, quiet)).toBeUndefined();
+    expect(await hostBridgeInDaemon(broken, quiet, [])).toBeUndefined();
     expect(warnings.join(' ')).toContain('could not start');
   });
 });
 
 describe('the command line', () => {
-  it('has bridge serve, status and log, and --bridge on the daemon', () => {
+  it('has the bridge commands, and --bridge on the daemon', () => {
     const program = createProgram();
     const bridge = program.commands.find((command) => command.name() === 'bridge');
     const daemon = program.commands.find((command) => command.name() === 'daemon');
 
     expect(bridge?.commands.map((command) => command.name()).sort()).toEqual([
+      'delegate',
+      'doctor',
+      'inbox',
       'log',
+      'send',
       'serve',
       'status',
+      'wait',
     ]);
     for (const name of ['start', 'restart', 'install']) {
       const sub = daemon?.commands.find((command) => command.name() === name);

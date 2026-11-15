@@ -2,7 +2,7 @@
  * cogitator bridge - the agent bridge of this machine: run its dispatcher, read its journal
  */
 
-import { Command, InvalidArgumentError } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 import chalk from 'chalk';
 import { existsSync } from 'node:fs';
 import {
@@ -12,6 +12,7 @@ import {
   hostBridge,
   isBridgeError,
   type AgentRecord,
+  type BridgeAdapter,
   type BridgeHost,
   type BridgeJob,
   type BridgePaths,
@@ -20,6 +21,20 @@ import {
   type Lease,
 } from '@cogitator-ai/bridge';
 import { CommandError, examplesHelp, printJson, reportFailure } from '../utils/cli.js';
+import { bridgeAdapters } from '../utils/bridge-adapters.js';
+import {
+  SENDABLE_KINDS,
+  runBridgeDelegate,
+  runBridgeDoctor,
+  runBridgeInbox,
+  runBridgeSend,
+  runBridgeWait,
+  type BridgeDelegateFlags,
+  type BridgeDoctorFlags,
+  type BridgeInboxFlags,
+  type BridgeSendFlags,
+  type BridgeWaitFlags,
+} from './bridge-session.js';
 
 /** Where the commands print */
 export interface BridgeIo {
@@ -35,6 +50,8 @@ export interface BridgeContext {
   signal?: AbortSignal;
   /** How often `log --follow` looks for new entries, in ms */
   pollMs?: number;
+  /** The adapters `serve` reaches sessions through, those of Claude Code and Codex by default */
+  adapters?: readonly BridgeAdapter[];
 }
 
 const defaultContext = (): BridgeContext => ({
@@ -128,7 +145,7 @@ export function describeJournalEntry(raw: JournalEntry): string {
     case 'letter.queued':
       return `${text(data.kind)} from ${text(data.from)} to ${text(data.to)}: ${preview(text(data.body))}`;
     case 'letter.delivered':
-      return `delivered to ${entry.agent} (${entry.letter})`;
+      return `delivered to ${entry.agent} (${entry.letter})${data.note ? `. ${text(data.note)}` : ''}`;
     case 'letter.read':
       return `read by ${entry.agent} (${entry.letter})`;
     case 'letter.handled':
@@ -240,10 +257,11 @@ function age(since: string): string {
   return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} d`;
 }
 
-function agentLine(agent: AgentRecord): string {
+function agentLine(agent: AgentRecord, waiting: boolean): string {
   const session = agent.sessionName ? ` "${plain(agent.sessionName)}"` : '';
   const state = agent.status === 'active' ? '' : chalk.yellow(` ${agent.status}`);
-  return `  ${agent.name.padEnd(28)} ${agent.harness}${session}, ${agent.delivery}${state}`;
+  const armed = waiting ? chalk.green(' waits for mail') : '';
+  return `  ${agent.name.padEnd(28)} ${agent.harness}${session}, ${agent.delivery}${state}${armed}`;
 }
 
 function jobLine(job: BridgeJob): string {
@@ -308,7 +326,9 @@ export async function runBridgeStatus(
       );
       context.io.print('');
       context.io.print(`Agents (${agents.length})`);
-      for (const agent of agents) context.io.print(agentLine(agent));
+      for (const agent of agents) {
+        context.io.print(agentLine(agent, status.waiting.includes(agent.name)));
+      }
       context.io.print('');
       context.io.print(
         `Jobs in progress (${jobs.length}), letters in the queue: ${status.queuedLetters}`
@@ -333,6 +353,7 @@ export async function runBridgeServe(
     host = await hostBridge({
       ...(flags.home && { home: flags.home }),
       env: context.env,
+      adapters: context.adapters ?? bridgeAdapters(context.env),
       onError: (error) => context.io.warn(`${chalk.yellow('!')} ${error.message}`),
     });
   } catch (error) {
@@ -394,6 +415,9 @@ export const bridgeCommand = new Command('bridge')
       ['cogitator bridge status', 'who is connected and what is in progress'],
       ['cogitator bridge log --follow', 'watch the letters as they go'],
       ['cogitator bridge log --job 12', 'everything about one job'],
+      ['cogitator bridge doctor', 'whether Claude Code and Codex can be reached'],
+      ['cogitator bridge delegate codex "Write the tests"', 'from a session: hand a job over'],
+      ['cogitator bridge send --job 12 --kind report "Done"', 'from a session: report on a job'],
     ])
   );
 
@@ -429,4 +453,76 @@ bridgeCommand
   .option('--json', 'print each entry as one line of JSON, a failure as one JSON object')
   .action(async (flags: BridgeLogFlags) => {
     process.exitCode = await runBridgeLog(flags);
+  });
+
+bridgeCommand
+  .command('doctor')
+  .description('Check that the bridge can reach Claude Code and Codex on this machine')
+  .option('--cwd <dir>', 'the project folder to check (default: the current one)')
+  .option(...homeOption)
+  .option('--json', 'print one JSON object')
+  .action(async (flags: BridgeDoctorFlags) => {
+    process.exitCode = await runBridgeDoctor(flags);
+  });
+
+bridgeCommand
+  .command('delegate <to> [text...]')
+  .description(
+    'From a session: hand a job to an agent (codex, claude, an agent name) and get its number'
+  )
+  .option('--title <title>', 'a short name of the job (default: the first line of the text)')
+  .option('--cwd <dir>', 'the folder the job is done in (default: the current one)')
+  .option(
+    '--check <command>',
+    'a command that shows the job is done, repeatable',
+    (value: string, all: string[]) => [...all, value],
+    [] as string[]
+  )
+  .option('--parent <number>', 'the job this one is part of', positiveInt)
+  .option(...homeOption)
+  .option('--json', 'print the job as JSON')
+  .action(async (to: string, text: string[], flags: BridgeDelegateFlags) => {
+    process.exitCode = await runBridgeDelegate(to, text, flags);
+  });
+
+bridgeCommand
+  .command('send [text...]')
+  .description(
+    'From a session: send a letter on a job, such as a question, an answer or the report'
+  )
+  .requiredOption('--job <number>', 'the job the letter is about', positiveInt)
+  .addOption(
+    new Option('--kind <kind>', 'what the letter is').choices(SENDABLE_KINDS).makeOptionMandatory()
+  )
+  .option('--failed', 'with --kind report: the job could not be done')
+  .option('--reply-to <letter>', 'the letter this one answers')
+  .option(...homeOption)
+  .option('--json', 'print the letter and the job as JSON')
+  .action(async (text: string[], flags: BridgeSendFlags) => {
+    process.exitCode = await runBridgeSend(text, flags);
+  });
+
+bridgeCommand
+  .command('inbox')
+  .description('From a session: read the letters that wait for it')
+  .option('--job <number>', 'only the letters of one job', positiveInt)
+  .option('--peek', 'look without taking them')
+  .option('--unhandled', 'also the letters taken before and not answered since')
+  .option(...homeOption)
+  .option('--json', 'print the letters as JSON')
+  .action(async (flags: BridgeInboxFlags) => {
+    process.exitCode = await runBridgeInbox(flags);
+  });
+
+bridgeCommand
+  .command('wait')
+  .description(
+    'Wait for the mail of a session and exit with code 2 when it comes: what a wake hook runs'
+  )
+  .option('--hook <harness>', 'run as a hook of this harness: its stdin tells the session')
+  .option('--timeout <seconds>', 'how long to wait (default 600)', positiveInt)
+  .option('--agent <name>', 'the name the bridge gave the session')
+  .option(...homeOption)
+  .action(async (flags: BridgeWaitFlags) => {
+    process.exitCode = await runBridgeWait(flags);
   });
