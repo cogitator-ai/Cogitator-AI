@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { AGENT_NAME_ENV, HARNESS_ENV, HARNESS_SESSION_ENV, SESSION_NAME_ENV } from '../registry.js';
 import type { RenderedLetter } from '../types.js';
 
@@ -28,6 +29,12 @@ export class CommandMissingError extends Error {
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
+
+/**
+ * How long the output of a command that exited is still read. A command that leaves a process
+ * of its own behind (a background service holding the same pipes) would otherwise never be done.
+ */
+const DRAIN_MS = 250;
 
 /** The most output of a command that is kept: what a harness prints for the bridge is short. */
 const MAX_OUTPUT_CHARS = 1_000_000;
@@ -67,19 +74,29 @@ export function runCommand(
     child.stdin.end(options.input ?? '');
     child.once('error', (error: NodeJS.ErrnoException) => {
       clearTimeout(timer);
-      reject(error.code === 'ENOENT' ? new CommandMissingError(command) : error);
+      if (error.code !== 'ENOENT') reject(error);
+      else if (options.cwd !== undefined && !existsSync(options.cwd)) {
+        reject(new Error(`The folder ${options.cwd} does not exist`));
+      } else reject(new CommandMissingError(command));
     });
-    child.once('close', (code) => {
+    child.once('exit', (code) => {
       clearTimeout(timer);
-      if (timedOut) {
-        reject(
-          new Error(
-            `${command} ${args[0] ?? ''} did not answer in ${Math.round(timeoutMs / 1000)} s`
-          )
-        );
-        return;
-      }
-      resolve({ code, stdout, stderr });
+      const settle = () => {
+        clearTimeout(drain);
+        child.stdout.destroy();
+        child.stderr.destroy();
+        if (timedOut) {
+          reject(
+            new Error(
+              `${command} ${args[0] ?? ''} did not answer in ${Math.round(timeoutMs / 1000)} s`
+            )
+          );
+          return;
+        }
+        resolve({ code, stdout, stderr });
+      };
+      const drain = setTimeout(settle, DRAIN_MS);
+      child.once('close', settle);
     });
   });
 }
@@ -91,9 +108,27 @@ export function failureOf(result: CommandResult): string {
 }
 
 /**
- * The environment of a session the bridge starts: the session ids of whatever harness the
- * dispatcher itself runs under are taken out (the new session gets its own from its harness),
- * and the bridge's name for the session goes in, so its first call is recognized.
+ * What a harness puts into the environment of one session about that session: which session it
+ * is, how it was entered, the socket and the token its own messages go through. A dispatcher
+ * started from inside a session has them, and a session it starts must not: it is another
+ * session, often of another harness.
+ */
+const SURROUNDING_SESSION_ENV = [
+  'CLAUDECODE',
+  'CLAUDE_PID',
+  'CLAUDE_PROJECT_DIR',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_HOST_SESSION_ID',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_SESSION_ATTENDED',
+  'CLAUDE_CODE_MESSAGING_SOCKET',
+  'CLAUDE_CODE_MESSAGING_TOKEN',
+];
+
+/**
+ * The environment of a session the bridge starts: what belongs to the session the dispatcher
+ * itself may run in is taken out (the new session gets its own from its harness), and the
+ * bridge's name for the session goes in, so its first call is recognized.
  */
 export function sessionEnv(
   base: NodeJS.ProcessEnv,
@@ -101,6 +136,7 @@ export function sessionEnv(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
   for (const { variable } of HARNESS_SESSION_ENV) delete env[variable];
+  for (const variable of SURROUNDING_SESSION_ENV) delete env[variable];
   delete env[SESSION_NAME_ENV];
   env[HARNESS_ENV] = session.harness;
   env[AGENT_NAME_ENV] = session.agentName;
@@ -120,15 +156,26 @@ export function fitsArgument(text: string): boolean {
 
 /**
  * What a session gets in place of a letter too long for an argument: the letter's signature and
- * where to read the rest. The letter itself stays unread in the session's inbox.
+ * how to read the rest, with the bridge's command line as the session can run it. The letter
+ * itself stays unread in the session's inbox.
  */
-export function tooLongNotice(letter: RenderedLetter): string {
+export function tooLongNotice(
+  letter: RenderedLetter,
+  bridgeCommand = 'cogitator bridge',
+  bridgeHome?: string
+): string {
   const signature = letter.text.split('\n', 1)[0];
   return (
     `${signature}\n` +
     `This letter is ${letter.body.length} characters long, too long to hand over here. ` +
-    `Read it from the bridge: cogitator bridge inbox --job ${letter.job}`
+    `Read it from the bridge: ${bridgeCommand} inbox --job ${letter.job}` +
+    (bridgeHome ? ` --home ${shellQuote(bridgeHome)}` : '')
   );
+}
+
+/** A value as one word of a shell command line. */
+export function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 /** Waits `ms`. The timer does not keep the process alive. */

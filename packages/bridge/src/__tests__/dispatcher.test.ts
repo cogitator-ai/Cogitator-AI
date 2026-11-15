@@ -127,6 +127,19 @@ describe('register', () => {
       symlinkSync(main, linked);
       const viaLink = await bridge.register({ harness: 'glm', sessionId: 'z1', cwd: linked });
       expect(viaLink).toMatchObject({ cwd: main, project: main });
+      mkdirSync(join(main, '.git'), { recursive: true });
+      const notMadeYet = await bridge.createJob(viaLink.name, {
+        to: 'qwen',
+        body: 'New folder',
+        cwd: join(linked, 'packages', 'new', 'deep'),
+      });
+      expect(notMadeYet.job.cwd).toBe(join(main, 'packages', 'new', 'deep'));
+      await expect(
+        bridge.createJob(viaLink.name, { to: 'qwen', body: 'NUL \0 inside' })
+      ).rejects.toMatchObject({ code: 'invalid_input' });
+      await expect(
+        bridge.send(viaLink.name, { job: notMadeYet.job.number, kind: 'note', body: 'a\0b' })
+      ).rejects.toMatchObject({ code: 'invalid_input' });
       await expect(
         bridge.createJob(inTree.name, { to: 'qwen', body: 'Out', cwd: dir })
       ).rejects.toThrow(/outside both/);

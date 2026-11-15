@@ -178,6 +178,104 @@ describe('waiting for mail', () => {
     expect((await bridge.letters({ job: 1 }))[0].state).toBe('queued');
   });
 
+  it('never gives a letter a waiter holds to the adapter too, nor one being pushed to a waiter', async () => {
+    const pushes: string[] = [];
+    let finishPush: () => void = () => undefined;
+    const adapter = new FakeAdapter({
+      deliver: (delivery) => {
+        pushes.push(delivery.letter.id);
+        return new Promise<void>((resolve) => {
+          finishPush = resolve;
+        });
+      },
+    });
+    kit = await makeKit({ adapters: [adapter] });
+    const { bridge, claude, codex, clock } = kit;
+    const waiting = bridge.wait(codex.name);
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Write the tests' });
+    const held = await waiting;
+    expect(held.letters.map((letter) => letter.id)).toEqual(['ltr_1']);
+
+    await bridge.send(claude.name, { job: 1, kind: 'note', body: 'Use vitest' });
+    await bridge.sweep();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(pushes).toEqual([]);
+
+    await bridge.delivered(codex.name, ['ltr_1']);
+    await new Promise((resolve) => setImmediate(resolve));
+    await bridge.status();
+    expect(pushes).toEqual(['ltr_2']);
+    const during = bridge.wait(codex.name, { timeoutMs: 60_000 });
+    await bridge.status();
+    expect((await bridge.status()).waiting).toEqual(['codex@demo']);
+
+    finishPush();
+    await bridge.idle();
+    expect((await bridge.letters({ job: 1 })).map((letter) => letter.state)).toEqual([
+      'delivered',
+      'delivered',
+    ]);
+    clock.advance(1);
+    await bridge.close();
+    expect((await during).reason).toBe('closed');
+  });
+
+  it('frees what a waiter held when its connection closes or its time is up', async () => {
+    kit = await makeKit({ limits: { deliveryTimeoutMs: 30_000 } });
+    const { bridge, claude, codex, clock } = kit;
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Write the tests' });
+    const gone = new AbortController();
+    expect((await bridge.wait(codex.name, {}, gone.signal)).letters).toHaveLength(1);
+
+    const other = bridge.wait(claude.name);
+    await bridge.status();
+    gone.abort();
+    await bridge.idle();
+    expect((await bridge.letters({ job: 1 }))[0].state).toBe('queued');
+
+    await bridge.send(claude.name, { job: 1, kind: 'note', body: 'Use vitest' });
+    const second = await bridge.wait(codex.name, { limit: 1 });
+    expect(second.letters.map((letter) => letter.id)).toEqual(['ltr_1']);
+    const behind = bridge.wait(codex.name, { limit: 1 });
+    expect((await behind).letters.map((letter) => letter.id)).toEqual(['ltr_1']);
+
+    clock.advance(30_000);
+    await bridge.close();
+    expect((await other).reason).toBe('closed');
+  });
+
+  it('holds the first letter back from a waiter while the session is still being started', async () => {
+    let finish: (created: { sessionId: string; deliveredFirstLetter: boolean }) => void = () =>
+      undefined;
+    const adapter = new FakeAdapter({
+      harness: 'gemini',
+      createSession: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    });
+    kit = await makeKit({ adapters: [adapter] });
+    const { bridge, claude } = kit;
+    const { job } = await bridge.createJob(claude.name, { to: 'gemini', body: 'Review it' });
+    const early = await bridge.register({
+      harness: 'gemini',
+      sessionId: 'g1',
+      cwd: '/work/demo',
+      project: '/work/demo',
+      agentName: job.to,
+    });
+
+    const waiting = bridge.wait(early.name, { timeoutMs: 60_000 });
+    await bridge.status();
+    expect((await bridge.status()).waiting).toEqual([job.to]);
+
+    finish({ sessionId: 'g1', deliveredFirstLetter: true });
+    await bridge.idle();
+    expect((await bridge.letters({ job: 1 }))[0].state).toBe('delivered');
+    await bridge.close();
+    expect(await waiting).toEqual({ letters: [], reason: 'closed' });
+  });
+
   it('hands the mail to the waiter rather than pushing it through the adapter', async () => {
     const adapter = new FakeAdapter();
     kit = await makeKit({ adapters: [adapter] });
@@ -270,7 +368,7 @@ describe('sessions a harness lists', () => {
     return new FakeAdapter({ liveSessions: async () => sessions.current });
   }
 
-  it('takes a session that was listed and no longer is for gone, and fails its jobs', async () => {
+  it('takes a session that was listed and is missing twice in a row for gone, and fails its jobs', async () => {
     const sessions = { current: [{ sessionId: 'thread-codex' }] };
     kit = await makeKit({ adapters: [listed(sessions)] });
     const { bridge, claude, clock } = kit;
@@ -283,6 +381,12 @@ describe('sessions a harness lists', () => {
     clock.advance(MINUTE);
     await bridge.sweep();
     await bridge.idle();
+    expect((await bridge.agents({ harness: 'codex' }))[0].status).toBe('active');
+    expect((await bridge.job(1)).state).toBe('working');
+
+    clock.advance(MINUTE);
+    await bridge.sweep();
+    await bridge.idle();
 
     expect((await bridge.agents({ harness: 'codex' }))[0].status).toBe('gone');
     expect(await bridge.job(1)).toMatchObject({
@@ -290,6 +394,77 @@ describe('sessions a harness lists', () => {
       reason: 'the session of codex@demo is not running any more',
     });
     expect(kit.errors).toEqual([]);
+  });
+
+  it('forgives one miss: a session back in the list is counted from the start', async () => {
+    const sessions = { current: [{ sessionId: 'thread-codex' }] };
+    kit = await makeKit({ adapters: [listed(sessions)] });
+    const { bridge, claude, clock } = kit;
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Write the tests' });
+    const look = async (current: LiveSession[]) => {
+      sessions.current = current;
+      clock.advance(MINUTE);
+      await bridge.sweep();
+      await bridge.idle();
+    };
+    await look([{ sessionId: 'thread-codex' }]);
+
+    await look([]);
+    await look([{ sessionId: 'thread-codex' }]);
+    await look([]);
+
+    expect((await bridge.agents({ harness: 'codex' }))[0].status).toBe('active');
+    await look([]);
+    expect((await bridge.agents({ harness: 'codex' }))[0].status).toBe('gone');
+  });
+
+  it('believes an adapter that runs every session itself at the first look', async () => {
+    const adapter = Object.assign(new FakeAdapter({ liveSessions: async () => [] }), {
+      ownsSessions: true,
+    });
+    kit = await makeKit({ adapters: [adapter] });
+    const { bridge, claude, clock } = kit;
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Write the tests' });
+    clock.advance(1);
+
+    await bridge.sweep();
+    await bridge.idle();
+
+    expect((await bridge.agents({ harness: 'codex' }))[0].status).toBe('gone');
+    expect((await bridge.job(1)).state).toBe('failed');
+  });
+
+  it('does not judge a session that came after the list was asked for by that list', async () => {
+    let answer: (sessions: LiveSession[]) => void = () => undefined;
+    const adapter = Object.assign(
+      new FakeAdapter({
+        liveSessions: () =>
+          new Promise<LiveSession[]>((resolve) => {
+            answer = resolve;
+          }),
+      }),
+      { ownsSessions: true }
+    );
+    kit = await makeKit({ adapters: [adapter] });
+    const { bridge, clock } = kit;
+    clock.advance(1);
+    await bridge.sweep();
+    clock.advance(1);
+    await bridge.register({
+      harness: 'codex',
+      sessionId: 'started-meanwhile',
+      cwd: '/work/demo',
+      project: '/work/demo',
+    });
+
+    answer([]);
+    await bridge.idle();
+
+    const agents = await bridge.agents({ harness: 'codex' });
+    expect(Object.fromEntries(agents.map((agent) => [agent.sessionId, agent.status]))).toEqual({
+      'thread-codex': 'gone',
+      'started-meanwhile': 'active',
+    });
   });
 
   it('leaves a session the harness never listed to the idle rule', async () => {
@@ -344,9 +519,11 @@ describe('sessions a harness lists', () => {
     await bridge.status();
 
     sessions.current = [];
-    clock.advance(MINUTE);
-    await bridge.sweep();
-    await bridge.idle();
+    for (let look = 0; look < 3; look += 1) {
+      clock.advance(MINUTE);
+      await bridge.sweep();
+      await bridge.idle();
+    }
 
     expect((await bridge.agents({ harness: 'codex' }))[0].status).toBe('active');
     await bridge.close();

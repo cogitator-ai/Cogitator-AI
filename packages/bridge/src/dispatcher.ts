@@ -171,10 +171,31 @@ const STATE_RANK: Readonly<Record<DeliveryState, number>> = {
 };
 
 /** What a call wrote that only counts once it is stored. */
+/** Who holds a letter right now, see `BridgeDispatcher.inHand`. */
+interface Held {
+  agent: string;
+  /** Ms since the epoch after which the letter is free again whatever happened to its holder */
+  until: number;
+  /** An adapter is pushing it, rather than a waiter holding it */
+  pushing?: boolean;
+}
+
+/** What a harness said of its sessions, check after check. */
+interface Presence {
+  /** The sessions it listed the last time */
+  live: Set<string>;
+  /** Every session it ever listed */
+  seen: Set<string>;
+  /** The sessions that were listed before and were missing the last time */
+  missed: Set<string>;
+}
+
 /** A process of a session waiting for its mail, see `BridgeDispatcher.wait`. */
 interface Waiter {
   /** The most letters it takes at once */
   limit: number;
+  /** Aborts when the waiter's connection closes */
+  signal: AbortSignal | undefined;
   /** Ends the wait. Ending it again changes nothing */
   end(reason: WaitEnd, letters?: RenderedLetter[]): void;
 }
@@ -268,8 +289,14 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
   private readonly starting = new Set<string>();
   /** The waiter of each agent that has one, see `wait` */
   private readonly waiters = new Map<string, Waiter>();
-  /** The sessions each harness listed as running the last time its adapter was asked */
-  private readonly present = new Map<string, Set<string>>();
+  /**
+   * Letters somebody holds right now: a waiter that has not confirmed them yet, or an adapter in
+   * the middle of pushing one. Nobody else is given a letter in hand, so a session reached two
+   * ways does not get it twice
+   */
+  private readonly inHand = new Map<string, Held>();
+  /** What each harness with an adapter that lists its sessions said of them, see `checkPresence` */
+  private readonly presence = new Map<string, Presence>();
   private readonly listing = new Set<string>();
   private presenceCheckedAt = Number.NEGATIVE_INFINITY;
   /** Set once `close` was called: nothing new is delivered, what runs is waited for */
@@ -773,9 +800,13 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
       async (): Promise<WaitResult | { later: Promise<WaitResult> }> => {
         const agent = this.requireCaller(caller);
         this.waiters.get(agent.name)?.end('replaced');
-        const letters = this.queuedFor(agent.name, limit);
-        if (letters.length > 0) return { letters, reason: 'letters' };
+        this.letGo(agent.name);
         if (signal?.aborted || this.closing) return { letters: [], reason: 'closed' };
+        const letters = this.starting.has(agent.name) ? [] : this.queuedFor(agent.name, limit);
+        if (letters.length > 0) {
+          this.hand(agent.name, letters, signal);
+          return { letters, reason: 'letters' };
+        }
         return {
           later: this.arm(agent.name, limit, request.timeoutMs ?? DEFAULT_WAIT_MS, signal),
         };
@@ -810,6 +841,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
         const letter = this.store.getLetter(id);
         if (letter) marked.push(letter);
       }
+      tx.wake.add(agent.name);
       return marked;
     });
   }
@@ -823,6 +855,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
     return new Promise<WaitResult>((resolve) => {
       const waiter: Waiter = {
         limit,
+        signal,
         end: (reason, letters = []) => {
           if (this.waiters.get(name) === waiter) this.waiters.delete(name);
           clearTimeout(timer);
@@ -837,12 +870,59 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
     });
   }
 
-  /** The letters queued for an agent, oldest first, as many as one answer carries. */
+  /**
+   * The letters queued for an agent that nobody holds, oldest first, as many as one answer
+   * carries.
+   */
   private queuedFor(name: string, limit: number): RenderedLetter[] {
-    const queued = this.store.listLetters({ to: name, states: ['queued'], limit });
+    const queued = this.store
+      .listLetters({ to: name, states: ['queued'], limit })
+      .filter((letter) => !this.held(letter.id));
     return fitting(queued, (letter) => 2 * letter.body.length).map((letter) =>
       renderLetter(letter, this.requireJob(letter.job).job)
     );
+  }
+
+  private held(letterId: string): boolean {
+    const holder = this.inHand.get(letterId);
+    if (!holder) return false;
+    if (holder.until > this.now()) return true;
+    this.inHand.delete(letterId);
+    return false;
+  }
+
+  /**
+   * Notes that a waiter was given these letters. They are in its hand until it confirms them,
+   * its connection closes, a newer waiter of the session takes over, or `deliveryTimeoutMs`
+   * passes, whichever comes first.
+   */
+  private hand(
+    name: string,
+    letters: readonly RenderedLetter[],
+    signal: AbortSignal | undefined
+  ): void {
+    const holder: Held = { agent: name, until: this.now() + this.limits.deliveryTimeoutMs };
+    for (const letter of letters) this.inHand.set(letter.id, holder);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        let dropped = false;
+        for (const letter of letters) {
+          if (this.inHand.get(letter.id) !== holder) continue;
+          this.inHand.delete(letter.id);
+          dropped = true;
+        }
+        if (dropped) this.wakeIfKnown(name);
+      },
+      { once: true }
+    );
+  }
+
+  /** Frees what the waiters of an agent hold: a newer waiter is about to take their place. */
+  private letGo(name: string): void {
+    for (const [letterId, holder] of this.inHand) {
+      if (holder.agent === name && !holder.pushing) this.inHand.delete(letterId);
+    }
   }
 
   /**
@@ -1076,10 +1156,13 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
 
   /**
    * Asks the adapters that can list their sessions which of them still run, once in
-   * `limits.presenceCheckMs`. A session that was listed and no longer is, and has no waiter
-   * armed, is gone and its jobs fail with that reason, rather than after the reply timeout.
-   * One that was never listed (its harness shows it nowhere) is left to the idle rule, unless
-   * the adapter runs every session of its harness itself (`ownsSessions`).
+   * `limits.presenceCheckMs`. A session that was listed and then is not, two times in a row, is
+   * gone, and its jobs fail with that reason rather than after the reply timeout: one miss may
+   * be a session between two states of its harness. A session with a waiter armed is there
+   * whatever the list says. One that was never listed (its harness shows it nowhere) is left to
+   * the idle rule, unless the adapter runs every session of its harness itself (`ownsSessions`):
+   * then what it does not list is gone at once. A session heard from after the list was asked
+   * for is not judged by it: it may have started meanwhile.
    */
   private checkPresence(): void {
     if (this.closing) return;
@@ -1089,6 +1172,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
     for (const [harness, adapter] of this.adapters) {
       if (!adapter.liveSessions || this.listing.has(harness)) continue;
       this.listing.add(harness);
+      const asked = now;
       this.track(
         within(
           adapter.liveSessions(),
@@ -1096,26 +1180,44 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
           `Listing the ${harness} sessions`
         )
           .then((sessions) =>
-            this.mutate(async (tx) => {
-              const live = new Set(sessions.map((session) => session.sessionId));
-              const before = this.present.get(harness);
-              this.present.set(harness, live);
-              if (!before && !adapter.ownsSessions) return;
-              for (const agent of this.store.listAgents({ harness, statuses: ['active'] })) {
-                if (live.has(agent.sessionId)) continue;
-                if (!adapter.ownsSessions && !before?.has(agent.sessionId)) continue;
-                if (this.waiters.has(agent.name) || this.starting.has(agent.name)) continue;
-                await this.agentGone(
-                  tx,
-                  agent,
-                  `the session of ${agent.name} is not running any more`
-                );
-              }
-            })
+            this.mutate((tx) =>
+              this.applyPresence(
+                tx,
+                harness,
+                new Set(sessions.map((session) => session.sessionId)),
+                adapter.ownsSessions === true,
+                asked
+              )
+            )
           )
           .finally(() => this.listing.delete(harness))
       );
     }
+  }
+
+  private async applyPresence(
+    tx: Transaction,
+    harness: string,
+    live: Set<string>,
+    certain: boolean,
+    asked: number
+  ): Promise<void> {
+    const known = this.presence.get(harness) ?? { live, seen: new Set(), missed: new Set() };
+    const missed = new Set<string>();
+    for (const sessionId of live) known.seen.add(sessionId);
+    for (const agent of this.store.listAgents({ harness, statuses: ['active'] })) {
+      const id = agent.sessionId;
+      if (live.has(id) || this.waiters.has(agent.name) || this.starting.has(agent.name)) continue;
+      if (Date.parse(agent.lastSeenAt) >= asked) continue;
+      if (!certain && !known.seen.has(id)) continue;
+      if (!certain && !known.missed.has(id)) {
+        missed.add(id);
+        continue;
+      }
+      known.seen.delete(id);
+      await this.agentGone(tx, agent, `the session of ${agent.name} is not running any more`);
+    }
+    this.presence.set(harness, { live, seen: known.seen, missed });
   }
 
   /**
@@ -1142,7 +1244,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
     });
     for (const agent of silent) {
       if (this.waiters.has(agent.name)) continue;
-      if (this.present.get(agent.harness)?.has(agent.sessionId)) continue;
+      if (this.presence.get(agent.harness)?.live.has(agent.sessionId)) continue;
       const busy = this.store.jobTasks({ party: agent.name, states: ACTIVE_JOB_STATES, limit: 1 });
       if (busy.length > 0) continue;
       this.store.putAgent({ ...agent, status: 'gone' });
@@ -1181,7 +1283,8 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
 
   /**
    * Ends the waits, waits for the calls being handled, the deliveries and the session starts they
-   * began, closes the adapters, then takes no more. A delivery that hangs is given up on after `limits.deliveryTimeoutMs` and a
+   * began, closes the adapters, then takes no more. A session a call asks for after this began
+   * is not started: the next dispatcher finds it never started and fails its job. A delivery that hangs is given up on after `limits.deliveryTimeoutMs` and a
    * session start after `limits.sessionStartTimeoutMs`, so this always ends.
    */
   async close(): Promise<void> {
@@ -1248,7 +1351,9 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
         this.onError(asError(error));
       }
     }
-    for (const spawn of tx.spawns) this.startSession(spawn.agent, spawn.job, spawn.letter);
+    if (!this.closing) {
+      for (const spawn of tx.spawns) this.startSession(spawn.agent, spawn.job, spawn.letter);
+    }
     for (const agent of tx.wake) this.wake(agent);
     return result;
   }
@@ -1605,6 +1710,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
     letterId: string,
     data?: Record<string, unknown>
   ): Promise<void> {
+    this.inHand.delete(letterId);
     const letter = this.store.getLetter(letterId);
     if (letter?.state !== 'queued') return;
     const taken = expectationOf(letter.kind) === 'pickup';
@@ -1654,7 +1760,10 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
         const waiter = this.waiters.get(name);
         if (waiter) {
           const letters = this.queuedFor(name, waiter.limit);
-          if (letters.length > 0) waiter.end('letters', letters);
+          if (letters.length > 0) {
+            this.hand(name, letters, waiter.signal);
+            waiter.end('letters', letters);
+          }
           return undefined;
         }
         const adapter = this.adapters.get(agent.harness);
@@ -1666,9 +1775,14 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
           attemptsBelow: this.limits.deliveryAttempts,
           limit: 1,
         })[0];
-        if (!letter) return undefined;
+        if (!letter || this.held(letter.id)) return undefined;
         if (letter.nextAttemptAt && Date.parse(letter.nextAttemptAt) > this.now()) return undefined;
         const { job } = this.requireJob(letter.job);
+        this.inHand.set(letter.id, {
+          agent: name,
+          until: this.now() + this.limits.deliveryTimeoutMs,
+          pushing: true,
+        });
         return { agent, deliver, job, letter: renderLetter(letter, job) };
       });
       if (!next) return;
@@ -1682,9 +1796,11 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
         );
         note = receipt?.note;
       } catch (error) {
+        this.inHand.delete(next.letter.id);
         await this.mutate(async (tx) => this.deliveryFailed(tx, next.letter.id, asError(error)));
         return;
       }
+      this.inHand.delete(next.letter.id);
       await this.mutate((tx) =>
         this.markDelivered(tx, next.letter.id, note ? { note } : undefined)
       );

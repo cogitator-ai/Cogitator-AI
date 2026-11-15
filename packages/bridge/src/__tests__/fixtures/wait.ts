@@ -23,7 +23,7 @@ async function main(): Promise<number> {
   if (!caller) return 1;
   const agentName = flag('--agent');
   const waited = await waitForMail({
-    socketPath: bridgePaths({ env: process.env }).socket,
+    socketPath: bridgePaths({ home: flag('--home'), env: process.env }).socket,
     caller: { ...caller, ...(agentName && { agentName }) },
     timeoutMs: Number(flag('--timeout') ?? '600') * 1000,
     retryMs: 50,

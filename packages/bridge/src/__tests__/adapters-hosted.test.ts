@@ -146,6 +146,34 @@ describe('sessions the host runs', () => {
     ]);
   });
 
+  it('hears an agent that answers at once, or cannot even start its turn', async () => {
+    const adapter = hostedAdapter({
+      harness: 'qwen',
+      open: ({ job }) => ({
+        turn: () => {
+          if (job.number === 2) throw new Error('no such model');
+          return { result: Promise.resolve('Nothing to fix') };
+        },
+      }),
+    });
+    kit = await makeKit({ adapters: [adapter] });
+    const { bridge, claude } = kit;
+
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Review the diff' });
+    await bridge.createJob(claude.name, { to: 'qwen:new', body: 'Run the linter' });
+    await settle(kit);
+
+    expect((await bridge.job(1)).state).toBe('completed');
+    expect((await bridge.job(2)).state).toBe('failed');
+    const reports = await bridge.inbox(claude.name);
+    expect(reports.map((letter) => [letter.job, letter.body])).toEqual([
+      [1, 'Nothing to fix'],
+      [2, 'The agent failed: no such model'],
+    ]);
+    expect(await bridge.agents({ harness: 'qwen' })).toHaveLength(2);
+    expect(kit.errors).toEqual([]);
+  });
+
   it('reaches the agent in the middle of its turn with what it waits for', async () => {
     const agent = scripted({ steer: true, followUp: true });
     kit = await makeKit({

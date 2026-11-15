@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type {
   BridgeAdapter,
@@ -32,6 +32,8 @@ export interface CodexAdapterOptions {
   command?: string;
   /** The environment of the commands and of the sessions it starts, `process.env` by default */
   env?: NodeJS.ProcessEnv;
+  /** How a session runs the bridge's command line, `cogitator bridge` by default */
+  bridgeCommand?: string;
   /** The sandbox of the sessions it starts, `workspace-write` by default */
   sandbox?: CodexSandbox;
   /** More arguments for `codex exec`, such as `['--model', 'gpt-5']` */
@@ -84,6 +86,7 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
   const command = options.command ?? 'codex';
   const env = options.env ?? process.env;
   const logDir = options.logDir ?? join(bridgePaths({ env }).home, 'sessions');
+  const bridgeHome = env.COGITATOR_BRIDGE_HOME?.trim() || undefined;
 
   async function deliver({ agent, letter }: LetterDelivery): Promise<DeliveryReceipt | void> {
     const result = await runCommand(
@@ -93,7 +96,9 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
         '--thread',
         agent.sessionId,
         '--message',
-        fitsArgument(letter.text) ? letter.text : tooLongNotice(letter),
+        fitsArgument(letter.text)
+          ? letter.text
+          : tooLongNotice(letter, options.bridgeCommand, bridgeHome),
         '--resume',
         '--cd',
         agent.cwd,
@@ -113,6 +118,7 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
     const log = openSync(logPath, 'a', 0o600);
     let exited: { code: number | null } | undefined;
     let missing = false;
+    let pid: number | undefined;
     try {
       const child = spawn(
         command,
@@ -148,24 +154,41 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
       child.stdin?.on('error', () => undefined);
       child.stdin?.end(request.firstLetter.text);
       child.unref();
+      pid = child.pid;
     } finally {
       closeSync(log);
     }
+
+    /** The thread was never learned, so nothing could reach it: it must not work on unseen */
+    const abandon = (error: Error): Error => {
+      if (pid !== undefined && !exited) {
+        try {
+          process.kill(-pid, 'SIGTERM');
+        } catch {
+          exited = { code: null };
+        }
+      }
+      return error;
+    };
 
     const deadline = Date.now() + (options.threadStartedMs ?? DEFAULT_THREAD_STARTED_MS);
     for (;;) {
       const output = readFileSync(logPath, 'utf8');
       const sessionId = codexThreadId(output);
       if (sessionId) return { sessionId, deliveredFirstLetter: true };
-      if (missing) throw new CommandMissingError(command);
+      if (missing) {
+        throw existsSync(request.cwd)
+          ? new CommandMissingError(command)
+          : new Error(`The folder ${request.cwd} does not exist`);
+      }
       if (exited) {
         throw new Error(
           `codex exec ended before it started a thread: ${failureOf({ code: exited.code, stdout: output, stderr: '' })}`
         );
       }
       if (Date.now() >= deadline) {
-        throw new Error(
-          `codex exec did not say which thread it started, its output is in ${logPath}`
+        throw abandon(
+          new Error(`codex exec did not say which thread it started, its output is in ${logPath}`)
         );
       }
       await pause(LOG_INTERVAL_MS);
