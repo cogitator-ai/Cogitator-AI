@@ -1,0 +1,73 @@
+{
+  "name": "@cogitator-ai/bridge",
+  "version": "0.1.0",
+  "description": "Agent bridge for Cogitator: Claude Code, Codex and other agents hand each other jobs, ask questions and report back, each in its own window (experimental)",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "agents",
+    "llm",
+    "multi-agent",
+    "bridge",
+    "claude-code",
+    "codex",
+    "a2a",
+    "orchestration"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc && tsx ../../scripts/fix-esm-imports.ts .",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "test:watch": "vitest",
+    "lint": "eslint src",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@cogitator-ai/a2a": "workspace:*",
+    "@cogitator-ai/server-shared": "workspace:*",
+    "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.20.4",
+    "better-sqlite3": "^13.0.3",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.3"
+  },
+  "peerDependencies": {
+    "better-sqlite3": "^11.0.0 || ^12.0.0 || ^13.0.0"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cogitator-ai/Cogitator-AI.git",
+    "directory": "packages/bridge"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}
