@@ -1305,6 +1305,28 @@ describe('inbox', () => {
     expect(all[0]).toBe('Carrier');
   });
 
+  it('returns a new letter however much text of the ones taken before is still unanswered', async () => {
+    kit = await makeKit();
+    const { bridge, claude, codex } = kit;
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Carrier' });
+    for (let index = 0; index < 6; index += 1) {
+      await bridge.send(claude.name, {
+        job: 1,
+        kind: 'question',
+        body: `Question ${index} ${'x'.repeat(190_000)}`,
+      });
+    }
+    while ((await bridge.inbox(codex.name)).length > 0);
+    await bridge.send(claude.name, { job: 1, kind: 'question', body: 'The new one' });
+
+    const polled = await bridge.inbox(codex.name, { unhandled: true });
+
+    expect(polled.at(-1)).toMatchObject({ body: 'The new one', state: 'read' });
+    expect(polled.length).toBeGreaterThan(1);
+    expect(polled.reduce((sum, letter) => sum + letter.text.length, 0)).toBeLessThan(2_500_000);
+    expect(await bridge.letters({ to: codex.name, states: ['queued'] })).toEqual([]);
+  });
+
   it('is done with a question nobody answered once its job is over', async () => {
     kit = await makeKit();
     const { bridge, claude, codex } = kit;
