@@ -70,6 +70,10 @@ Expose and consume agents as A2A services.
 
 An editor driving a Cogitator agent over ACP, and an external ACP agent (Claude Code, Codex, Gemini CLI) next to a native agent of an app-server host.
 
+### [`bridge/`](./bridge/) - Agent Bridge
+
+Two sessions hand a job back and forth through the dispatcher of `@cogitator-ai/bridge`: inbox, question and answer, limits, verification and the journal. No model needed.
+
 ### [`mcp/`](./mcp/) — Model Context Protocol
 
 Connect to external MCP servers and use their tools.
