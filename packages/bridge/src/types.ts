@@ -22,7 +22,7 @@ export interface AdapterCapabilities {
   push: boolean;
   /** Reaches a session in the middle of its turn */
   steer: boolean;
-  /** The session lives in the vendor's own window, on the vendor's own subscription */
+  /** The session lives in the harness's own app, where the person sees it and can step in */
   nativeWindow: boolean;
 }
 
