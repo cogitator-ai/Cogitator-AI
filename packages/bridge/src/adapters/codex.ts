@@ -112,7 +112,10 @@ export function codexThreadId(output: string): string | undefined {
  * the bridge from its sandbox, so the bridge reports for it.
  */
 export function codexReportNotice(job: number): string {
-  return `[agent bridge] Your final answer of this turn is taken as the report on job #${job}, unless you send a report yourself.`;
+  return (
+    `[agent bridge] Your final answer of this turn is taken as the report on job #${job}, unless you send a report yourself. ` +
+    'A bridge command that fails from your sandbox needs no second try: answer here.'
+  );
 }
 
 /**

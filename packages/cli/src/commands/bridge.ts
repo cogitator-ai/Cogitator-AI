@@ -26,11 +26,13 @@ import {
   SENDABLE_KINDS,
   runBridgeDelegate,
   runBridgeDoctor,
+  runBridgeCancel,
   runBridgeInbox,
   runBridgeSend,
   runBridgeWait,
   type BridgeDelegateFlags,
   type BridgeDoctorFlags,
+  type BridgeCancelFlags,
   type BridgeInboxFlags,
   type BridgeSendFlags,
   type BridgeWaitFlags,
@@ -433,6 +435,7 @@ export const bridgeCommand = new Command('bridge')
       ['cogitator bridge doctor', 'whether Claude Code and Codex can be reached'],
       ['cogitator bridge delegate codex "Write the tests"', 'from a session: hand a job over'],
       ['cogitator bridge send --job 12 --kind report "Done"', 'from a session: report on a job'],
+      ['cogitator bridge cancel 12 "Not needed any more"', 'from a session: take a job back'],
     ])
   );
 
@@ -535,6 +538,17 @@ bridgeCommand
   .option('--json', 'print the letters as JSON')
   .action(async (flags: BridgeInboxFlags) => {
     process.exitCode = await runBridgeInbox(flags);
+  });
+
+bridgeCommand
+  .command('cancel')
+  .description('From a session: take back a job it handed over, the agent is told to stop')
+  .argument('<job>', 'the number of the job', positiveInt)
+  .argument('[reason...]', 'why, for the agent that worked on it')
+  .option(...homeOption)
+  .option('--json', 'print the job as JSON')
+  .action(async (job: number, reason: string[], flags: BridgeCancelFlags) => {
+    process.exitCode = await runBridgeCancel(job, reason, flags);
   });
 
 bridgeCommand

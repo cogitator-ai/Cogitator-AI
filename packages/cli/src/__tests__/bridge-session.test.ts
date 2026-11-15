@@ -20,6 +20,7 @@ import {
   runBridgeDoctor,
   runBridgeInbox,
   runBridgeSend,
+  runBridgeCancel,
   runBridgeWait,
   type BridgeSessionContext,
 } from '../commands/bridge-session.js';
@@ -144,6 +145,30 @@ describe('bridge delegate, send and inbox', () => {
     lines = [];
     await runBridgeInbox({ job: 1 }, claude());
     expect(output()).toContain('Done:\n14 pass');
+  });
+
+  it('takes a job back for the session that handed it over, and for no other', async () => {
+    await startHost();
+    await runBridgeInbox({}, codex());
+    await runBridgeDelegate('codex', ['Write', 'the tests'], {}, claude());
+
+    lines = [];
+    expect(await runBridgeCancel(1, [], {}, codex())).toBe(1);
+    expect(failed()).toMatch(/Only claude@\S+, who handed job 1 over, can cancel it/);
+    expect((await (await watcher()).job(1)).state).not.toBe('canceled');
+
+    expect(await runBridgeCancel(1, ['Not', 'needed'], {}, claude())).toBe(0);
+    expect(output()).toMatch(/^Job #1 is canceled, codex@\S+ is told$/);
+    lines = [];
+    await runBridgeInbox({}, codex());
+    expect(output()).toContain('Not needed');
+
+    failures = [];
+    expect(await runBridgeCancel(1, [], {}, claude())).toBe(1);
+    expect(failed()).toContain('Job 1 is already canceled');
+    lines = [];
+    await runBridgeDelegate('codex', ['Write', 'the tests'], {}, claude());
+    expect(output()).toMatch(/^Job #2 is with codex@/);
   });
 
   it('looks without taking, and says when nothing waits', async () => {

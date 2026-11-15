@@ -223,6 +223,33 @@ export async function runBridgeInbox(
   }
 }
 
+export interface BridgeCancelFlags extends HomeFlags {
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge cancel <job> [reason]: the session that handed a job over takes it back. The
+ * agent it was with is told to stop.
+ */
+export async function runBridgeCancel(
+  job: number,
+  words: readonly string[],
+  flags: BridgeCancelFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const reason = words.join(' ').trim();
+    const canceled = await asSession(flags, context, (client) =>
+      client.cancel(job, reason || undefined)
+    );
+    if (flags.json) printJson(canceled);
+    else context.print(`Job #${canceled.number} is ${canceled.state}, ${canceled.to} is told`);
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
 /**
  * How a session without the bridge's tools answers a letter it was woken with: the command line
  * as the session can run it, whatever its `PATH`.

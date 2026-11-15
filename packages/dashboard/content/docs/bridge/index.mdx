@@ -75,6 +75,7 @@ cogitator bridge delegate codex "Write the tests for the rate limiter" --check "
 cogitator bridge send --job 12 --kind question "Mock Redis or run a real one?"
 cogitator bridge send --job 12 --kind report "Done: 14 tests pass"
 cogitator bridge inbox
+cogitator bridge cancel 12 "Not needed any more"
 ```
 
 A long text is piped in: `git diff | cogitator bridge send --job 12 --kind note -`. A text that starts with a dash goes after `--`, so it is not taken for an option.
