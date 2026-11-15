@@ -29,14 +29,15 @@ const cliLog: BridgeHostLog = {
 export async function hostBridgeInDaemon(
   env: NodeJS.ProcessEnv = process.env,
   report: BridgeHostLog = cliLog,
-  adapters: readonly BridgeAdapter[] = bridgeAdapters(env)
+  adapters?: readonly BridgeAdapter[]
 ): Promise<BridgeHost | undefined> {
   if (env[BRIDGE_HOST_ENV] !== '1') return undefined;
   try {
+    const onError = (error: Error): void => report.warn(`Bridge: ${error.message}`);
     const host = await hostBridge({
       env,
-      adapters,
-      onError: (error) => report.warn(`Bridge: ${error.message}`),
+      adapters: adapters ?? bridgeAdapters(env, { onError }),
+      onError,
     });
     report.info(`Bridge dispatcher hosted here (socket ${host.paths.socket})`);
     void host.stopped.then((reason) => {

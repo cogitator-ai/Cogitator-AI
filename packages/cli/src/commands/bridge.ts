@@ -21,7 +21,7 @@ import {
   type Lease,
 } from '@cogitator-ai/bridge';
 import { CommandError, examplesHelp, printJson, reportFailure } from '../utils/cli.js';
-import { bridgeAdapters } from '../utils/bridge-adapters.js';
+import { bridgeAdapters, CODEX_SANDBOXES } from '../utils/bridge-adapters.js';
 import {
   SENDABLE_KINDS,
   runBridgeDelegate,
@@ -61,6 +61,10 @@ const defaultContext = (): BridgeContext => ({
 
 interface HomeFlags {
   home?: string;
+}
+
+interface ServeFlags extends HomeFlags {
+  codexSandbox?: string;
 }
 
 const DEFAULT_LOG_LINES = 50;
@@ -345,16 +349,24 @@ export async function runBridgeStatus(
 
 /** cogitator bridge serve: the dispatcher in the foreground, until Ctrl-C. */
 export async function runBridgeServe(
-  flags: HomeFlags,
+  flags: ServeFlags,
   context: BridgeContext = defaultContext()
 ): Promise<number> {
   let host: BridgeHost;
   try {
+    const onError = (error: Error): void =>
+      context.io.warn(`${chalk.yellow('!')} ${error.message}`);
     host = await hostBridge({
       ...(flags.home && { home: flags.home }),
       env: context.env,
-      adapters: context.adapters ?? bridgeAdapters(context.env, flags.home),
-      onError: (error) => context.io.warn(`${chalk.yellow('!')} ${error.message}`),
+      adapters:
+        context.adapters ??
+        bridgeAdapters(context.env, {
+          ...(flags.home && { home: flags.home }),
+          ...(flags.codexSandbox && { codexSandbox: flags.codexSandbox }),
+          onError,
+        }),
+      onError,
     });
   } catch (error) {
     if (isBridgeError(error) && error.code === 'already_running') {
@@ -428,7 +440,13 @@ bridgeCommand
   .command('serve')
   .description('Run the dispatcher in the foreground: one per machine, shared by every project')
   .option(...homeOption)
-  .action(async (flags: HomeFlags) => {
+  .addOption(
+    new Option(
+      '--codex-sandbox <mode>',
+      'the sandbox of the Codex threads it starts (default: workspace-write)'
+    ).choices(CODEX_SANDBOXES)
+  )
+  .action(async (flags: ServeFlags) => {
     process.exitCode = await runBridgeServe(flags);
   });
 
