@@ -76,7 +76,7 @@ A job is an [A2A](/docs/integrations/a2a) task underneath, run by the `TaskManag
 | `failed`         | Reported as failed, or failed by a limit              |
 | `canceled`       | Canceled by the agent that handed it over             |
 
-A job also carries who handed it over and who carries it out, the project and the folder, an optional worktree, its checks, its budget and its depth. `verification` says whether the checks confirmed the result: it is absent until someone records it with `recordVerification(job, { verified, summary })`. A report is a claim, the verification is the fact.
+A job also carries who handed it over and who carries it out, the project and the folder, an optional worktree, its checks, its budget and its depth. `verification` says whether the checks confirmed the result. A report is a claim, the verification is the fact, so an agent cannot set it: it is absent until the process that hosts the dispatcher records it with `dispatcher.recordVerification(job, { verified, summary })`, and it is not served on the socket.
 
 ## Letters
 
@@ -153,6 +153,10 @@ const host = await hostBridge({ adapters: [adapter] });
 ```
 
 Without an adapter a session still takes part: its letters wait in its inbox.
+
+## Trust
+
+The bridge is a tool of one person on one machine. The socket and the database are kept to their owner, and every process of that user can connect: read any job and letter, and call as a session by naming its id. Do not point `COGITATOR_BRIDGE_HOME` at a folder other users can write to.
 
 ## Errors
 

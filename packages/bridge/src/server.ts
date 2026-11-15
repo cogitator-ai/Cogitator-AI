@@ -20,7 +20,6 @@ import {
   HelloParamsSchema,
   JobNumberParamsSchema,
   SubscribeJournalParamsSchema,
-  VerifyJobParamsSchema,
   toJsonRpcError,
   type BridgeStatus,
   type DispatcherInfo,
@@ -172,10 +171,6 @@ class Connection {
     on(BRIDGE_METHODS.cancelJob, (value) => {
       const request = params(CancelJobParamsSchema, value);
       return dispatcher.cancel(this.caller(), request.job, request.reason);
-    });
-    on(BRIDGE_METHODS.verifyJob, (value) => {
-      const { job, ...verification } = params(VerifyJobParamsSchema, value);
-      return dispatcher.recordVerification(job, verification);
     });
     on(BRIDGE_METHODS.send, (value) =>
       dispatcher.send(this.caller(), value as Parameters<BridgeDispatcher['send']>[1])

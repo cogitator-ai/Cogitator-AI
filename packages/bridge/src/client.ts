@@ -22,7 +22,6 @@ import type {
   AgentRecord,
   BridgeJob,
   CallerIdentity,
-  JobVerification,
   JournalEntry,
   Letter,
   RenderedLetter,
@@ -152,13 +151,6 @@ export class BridgeClient {
 
   cancel(job: number, reason?: string): Promise<BridgeJob> {
     return this.call(BRIDGE_METHODS.cancelJob, { job, ...(reason !== undefined && { reason }) });
-  }
-
-  recordVerification(
-    job: number,
-    verification: Pick<JobVerification, 'verified' | 'summary'>
-  ): Promise<BridgeJob> {
-    return this.call(BRIDGE_METHODS.verifyJob, { job, ...verification });
   }
 
   job(number: number): Promise<BridgeJob> {

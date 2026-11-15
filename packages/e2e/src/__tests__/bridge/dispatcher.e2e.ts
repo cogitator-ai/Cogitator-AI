@@ -141,8 +141,7 @@ describe('bridge dispatcher', () => {
 
     expect(await claude.job(1)).toMatchObject({ state: 'completed', lettersUsed: 4 });
     expect((await claude.inbox())[0]).toMatchObject({ kind: 'report', outcome: 'completed' });
-    const verified = await claude.recordVerification(1, { verified: true, summary: '14 of 14' });
-    expect(verified.verification).toMatchObject({ verified: true, summary: '14 of 14' });
+    expect((await claude.job(1)).verification).toBeUndefined();
   });
 
   it('shows the same exchange through the command line', async () => {
