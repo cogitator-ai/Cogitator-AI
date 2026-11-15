@@ -70,6 +70,12 @@ export interface BridgeDispatcherOptions {
   newLetterId?: () => string;
   /** Hears what went wrong outside a call: a delivery or a session start that threw */
   onError?: (error: Error) => void;
+  /**
+   * Called inside every transaction before anything is written, to throw when this dispatcher
+   * may not write any more: the host checks its lease here, so a dispatcher that was replaced
+   * while its process slept writes nothing after it wakes
+   */
+  assertWritable?: () => void;
 }
 
 export interface CreateJobResult {
@@ -200,6 +206,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
   private readonly now: () => number;
   private readonly letterId: () => string;
   private readonly onError: (error: Error) => void;
+  private readonly assertWritable: (() => void) | undefined;
   private queue: Promise<unknown> = Promise.resolve();
   private readonly deliveries = new Map<string, Promise<void>>();
   private readonly background = new Set<Promise<void>>();
@@ -220,6 +227,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
     this.now = options.now ?? Date.now;
     this.letterId = options.newLetterId ?? newLetterId;
     this.onError = options.onError ?? (() => undefined);
+    this.assertWritable = options.assertWritable;
     for (const adapter of options.adapters ?? []) {
       if (this.adapters.has(adapter.harness)) {
         throw new BridgeError('invalid_input', `Two adapters for the harness ${adapter.harness}`);
@@ -858,7 +866,10 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> {
   private mutate<T>(work: (tx: Transaction) => Promise<T>): Promise<T> {
     return this.enqueue(async () => {
       const tx: Transaction = { entries: [], wake: new Set(), spawns: [] };
-      const result = await this.store.transaction(() => work(tx));
+      const result = await this.store.transaction(() => {
+        this.assertWritable?.();
+        return work(tx);
+      });
       for (const entry of tx.entries) this.emit('journal', entry);
       for (const spawn of tx.spawns) this.startSession(spawn.agent, spawn.job, spawn.letter);
       for (const agent of tx.wake) this.wake(agent);

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NO_CAPABILITIES, type AgentRecord, type Letter } from '../types';
@@ -6,6 +6,16 @@ import { NO_CAPABILITIES, type AgentRecord, type Letter } from '../types';
 /** A folder that lives for one test, removed by the returned function. */
 export function tempDir(prefix = 'cogitator-bridge-'): { dir: string; remove: () => void } {
   const dir = mkdtempSync(join(tmpdir(), prefix));
+  return { dir, remove: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/**
+ * A folder with a path short enough for a unix socket inside it: the temp folder of macOS is
+ * too deep for that, `/tmp` is not.
+ */
+export function socketDir(): { dir: string; remove: () => void } {
+  const base = process.platform !== 'win32' && existsSync('/tmp') ? '/tmp' : tmpdir();
+  const dir = mkdtempSync(join(base, 'cb-'));
   return { dir, remove: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
