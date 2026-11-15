@@ -147,7 +147,7 @@ function ownerPid(owner: 'daemon' | 'app'): number {
 function resumeWarning(threadId: string): string {
   return (
     `Warning: message was queued, but could not resume thread ${threadId}: ` +
-    'start a local daemon with `codex app-server daemon start`\n'
+    'start a local daemon or specify a server with --remote\n'
   );
 }
 
@@ -1001,14 +1001,16 @@ describe('fake codex', () => {
     expect(existsSync(join(fakes.home, 'codex', 'threads'))).toBe(false);
   });
 
-  it('queues a message for a thread and warns when nobody can resume it', async () => {
+  it('queues a message for a thread and warns when no daemon can resume it', async () => {
     const threadId = await fakes.openCodexThread({ cwd: work });
 
     const queued = await queue(threadId, 'say: later');
     const resumed = await queue(threadId, '- say: a list item', '--resume', '-C', work);
     const unknown = await queue('no-such-thread', 'say: hi', '--resume');
 
-    const stdout = `Queued message for thread ${threadId}\n`;
+    const stdout = expect.stringMatching(
+      new RegExp(`^Queued message [0-9a-f-]{36} for thread ${threadId}\\.\\n$`)
+    ) as unknown as string;
     expect(queued).toEqual({ code: 0, stdout, stderr: '' });
     expect(resumed).toEqual({ code: 0, stdout, stderr: resumeWarning(threadId) });
     expect(unknown).toEqual({
@@ -1019,7 +1021,7 @@ describe('fake codex', () => {
     expect(fakes.transcript('codex', threadId)).toEqual([]);
   });
 
-  it('resumes without a warning when the owner of the thread is alive', async () => {
+  it('resumes without a warning only when the daemon runs, whoever has the thread open', async () => {
     const owned = await fakes.openCodexThread({ cwd: work });
     const ownerless = await fakes.openCodexThread({ cwd: work, owner: 'none' });
 
@@ -1031,7 +1033,7 @@ describe('fake codex', () => {
     const ownedWithDaemon = await queue(owned, 'say: two', '--resume');
     const ownerlessWithDaemon = await queue(ownerless, 'say: two', '--resume');
 
-    expect(ownedWithApp).toMatchObject({ code: 0, stderr: '' });
+    expect(ownedWithApp).toMatchObject({ code: 0, stderr: resumeWarning(owned) });
     expect(ownerlessWithApp).toMatchObject({ code: 0, stderr: resumeWarning(ownerless) });
     expect(ownedWithDaemon).toMatchObject({ code: 0, stderr: '' });
     expect(ownerlessWithDaemon).toMatchObject({ code: 0, stderr: '' });

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BridgeAdapter } from '../adapter';
 import { claudeCodeAdapter, claudeWaitHook, hasClaudeWaitHook } from '../adapters/claude';
-import { CODEX_ASLEEP_NOTE, codexAdapter } from '../adapters/codex';
+import { CODEX_NOT_RESUMED_NOTE, codexAdapter } from '../adapters/codex';
 import { BridgeClient } from '../client';
 import { hostBridge, type BridgeHost } from '../host';
 import { bridgePaths } from '../paths';
@@ -549,7 +549,7 @@ describe.skipIf(!posix)('the Codex adapter', () => {
         ),
       'the delivery to be recorded'
     );
-    expect(delivered.data).toBeUndefined();
+    expect(delivered.data).toEqual({ note: CODEX_NOT_RESUMED_NOTE });
     expect((await conductor.job(1)).state).toBe('working');
     expect(errors).toEqual([]);
   });
@@ -577,7 +577,7 @@ describe.skipIf(!posix)('the Codex adapter', () => {
     expect(inbox.body).toBe(long);
   });
 
-  it('says so in the journal when nothing will wake the thread', async () => {
+  it('says so in the journal when no daemon is there to resume the thread', async () => {
     const threadId = await fakes.openCodexThread({ cwd: project, owner: 'none' });
     const host = await startHost([codex()]);
     await host.dispatcher.register({
@@ -597,12 +597,22 @@ describe.skipIf(!posix)('the Codex adapter', () => {
         ),
       'the delivery to be recorded'
     );
-    expect(delivered.data).toEqual({ note: CODEX_ASLEEP_NOTE });
+    expect(delivered.data).toEqual({ note: CODEX_NOT_RESUMED_NOTE });
     expect(fakes.transcript('codex', threadId)).toEqual([]);
 
     await fakes.startCodexDaemon();
     const turn = await fakes.waitForTurn('codex', threadId, () => true);
     expect(turn.input).toContain('Write the tests');
+
+    await conductor.send({ job: 1, kind: 'note', body: 'Skip the generated files' });
+    await fakes.waitForTurn('codex', threadId, (next) => next.input.includes('Skip the generated'));
+    const deliveries = (await conductor.readJournal({ job: 1 })).filter(
+      (entry) => entry.type === 'letter.delivered'
+    );
+    expect(deliveries.map((entry) => entry.data)).toEqual([
+      { note: CODEX_NOT_RESUMED_NOTE },
+      undefined,
+    ]);
   });
 
   it('tries again when Codex refuses the letter, and gives up after the limit', async () => {
