@@ -11,16 +11,25 @@ import {
   type CallerIdentity,
   type JournalEntry,
 } from '@cogitator-ai/bridge';
+import { installFakeHarnesses, type FakeHarnesses } from '@cogitator-ai/bridge/testing';
 
 const CLI = fileURLToPath(new URL('../../../../cli/dist/index.js', import.meta.url));
 
 let bridgeDir: string;
 let projectDir: string;
+/** Stand-ins of Claude Code and Codex, so the dispatcher's adapters never run the real ones */
+let fakes: FakeHarnesses | undefined;
 const children: ChildProcess[] = [];
 const clients: BridgeClient[] = [];
 
 function env(): NodeJS.ProcessEnv {
-  return { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', COGITATOR_BRIDGE_HOME: bridgeDir };
+  const base = {
+    ...process.env,
+    FORCE_COLOR: '0',
+    NO_COLOR: '1',
+    COGITATOR_BRIDGE_HOME: bridgeDir,
+  };
+  return fakes ? fakes.env(base) : base;
 }
 
 interface Dispatcher {
@@ -94,6 +103,7 @@ function scratch(prefix: string): string {
 beforeEach(() => {
   bridgeDir = scratch('cb-e2e-');
   projectDir = scratch('cb-proj-');
+  fakes = process.platform === 'win32' ? undefined : installFakeHarnesses();
 });
 
 afterEach(async () => {
@@ -105,6 +115,7 @@ afterEach(async () => {
       await exited;
     }
   }
+  await fakes?.cleanup();
   rmSync(bridgeDir, { recursive: true, force: true });
   rmSync(projectDir, { recursive: true, force: true });
 });
