@@ -257,12 +257,12 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     return parsed.data;
   }
 
-  async function sessionOf(shortId: string): Promise<{ sessionId: string; name?: string }> {
+  async function sessionOf(shortId: string): Promise<{ sessionId: string }> {
     const deadline = Date.now() + (options.sessionListedMs ?? DEFAULT_SESSION_LISTED_MS);
     for (;;) {
       const session = (await listed()).find((candidate) => candidate.id === shortId);
       if (session?.sessionId) {
-        return { sessionId: session.sessionId, ...(session.name && { name: session.name }) };
+        return { sessionId: session.sessionId };
       }
       if (Date.now() >= deadline) {
         throw new Error(
@@ -309,7 +309,7 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
         `claude --bg did not say which session it started: ${failureOf({ ...result, stderr: '' })}`
       );
     }
-    let session: { sessionId: string; name?: string };
+    let session: { sessionId: string };
     try {
       session = await sessionOf(shortId);
     } catch (error) {
@@ -318,7 +318,7 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     }
     return {
       sessionId: session.sessionId,
-      ...(session.name && { sessionName: session.name }),
+      ...(request.sessionName && { sessionName: request.sessionName }),
       deliveredFirstLetter: whole,
     };
   }
