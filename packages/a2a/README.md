@@ -238,7 +238,7 @@ Each task then belongs to the user who created it:
 - A new message with a `contextId` that holds another user's tasks is refused with `-32602 Invalid params`.
 - Runs carry the `userId`, so the agent's threads and memory are scoped to the user too.
 
-Returning `true` admits the caller without a user: every such caller shares one space and sees only tasks without an owner. The owner is kept in the task's metadata and never sent to clients. A custom `TaskStore` must honour `filter.visibleTo` in `list()` (`InMemoryTaskStore` and `RedisTaskStore` do).
+Returning `true` admits the caller without a user: every such caller shares one space and sees only tasks without an owner. The owner is kept in the task's metadata and never sent to clients. A custom `TaskStore` must honour `filter.visibleTo` in `list()` (`InMemoryTaskStore` and `RedisTaskStore` do). The helpers they use are exported for a store of your own: `isTaskVisibleTo(task, userId)`, `taskTime(task)`, `taskCreatedAt(task)` and `compareTasksNewestFirst(a, b)`.
 
 ## Send Configuration
 

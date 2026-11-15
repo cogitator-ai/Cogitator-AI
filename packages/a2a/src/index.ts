@@ -197,7 +197,13 @@ export {
 } from './errors.js';
 export type { A2AErrorOptions, FieldViolation } from './errors.js';
 
-export { TASK_AGENT_KEY } from './ownership.js';
+export {
+  TASK_AGENT_KEY,
+  compareTasksNewestFirst,
+  isTaskVisibleTo,
+  taskCreatedAt,
+  taskTime,
+} from './ownership.js';
 
 export {
   A2A_PROTOCOL_VERSION,
