@@ -39,14 +39,17 @@ function scratch(prefix: string): string {
   return realpathSync(mkdtempSync(join(base, prefix)));
 }
 
+/** `extra` goes in last: it may name the session a command is run as */
 function env(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  return fakes.env({
-    ...process.env,
-    FORCE_COLOR: '0',
-    NO_COLOR: '1',
-    COGITATOR_BRIDGE_HOME: bridgeDir,
+  return {
+    ...fakes.env({
+      ...process.env,
+      FORCE_COLOR: '0',
+      NO_COLOR: '1',
+      COGITATOR_BRIDGE_HOME: bridgeDir,
+    }),
     ...extra,
-  });
+  };
 }
 
 async function until<T>(
@@ -297,6 +300,116 @@ describe.skipIf(!posix)('bridge adapters', () => {
     expect(log).toContain('nothing wakes the thread');
     expect(log).toContain('codex app-server daemon start');
     expect(claudeAgent.delivery).toBe('hook');
+  });
+});
+
+describe.skipIf(!posix)('bridge wait', () => {
+  it('wakes with the mail on stderr and exit code 2, and says nothing on stdout', async () => {
+    await serve();
+    const codex = { CODEX_THREAD_ID: 'thread-waits' };
+    const claude = { CLAUDE_CODE_SESSION_ID: 'claude-sends' };
+    expect(cli(['inbox'], codex).status).toBe(0);
+    const waiting = spawn(process.execPath, [CLI, 'bridge', 'wait', '--timeout', '30'], {
+      env: env(codex),
+      cwd: project,
+    });
+    children.push(waiting);
+    let stdout = '';
+    let stderr = '';
+    waiting.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
+    waiting.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+    const exited = new Promise<number | null>((resolve) => waiting.once('exit', resolve));
+    const client = await watch();
+    await until(async () => (await client.status()).waiting.length === 1, 'the waiter to arm');
+
+    expect(cli(['delegate', 'codex', 'Write the tests'], claude).status).toBe(0);
+
+    expect(await exited).toBe(2);
+    expect(stdout).toBe('');
+    expect(stderr.split('\n').slice(0, 2)).toEqual([
+      expect.stringMatching(/^\[agent bridge\] job #1 .* \| not typed by the user$/),
+      'Write the tests',
+    ]);
+    expect(stderr).toContain('bridge send --job <number> --kind');
+    await until(
+      async () => (await client.letters({ job: 1 }))[0].state === 'delivered',
+      'the letter to be confirmed'
+    );
+  });
+
+  it('never exits with 2 without mail: not on a timeout, a typo or a missing session', async () => {
+    await serve();
+    const codex = { CODEX_THREAD_ID: 'thread-waits' };
+
+    expect(cli(['wait', '--timeout', '1'], codex)).toMatchObject({
+      status: 0,
+      stdout: '',
+      stderr: '',
+    });
+    const typo = cli(['wait', '--bogus'], codex);
+    expect(typo.status).toBe(1);
+    expect(typo.stderr).toContain("unknown option '--bogus'");
+    expect(cli(['wait', '--timeout', '30.5'], codex).status).toBe(1);
+    expect(cli(['wait', '--timeout', '1']).status).toBe(1);
+    expect(cli(['wait', '--hook', 'claude-code', '--timeout', '1']).status).toBe(1);
+    expect(cli(['send', '--bogus'], codex).status).toBe(2);
+  });
+});
+
+describe.skipIf(!posix)('a dispatcher in a folder of its own', () => {
+  it('is the one the sessions it starts call, though nothing in their environment names it', async () => {
+    fakes.trustFolder(project);
+    const own = scratch('cb-own-');
+    try {
+      const child = spawn(process.execPath, [CLI, 'bridge', 'serve', '--home', own], {
+        env: fakes.env({ ...process.env, FAKE_CLAUDE_BG_CLEAN_ENV: '1' }),
+      });
+      children.push(child);
+      let output = '';
+      child.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()));
+      child.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()));
+      await until(
+        () => output.includes('Bridge dispatcher running'),
+        'the dispatcher',
+        () => output
+      );
+      const client = await BridgeClient.connect({
+        socketPath: bridgePaths({ home: own }).socket,
+        caller: { harness: 'conductor', sessionId: 'c1', cwd: project, project },
+      });
+      try {
+        await client.createJob({ to: 'claude', body: 'Review the diff' });
+        const agent = await until(
+          async () => (await client.agents({ harness: 'claude-code', statuses: ['active'] }))[0],
+          'the session to start',
+          () => output
+        );
+        await until(
+          async () => (await client.status()).waiting.includes(agent.name),
+          'the hook of the session to find the dispatcher by --home',
+          () => output
+        );
+
+        await client.send({ job: 1, kind: 'note', body: 'Skip the generated files' });
+
+        const woken = await fakes.waitForTurn('claude', agent.sessionId, (turn) =>
+          turn.input.includes('Skip the generated files')
+        );
+        expect(woken.wokenBy).toBe('hook');
+        expect(woken.input).toContain(`--home ${own}`);
+      } finally {
+        await client.close();
+      }
+    } finally {
+      for (const child of children.splice(0)) {
+        if (child.exitCode === null && child.signalCode === null) {
+          const exited = new Promise((resolve) => child.once('exit', resolve));
+          child.kill('SIGTERM');
+          await exited;
+        }
+      }
+      rmSync(own, { recursive: true, force: true });
+    }
   });
 });
 
