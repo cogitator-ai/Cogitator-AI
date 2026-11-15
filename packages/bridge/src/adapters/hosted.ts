@@ -325,7 +325,7 @@ export interface ProviderSessionsOptions {
  * ```ts
  * const gemini = hostedAdapter({
  *   harness: 'gemini',
- *   open: providerSessions({ provider: new AcpAgentProvider({ ...acpAgent('gemini'), workspace }) }),
+ *   open: providerSessions({ provider: new AcpAgentProvider({ agent, workspace, name: 'gemini' }) }),
  * });
  * ```
  */

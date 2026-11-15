@@ -60,7 +60,7 @@ cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 | `cogitator acp`            | Serve a Cogitator coding agent to an editor over the Agent Client Protocol (stdio)                              |
 | `cogitator build`          | Bundle a gateway into a self-starting `dist/cogitator.mjs`                                                      |
 | `cogitator daemon <cmd>`   | Run in the background / install as a launchd or systemd service                                                 |
-| `cogitator bridge <cmd>`   | Run and watch the agent bridge between harnesses (experimental)                                                 |
+| `cogitator bridge <cmd>`   | Run and watch the agent bridge between harnesses, and call it from a session (experimental)                     |
 | `cogitator skill <cmd>`    | Create, validate, install and remove skills                                                                     |
 | `cogitator models`         | List or pull Ollama models                                                                                      |
 | `cogitator status`         | Show Docker Compose and Ollama status (alias: `ps`)                                                             |
@@ -76,7 +76,7 @@ Every command ends with examples in its `--help`.
 
 ### Output and exit codes
 
-Every command exits with `0` when it did what was asked, `1` when it could not (a failed check, deploy or install, a missing service) and `2` when the command line is wrong (an unknown option, command or value, with the closest valid name). Failures print the message and what to do about it on stderr; `COGITATOR_DEBUG=1` adds the stack trace. With `--json` (`add`, `doctor`, `eval`, `models`, `status`, `deploy`, `bridge status`, `bridge log`) the result goes to stdout as JSON, and a failure as `{ "ok": false, "error": { "message", "exitCode", "hints" } }`.
+Every command exits with `0` when it did what was asked, `1` when it could not (a failed check, deploy or install, a missing service) and `2` when the command line is wrong (an unknown option, command or value, with the closest valid name). Failures print the message and what to do about it on stderr; `COGITATOR_DEBUG=1` adds the stack trace. With `--json` (`add`, `doctor`, `eval`, `models`, `status`, `deploy`, `bridge status`, `bridge log`, `bridge doctor`, `bridge delegate`, `bridge send`, `bridge inbox`) the result goes to stdout as JSON, and a failure as `{ "ok": false, "error": { "message", "exitCode", "hints" } }`.
 
 ---
 
@@ -443,11 +443,27 @@ cogitator bridge log --follow         # keep printing what comes in
 cogitator bridge log --job 12         # everything about one job
 cogitator bridge log --all            # the whole journal
 cogitator bridge log --json           # one line of JSON per entry
+cogitator bridge doctor [--json]      # whether Claude Code and Codex can be reached, and what to fix
 ```
 
-`serve` refuses to start while another dispatcher runs and names its PID. `status` exits 0 when a dispatcher runs and 1 when none does. `log` reads the store itself, so it works after the dispatcher stopped, and prints what agents wrote on one line each without control characters. The files live in `~/.cogitator/bridge` (`bridge.db`, `bridge.sock`), `COGITATOR_BRIDGE_HOME` or `--home <dir>` moves them.
+`serve` reaches Claude Code and Codex sessions through their own commands: it starts a session for a job (`claude --bg`, `codex exec`), hands letters to Codex threads (`codex queue`) and answers the hooks of Claude Code sessions that wait for mail. It refuses to start while another dispatcher runs and names its PID. `status` exits 0 when a dispatcher runs and 1 when none does. `log` reads the store itself, so it works after the dispatcher stopped, and prints what agents wrote on one line each without control characters. The files live in `~/.cogitator/bridge` (`bridge.db`, `bridge.sock`), `COGITATOR_BRIDGE_HOME` or `--home <dir>` moves them.
 
 With `cogitator daemon start --bridge` the assistant daemon hosts the dispatcher, so no second process is needed.
+
+`doctor` checks the dispatcher, then each harness: its version, the commands the bridge needs from it, whether Claude Code trusts the folder (`--cwd <dir>`, the current one by default), whether sessions opened in it carry the wake hook, and whether Codex's local daemon runs. Every finding that is not fine comes with what to do. It exits 1 when something the bridge needs is missing, 0 when at most warnings are left.
+
+A session of an agent calls the bridge from its shell, known by the id its harness put into the environment (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`):
+
+```bash
+cogitator bridge delegate <to> [text...]   # hand a job over: --title, --cwd, --check <command>, --parent <job>
+cogitator bridge send [text...] --job <n> --kind <question|answer|report|note|permission>
+cogitator bridge inbox                     # the letters that wait: --job <n>, --peek, --unhandled
+cogitator bridge wait                      # wait for mail and exit with 2 when it comes
+```
+
+`delegate` prints the number of the job and returns at once, the answer arrives as a letter. `<to>` is `codex`, `claude`, the name of an agent, or `codex:new` for a fresh session. The text of `delegate` and `send` is the arguments, or stdin when there are none or they are `-`. `send --kind report --failed` reports a job that could not be done, `--reply-to <letter>` names the letter an answer is for. All three take `--json`.
+
+`wait` is what the wake hook of a Claude Code session runs: it waits for the mail of the session (`--timeout <seconds>`, 600 by default), and when a letter comes writes it to stderr and exits with code 2, which makes Claude Code wake the session with it. With `--hook claude-code` it takes the session from what Claude Code wrote to the hook's stdin. Without mail it exits with 0 and prints nothing. See the [Agent Bridge guide](/docs/bridge#claude-code-and-codex) for the hook itself.
 
 ---
 
