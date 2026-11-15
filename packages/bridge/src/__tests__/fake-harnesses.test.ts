@@ -186,6 +186,10 @@ describe('installFakeHarnesses', () => {
       expect(fakes.env().COGITATOR_BRIDGE_HOME).toBe(join(fakes.home, 'bridge'));
       expect(fakes.env({ COGITATOR_BRIDGE_HOME: '/given' }).COGITATOR_BRIDGE_HOME).toBe('/given');
       expect(fakes.env({ CLAUDE_CONFIG_DIR: '/given' }).CLAUDE_CONFIG_DIR).toBe('/given');
+      expect(fakes.env({ ...process.env }).COGITATOR_BRIDGE_HOME).toBe(join(fakes.home, 'bridge'));
+      expect(
+        fakes.env({ ...process.env, COGITATOR_BRIDGE_HOME: '/mine' }).COGITATOR_BRIDGE_HOME
+      ).toBe('/mine');
     } finally {
       if (before === undefined) delete process.env.COGITATOR_BRIDGE_HOME;
       else process.env.COGITATOR_BRIDGE_HOME = before;

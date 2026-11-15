@@ -65,9 +65,10 @@ export interface FakeHarnesses {
    * `base` (default `process.env`) with the fakes first on PATH and their state folder set.
    * Session id variables of a surrounding real harness (`CLAUDE_CODE_SESSION_ID`,
    * `CODEX_THREAD_ID`) are removed. The bridge's folder (`COGITATOR_BRIDGE_HOME`) and Claude
-   * Code's (`CLAUDE_CONFIG_DIR`) are those `base` or the options name, and never those of the
-   * machine: without either they are folders inside the fakes' own, so nothing under test
-   * reaches a real dispatcher or reads real settings by accident
+   * Code's (`CLAUDE_CONFIG_DIR`) are those the options name, or `base` when it differs there
+   * from the environment of the tests themselves, and never those of the machine: otherwise
+   * they are folders inside the fakes' own, so nothing under test reaches a real dispatcher or
+   * reads real settings by accident
    */
   env(base?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   /** Marks a folder as one Claude Code trusts */
@@ -125,6 +126,15 @@ interface Folders {
   created: string[];
 }
 
+/**
+ * The value a caller gave a variable on purpose: one in `base` that is not simply what the
+ * process running the tests has, as in `env({ ...process.env, COGITATOR_BRIDGE_HOME: mine })`.
+ */
+function named(base: NodeJS.ProcessEnv | undefined, variable: string): string | undefined {
+  const value = base?.[variable];
+  return value !== undefined && value !== process.env[variable] ? value : undefined;
+}
+
 const HARNESSES: Harness[] = ['claude', 'codex'];
 const SURROUNDING_SESSION_VARIABLES = ['CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID'];
 /**
@@ -161,7 +171,7 @@ export function installFakeHarnesses(options: FakeHarnessOptions = {}): FakeHarn
       ...Object.fromEntries(
         Object.entries(OWN_FOLDERS).map(([variable, folder]) => [
           variable,
-          options.env?.[variable] ?? base?.[variable] ?? join(home, folder),
+          options.env?.[variable] ?? named(base, variable) ?? join(home, folder),
         ])
       ),
     };
@@ -370,15 +380,22 @@ function pidsOf(record: unknown): number[] {
   return [pid, ...hooks].filter(isPid);
 }
 
-/** The processes the state names: sessions, their running hooks, the daemon and the app */
+/**
+ * The processes the state names: sessions, their running hooks, the daemon, the app and every
+ * `codex exec` in the middle of its turn
+ */
 function recordedPids(home: string): number[] {
   const sessions = join(home, 'claude', 'sessions');
+  const threads = join(home, 'codex', 'threads');
   const records = [
     ...namesIn(sessions)
       .filter((name) => name.endsWith('.json'))
       .map((name) => join(sessions, name)),
     join(home, 'codex', 'daemon.json'),
     join(home, 'codex', 'app.json'),
+    ...namesIn(threads)
+      .filter((name) => name.endsWith('.pid'))
+      .map((name) => join(threads, name)),
   ];
   return records.flatMap((file) => pidsOf(readJson(file)));
 }

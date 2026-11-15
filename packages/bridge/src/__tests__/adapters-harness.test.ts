@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BridgeAdapter } from '../adapter';
 import { claudeCodeAdapter, claudeWaitHook, hasClaudeWaitHook } from '../adapters/claude';
 import { CODEX_ASLEEP_NOTE, codexAdapter } from '../adapters/codex';
@@ -100,6 +100,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(clients.map((client) => client.close().catch(() => undefined)));
   for (const host of hosts) await host.close();
   await fakes.cleanup();
@@ -186,16 +187,14 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
   it('keeps one waiter when a person talks to the session while it waits', async () => {
     fakes.trustFolder(project);
     const host = await startHost([claudeAdapter()]);
+    const waits = vi.spyOn(host.dispatcher, 'wait');
     const conductor = await orchestrator();
     await conductor.createJob({ to: 'claude', body: 'Review the diff' });
     const agent = await until(
       async () => (await conductor.agents({ harness: 'claude-code', statuses: ['active'] }))[0],
       'the session to start'
     );
-    await until(
-      async () => (await host.dispatcher.status()).waiting.includes(agent.name) || undefined,
-      'the hook to wait'
-    );
+    await until(() => waits.mock.calls.length === 1 || undefined, 'the first hook to wait');
 
     await fakes.say(agent.sessionId, 'say: still here');
     const typed = await fakes.waitForTurn(
@@ -204,21 +203,18 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
       (turn) => turn.wokenBy === 'user'
     );
     expect(typed.answer).toBe('still here');
-    await until(
-      async () => (await host.dispatcher.status()).waiting.includes(agent.name) || undefined,
-      'a hook to wait after the typed turn'
-    );
-    await conductor.send({ job: 1, kind: 'note', body: 'Skip the generated files' });
-    await until(
-      async () =>
-        (await conductor.letters({ job: 1, kinds: ['note'] }))[0].state === 'delivered' ||
-        undefined,
-      'the note to be confirmed'
-    );
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await until(() => waits.mock.calls.length === 2 || undefined, 'the hook of the typed turn');
 
+    expect(await waits.mock.results[0].value).toEqual({ letters: [], reason: 'replaced' });
+    expect((await host.dispatcher.status()).waiting).toEqual([agent.name]);
+
+    await conductor.send({ job: 1, kind: 'note', body: 'Skip the generated files' });
+    await until(() => waits.mock.calls.length === 3 || undefined, 'the hook after the woken turn');
+
+    expect(await waits.mock.results[1].value).toMatchObject({ reason: 'letters' });
     const turns = fakes.transcript('claude', agent.sessionId);
     expect(turns.filter((turn) => turn.input.includes('Skip the generated files'))).toHaveLength(1);
+    expect(turns.map((turn) => turn.wokenBy)).toEqual(['prompt', 'user', 'hook']);
     expect(errors).toEqual([]);
   });
 
@@ -262,6 +258,83 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
     ) as { settings?: unknown };
     expect(JSON.stringify(record.settings)).toContain(`--home ${home}`);
     expect(JSON.stringify(claudeWaitHook())).not.toContain('--home');
+  });
+
+  it('hands a session a notice for a first letter too long for an argument, then the letter itself', async () => {
+    fakes.trustFolder(project);
+    const host = await startHost([claudeAdapter()]);
+    const conductor = await orchestrator();
+    const long = `Review this:\n${'x'.repeat(130_000)}\nTHE END OF THE LETTER`;
+
+    await conductor.createJob({ to: 'claude', title: 'A long one', body: long });
+    const agent = await until(
+      async () => (await conductor.agents({ harness: 'claude-code', statuses: ['active'] }))[0],
+      'the session to start'
+    );
+
+    const first = await fakes.waitForTurn('claude', agent.sessionId, () => true);
+    expect(first.input.split('\n')).toEqual([
+      expect.stringMatching(/^\[agent bridge\] job #1 "A long one" \| task from conductor@/),
+      expect.stringMatching(
+        new RegExp(
+          `^This letter is ${long.length} characters long, too long to hand over here\\. Read it from the bridge: .* bridge inbox --job 1 --home `
+        )
+      ),
+    ]);
+    const whole = await fakes.waitForTurn('claude', agent.sessionId, (turn) =>
+      turn.input.includes('THE END OF THE LETTER')
+    );
+    expect(whole.wokenBy).toBe('hook');
+    await until(
+      async () => (await conductor.letters({ job: 1 }))[0].state === 'delivered' || undefined,
+      'the letter to be confirmed'
+    );
+    expect((await host.dispatcher.job(1)).state).toBe('working');
+  });
+
+  it('stops a background session that never shows up among the running ones', async () => {
+    const calls = join(home, 'calls.log');
+    const stub = join(home, 'claude-stub');
+    writeFileSync(
+      stub,
+      [
+        '#!/bin/sh',
+        `echo "$*" >> "${calls}"`,
+        'case "$1" in',
+        '  --bg) echo "backgrounded · deadbeef · stub" ;;',
+        '  agents) echo "[]" ;;',
+        'esac',
+        '',
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+    const adapter = claudeAdapter({ command: stub, sessionListedMs: 300 });
+
+    await expect(
+      adapter.createSession?.({
+        agentName: 'claude@demo',
+        harness: 'claude-code',
+        project,
+        cwd: project,
+        job: { number: 1 } as never,
+        firstLetter: { text: '[agent bridge] job #1', body: 'x', job: 1 } as never,
+      })
+    ).rejects.toThrow(
+      'Claude Code started the background session deadbeef, but it never showed up in claude agents --json'
+    );
+
+    const ran = readFileSync(calls, 'utf8').trim().split('\n');
+    expect(ran[0]).toMatch(/^--bg --settings /);
+    expect(ran.at(-1)).toBe('stop deadbeef');
+  });
+
+  it('says so when Claude Code cannot list its sessions', async () => {
+    const stub = join(home, 'claude-broken');
+    writeFileSync(stub, '#!/bin/sh\necho "not logged in" >&2\nexit 1\n', { mode: 0o755 });
+
+    await expect(claudeAdapter({ command: stub }).liveSessions?.()).rejects.toThrow(
+      'claude agents --json failed: not logged in'
+    );
   });
 
   it('explains what to do when Claude Code does not trust the folder', async () => {
@@ -481,6 +554,29 @@ describe.skipIf(!posix)('the Codex adapter', () => {
     expect(errors).toEqual([]);
   });
 
+  it('queues a notice for a letter too long for an argument, and the letter stays in the inbox', async () => {
+    await fakes.startCodexApp();
+    const threadId = await fakes.openCodexThread({ cwd: project });
+    const host = await startHost([codex({ bridgeCommand: 'node /opt/cli.js bridge' })]);
+    const agent = await host.dispatcher.register({
+      harness: 'codex',
+      sessionId: threadId,
+      cwd: project,
+      project,
+    });
+    const conductor = await orchestrator();
+    const long = `Port this:\n${'y'.repeat(130_000)}`;
+
+    await conductor.createJob({ to: 'codex', title: 'A long one', body: long });
+
+    const turn = await fakes.waitForTurn('codex', threadId, () => true);
+    expect(turn.input.split('\n')[1]).toBe(
+      `This letter is ${long.length} characters long, too long to hand over here. Read it from the bridge: node /opt/cli.js bridge inbox --job 1 --home ${home}`
+    );
+    const [inbox] = await host.dispatcher.inbox(agent.name);
+    expect(inbox.body).toBe(long);
+  });
+
   it('says so in the journal when nothing will wake the thread', async () => {
     const threadId = await fakes.openCodexThread({ cwd: project, owner: 'none' });
     const host = await startHost([codex()]);
@@ -561,7 +657,12 @@ describe.skipIf(!posix)('the Codex adapter', () => {
     expect(turn.ran[0].stdout).toBe(`${agent.sessionId}|${agent.name}|read-only`);
     const [log] = readdirSync(join(home, 'sessions'));
     expect(log).toMatch(/^codex-codex_.*\.log$/);
-    expect(readFileSync(join(home, 'sessions', log), 'utf8')).toContain('"type":"turn.completed"');
+    await until(
+      () =>
+        readFileSync(join(home, 'sessions', log), 'utf8').includes('"type":"turn.completed"') ||
+        undefined,
+      'the thread to finish its turn by itself'
+    );
     expect(errors).toEqual([]);
   });
 

@@ -75,6 +75,62 @@ describe('the adapter contract, kept by hosted sessions', () => {
     });
   });
 
+  describe('kept by an adapter that only delivers', () => {
+    const heard = new Map<string, string[]>();
+    const target: AdapterConformanceTarget = {
+      home,
+      cwd: '/work/demo',
+      supports: [],
+      create: () => ({
+        harness: 'pager',
+        delivery: 'page',
+        capabilities: { createSession: false, push: true, steer: false, nativeWindow: true },
+        deliver: async ({ agent, letter }) => {
+          heard.set(agent.sessionId, [...(heard.get(agent.sessionId) ?? []), letter.text]);
+        },
+      }),
+      openSession: async () => 'pager-1',
+      received: async (sessionId, needle) => {
+        const deadline = Date.now() + 5_000;
+        while (!heard.get(sessionId)?.some((text) => text.includes(needle))) {
+          if (Date.now() > deadline) throw new Error(`The session never got "${needle}"`);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      },
+    };
+    const cases = adapterConformanceCases(target);
+
+    for (const conformance of cases) {
+      it.skipIf(conformance.skip !== undefined)(conformance.name, () => conformance.run());
+    }
+
+    it('checks the delivery to a session the target opened', () => {
+      expect(cases.find((entry) => entry.name === 'delivers-a-letter')?.skip).toBeUndefined();
+      const without = adapterConformanceCases({ ...target, openSession: undefined });
+      expect(without.find((entry) => entry.name === 'delivers-a-letter')?.skip).toBe(
+        'the adapter starts no session and the target opens none'
+      );
+    });
+  });
+
+  it('asks a target whose adapter identifies sessions for a process to identify', async () => {
+    const target: AdapterConformanceTarget = {
+      ...hostedTarget(),
+      supports: ['identify'],
+      create: () => ({
+        harness: 'pager',
+        delivery: 'page',
+        capabilities: { createSession: false, push: false, steer: false, nativeWindow: false },
+        identify: () => undefined,
+      }),
+    };
+    const identifies = adapterConformanceCases(target).find(
+      (entry) => entry.name === 'identifies-its-sessions'
+    );
+
+    await expect(identifies?.run()).rejects.toThrow('gives processOf');
+  });
+
   it('notices an adapter that lost something its target says it has', async () => {
     const target = {
       ...hostedTarget(),
