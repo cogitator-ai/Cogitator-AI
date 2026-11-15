@@ -292,12 +292,12 @@ describe.skipIf(!posix)('bridge adapters', () => {
     await fakes.say(claude, 'run: sh ./note.sh');
     await until(
       async () => (await journalOf(1)).find((entry) => entry.data?.note !== undefined),
-      'the note about the sleeping thread'
+      'the note about the thread no daemon resumed'
     );
 
     const log = cli(['log', '--job', '1']).stdout;
     expect(log).toContain(`delivered to ${worker.name}`);
-    expect(log).toContain('nothing wakes the thread');
+    expect(log).toContain('no local daemon runs to resume the thread');
     expect(log).toContain('codex app-server daemon start');
     expect(claudeAgent.delivery).toBe('hook');
   });

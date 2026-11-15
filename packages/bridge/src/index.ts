@@ -145,7 +145,7 @@ export type {
   ClaudeTrust,
   ClaudeWaitHookOptions,
 } from './adapters/claude.js';
-export { CODEX_ASLEEP_NOTE, CODEX_DELIVERY, codexAdapter } from './adapters/codex.js';
+export { CODEX_NOT_RESUMED_NOTE, CODEX_DELIVERY, codexAdapter } from './adapters/codex.js';
 export type { CodexAdapterOptions, CodexSandbox } from './adapters/codex.js';
 export {
   HOSTED_DELIVERY,

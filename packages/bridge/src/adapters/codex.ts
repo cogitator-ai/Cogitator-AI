@@ -50,13 +50,18 @@ export interface CodexAdapterOptions {
 
 const DEFAULT_THREAD_STARTED_MS = 60_000;
 const LOG_INTERVAL_MS = 100;
-const NO_OWNER = /could not resume thread/i;
+const NOT_RESUMED = /could not resume thread/i;
 const DAEMON_START = 'codex app-server daemon start';
 
-/** What the journal says of a letter Codex queued for a thread nothing will wake. */
-export const CODEX_ASLEEP_NOTE =
-  'Codex queued the letter, but nothing wakes the thread: it is open in no Codex app and no ' +
-  `local daemon runs. It is read when the thread is opened, or at once with: ${DAEMON_START}`;
+/**
+ * What the journal says of a letter Codex queued with no local daemon to resume the thread.
+ * `codex queue --resume` warns the same whether the Codex app has the thread open or nobody
+ * does, so the note names both cases.
+ */
+export const CODEX_NOT_RESUMED_NOTE =
+  'Codex queued the letter, and no local daemon runs to resume the thread. A thread open in the ' +
+  'Codex app reads it at once, one open nowhere when it is opened, or at once with: ' +
+  DAEMON_START;
 
 /** The id of the thread `codex exec --json` says it started, when its output has it already. */
 export function codexThreadId(output: string): string | undefined {
@@ -106,7 +111,7 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
       { cwd: agent.cwd, env }
     );
     if (result.code !== 0) throw new Error(`codex queue failed: ${failureOf(result)}`);
-    return NO_OWNER.test(result.stderr) ? { note: CODEX_ASLEEP_NOTE } : undefined;
+    return NOT_RESUMED.test(result.stderr) ? { note: CODEX_NOT_RESUMED_NOTE } : undefined;
   }
 
   async function createSession(request: SessionRequest): Promise<CreatedSession> {

@@ -121,7 +121,7 @@ const QUEUE_HELP = [
   'Options:',
   '      --thread <THREAD>  The thread that gets the message',
   '      --message <TEXT>   The text of the message',
-  '      --resume           Ask the owner of the thread to run it',
+  '      --resume           After queueing, try to resume the thread on the local daemon',
   '  -C, --cd <DIR>         The folder to look the thread up from',
   '  -h, --help             Print help',
 ];
@@ -279,13 +279,14 @@ async function queue(argv) {
   if (threadId === undefined || message === undefined || positionals.length > 0) {
     throw new Unsupported();
   }
-  const thread = findThread(threadId);
+  findThread(threadId);
+  const messageId = randomUUID();
   enqueue(threadFiles(threadId).queue, { text: message });
-  await print(`Queued message for thread ${threadId}`);
-  if (values.resume && !hasLiveOwner(thread)) {
+  await print(`Queued message ${messageId} for thread ${threadId}.`);
+  if (values.resume && !isOwnerAlive('daemon')) {
     process.stderr.write(
       `Warning: message was queued, but could not resume thread ${threadId}: ` +
-        'start a local daemon with `codex app-server daemon start`\n'
+        'start a local daemon or specify a server with --remote\n'
     );
   }
 }
@@ -295,9 +296,6 @@ function isOwnerAlive(kind) {
   return pid !== undefined && isAlive(pid);
 }
 
-function hasLiveOwner(thread) {
-  return isOwnerAlive('daemon') || (thread.owner === 'app' && isOwnerAlive('app'));
-}
 
 async function appServer(argv) {
   const [group, ...rest] = argv;
