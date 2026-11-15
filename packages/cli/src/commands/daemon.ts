@@ -15,6 +15,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { log } from '../utils/logger.js';
 import { CommandError, exitWithFailure, examplesHelp } from '../utils/cli.js';
 import {
+  BRIDGE_HOME_ENV,
   BRIDGE_HOST_ENV,
   DAEMON_LABEL,
   SYSTEMD_UNIT,
@@ -71,6 +72,11 @@ const CONFIG_OPTION = [
 const BRIDGE_OPTION = [
   '--bridge',
   'Also host the agent bridge dispatcher of this machine (experimental)',
+] as const;
+
+const NO_BRIDGE_OPTION = [
+  '--no-bridge',
+  'Stop hosting the bridge dispatcher in a daemon that was started with --bridge',
 ] as const;
 
 function resolveLaunch(flags: LaunchFlags): DaemonLaunch {
@@ -166,7 +172,10 @@ function startDaemon(flags: LaunchFlags): void {
     throw new CommandError('Failed to start daemon');
   }
 
-  writeFileSync(pidFile(), serializePidRecord({ pid, script: launch.args[0] }));
+  writeFileSync(
+    pidFile(),
+    serializePidRecord({ pid, script: launch.args[0], ...(flags.bridge && { bridge: true }) })
+  );
   log.success(`Daemon started (PID: ${pid})`);
   log.dim(`Running ${launch.description}`);
   if (flags.bridge) log.dim('Hosting the bridge dispatcher: cogitator bridge status');
@@ -241,7 +250,9 @@ daemonCommand
   .description('Restart the daemon')
   .option(...CONFIG_OPTION)
   .option(...BRIDGE_OPTION)
+  .option(...NO_BRIDGE_OPTION)
   .action(async (options: LaunchFlags) => {
+    const previous = readPidRecord(pidFile());
     const record = runningDaemon();
     if (record) {
       log.step('Stopping current daemon...');
@@ -251,7 +262,7 @@ daemonCommand
     }
 
     log.step('Starting daemon...');
-    startDaemon(options);
+    startDaemon({ ...options, bridge: options.bridge ?? previous?.bridge });
   });
 
 daemonCommand
@@ -333,6 +344,10 @@ daemonCommand
       logFile: logFile(),
       path: process.env.PATH,
       ...(options.bridge && { bridge: true }),
+      ...(options.bridge &&
+        process.env[BRIDGE_HOME_ENV]?.trim() && {
+          bridgeHome: resolve(process.env[BRIDGE_HOME_ENV].trim()),
+        }),
     };
 
     if (process.platform === 'darwin') {

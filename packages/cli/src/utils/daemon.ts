@@ -23,9 +23,14 @@ export interface DaemonLaunch {
 /** Set in the daemon's environment by `--bridge`: the daemon also hosts the bridge dispatcher. */
 export const BRIDGE_HOST_ENV = 'COGITATOR_BRIDGE_HOST';
 
+/** Moves the files of the bridge, read by the dispatcher and by every client. */
+export const BRIDGE_HOME_ENV = 'COGITATOR_BRIDGE_HOME';
+
 export interface DaemonPidRecord {
   pid: number;
   script?: string;
+  /** The daemon was started with `--bridge`, so a restart hosts the bridge dispatcher again */
+  bridge?: boolean;
 }
 
 export interface ResolveLaunchOptions {
@@ -119,7 +124,8 @@ export function parsePidRecord(content: string): DaemonPidRecord | null {
     if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null;
     const script =
       'script' in parsed && typeof parsed.script === 'string' ? parsed.script : undefined;
-    return { pid, script };
+    const bridge = 'bridge' in parsed && parsed.bridge === true;
+    return { pid, script, ...(bridge && { bridge }) };
   } catch {
     return null;
   }
@@ -178,6 +184,11 @@ export interface ServiceDefinition {
   path?: string;
   /** The service also hosts the bridge dispatcher */
   bridge?: boolean;
+  /**
+   * Where the hosted dispatcher keeps its files, when `COGITATOR_BRIDGE_HOME` moved them: the
+   * service does not inherit the shell's environment, and its clients look in that folder
+   */
+  bridgeHome?: string;
 }
 
 export function buildLaunchdPlist(def: ServiceDefinition): string {
@@ -188,7 +199,10 @@ export function buildLaunchdPlist(def: ServiceDefinition): string {
     ? `\n    <key>PATH</key>\n    <string>${escapeXml(def.path)}</string>`
     : '';
   const bridgeEntry = def.bridge
-    ? `\n    <key>${BRIDGE_HOST_ENV}</key>\n    <string>1</string>`
+    ? `\n    <key>${BRIDGE_HOST_ENV}</key>\n    <string>1</string>` +
+      (def.bridgeHome
+        ? `\n    <key>${BRIDGE_HOME_ENV}</key>\n    <string>${escapeXml(def.bridgeHome)}</string>`
+        : '')
     : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -233,7 +247,12 @@ function systemdPathValue(path: string): string {
 export function buildSystemdUnit(def: ServiceDefinition): string {
   const execStart = [def.launch.command, ...def.launch.args].map(quoteSystemdArg).join(' ');
   const pathEnv = def.path ? `\nEnvironment=${quoteSystemdArg(`PATH=${def.path}`)}` : '';
-  const bridgeEnv = def.bridge ? `\nEnvironment=${BRIDGE_HOST_ENV}=1` : '';
+  const bridgeEnv = def.bridge
+    ? `\nEnvironment=${BRIDGE_HOST_ENV}=1` +
+      (def.bridgeHome
+        ? `\nEnvironment=${quoteSystemdArg(`${BRIDGE_HOME_ENV}=${def.bridgeHome}`)}`
+        : '')
+    : '';
 
   return `[Unit]
 Description=Cogitator AI Assistant

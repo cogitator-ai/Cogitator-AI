@@ -173,6 +173,29 @@ describe('service definitions', () => {
     expect(unit).toContain('Environment=PATH=/usr/local/bin:/usr/bin');
   });
 
+  it('takes the folder of the bridge into the service, which does not see the shell', () => {
+    const moved = { ...definition, bridge: true, bridgeHome: '/home/me/My Bot & Co/bridge' };
+
+    expect(buildLaunchdPlist(moved)).toContain(
+      '<key>COGITATOR_BRIDGE_HOME</key>\n    <string>/home/me/My Bot &amp; Co/bridge</string>'
+    );
+    expect(buildSystemdUnit(moved)).toContain(
+      'Environment="COGITATOR_BRIDGE_HOME=/home/me/My Bot & Co/bridge"'
+    );
+    expect(buildSystemdUnit({ ...definition, bridgeHome: '/x' })).not.toContain(
+      'COGITATOR_BRIDGE_HOME'
+    );
+  });
+
+  it('remembers that the daemon hosts the bridge, so a restart hosts it again', () => {
+    const record = parsePidRecord(serializePidRecord({ pid: 42, script: '/a.js', bridge: true }));
+    expect(record).toEqual({ pid: 42, script: '/a.js', bridge: true });
+    expect(parsePidRecord(serializePidRecord({ pid: 42, script: '/a.js' }))).toEqual({
+      pid: 42,
+      script: '/a.js',
+    });
+  });
+
   it('tells the service to host the bridge dispatcher only when asked', () => {
     expect(buildLaunchdPlist(definition)).not.toContain('COGITATOR_BRIDGE_HOST');
     expect(buildSystemdUnit(definition)).not.toContain('COGITATOR_BRIDGE_HOST');
