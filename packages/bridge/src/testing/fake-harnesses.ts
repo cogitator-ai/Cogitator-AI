@@ -61,7 +61,14 @@ export interface FakeHarnesses {
   readonly bin: string;
   /** Where the fakes keep their state */
   readonly home: string;
-  /** `base` (default `process.env`) with the fakes first on PATH and their state folder set. Session id variables of a surrounding real harness (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`) are removed */
+  /**
+   * `base` (default `process.env`) with the fakes first on PATH and their state folder set.
+   * Session id variables of a surrounding real harness (`CLAUDE_CODE_SESSION_ID`,
+   * `CODEX_THREAD_ID`) are removed. The bridge's folder (`COGITATOR_BRIDGE_HOME`) and Claude
+   * Code's (`CLAUDE_CONFIG_DIR`) are those `base` or the options name, and never those of the
+   * machine: without either they are folders inside the fakes' own, so nothing under test
+   * reaches a real dispatcher or reads real settings by accident
+   */
   env(base?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   /** Marks a folder as one Claude Code trusts */
   trustFolder(folder: string): void;
@@ -103,7 +110,10 @@ export interface FakeHarnesses {
 export interface FakeHarnessOptions {
   /** An existing empty folder to work in, a new temp folder by default */
   dir?: string;
-  /** Extra environment for every fake process, such as FAKE_CLAUDE_MISSING */
+  /**
+   * Extra environment for every fake process, such as FAKE_CLAUDE_MISSING, or
+   * COGITATOR_BRIDGE_HOME for the bridge their sessions call
+   */
   env?: NodeJS.ProcessEnv;
 }
 
@@ -117,6 +127,14 @@ interface Folders {
 
 const HARNESSES: Harness[] = ['claude', 'codex'];
 const SURROUNDING_SESSION_VARIABLES = ['CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID'];
+/**
+ * Folders code under test would otherwise look for in the home of the person running the tests:
+ * the bridge's own, and where Claude Code keeps its settings and the folders it trusts
+ */
+const OWN_FOLDERS: Record<string, string> = {
+  COGITATOR_BRIDGE_HOME: 'bridge',
+  CLAUDE_CONFIG_DIR: 'claude-config',
+};
 const TRANSCRIPT_FOLDERS: Record<Harness, string> = { claude: 'sessions', codex: 'threads' };
 const POLL_MS = 20;
 const STOP_GRACE_MS = 5_000;
@@ -134,12 +152,18 @@ export function installFakeHarnesses(options: FakeHarnessOptions = {}): FakeHarn
   for (const harness of HARNESSES) writeWrapper(bin, harness);
   const running = new Set<ChildProcess>();
 
-  const env = (base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => {
-    const merged = { ...withoutSurroundingSession(base), ...options.env };
+  const env = (base?: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+    const merged = { ...withoutSurroundingSession(base ?? process.env), ...options.env };
     return {
       ...merged,
       PATH: [bin, merged.PATH].filter(Boolean).join(delimiter),
       FAKE_HARNESS_HOME: home,
+      ...Object.fromEntries(
+        Object.entries(OWN_FOLDERS).map(([variable, folder]) => [
+          variable,
+          options.env?.[variable] ?? base?.[variable] ?? join(home, folder),
+        ])
+      ),
     };
   };
 

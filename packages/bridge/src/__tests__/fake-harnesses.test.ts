@@ -173,8 +173,23 @@ describe('installFakeHarnesses', () => {
       PATH: `${fakes.bin}:/usr/bin:/bin`,
       KEPT: 'yes',
       FAKE_HARNESS_HOME: fakes.home,
+      COGITATOR_BRIDGE_HOME: join(fakes.home, 'bridge'),
+      CLAUDE_CONFIG_DIR: join(fakes.home, 'claude-config'),
     });
     expect(fakes.env().PATH).toBe(`${fakes.bin}:${process.env.PATH}`);
+  });
+
+  it('never points what is under test at the bridge or the Claude Code settings of the machine', () => {
+    const before = process.env.COGITATOR_BRIDGE_HOME;
+    process.env.COGITATOR_BRIDGE_HOME = '/the/real/bridge';
+    try {
+      expect(fakes.env().COGITATOR_BRIDGE_HOME).toBe(join(fakes.home, 'bridge'));
+      expect(fakes.env({ COGITATOR_BRIDGE_HOME: '/given' }).COGITATOR_BRIDGE_HOME).toBe('/given');
+      expect(fakes.env({ CLAUDE_CONFIG_DIR: '/given' }).CLAUDE_CONFIG_DIR).toBe('/given');
+    } finally {
+      if (before === undefined) delete process.env.COGITATOR_BRIDGE_HOME;
+      else process.env.COGITATOR_BRIDGE_HOME = before;
+    }
   });
 
   it('installs executables a PATH lookup finds', async () => {

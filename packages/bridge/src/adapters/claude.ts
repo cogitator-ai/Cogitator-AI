@@ -186,9 +186,15 @@ export interface ClaudeCodeAdapterOptions {
   sessionArgs?: readonly string[];
   /** Seconds a waiter may wait before Claude Code ends it, 12 hours by default */
   hookTimeoutS?: number;
-  /** Where Claude Code records the folders it trusts, `~/.claude.json` by default */
+  /**
+   * Where Claude Code records the folders it trusts: `.claude.json` in `CLAUDE_CONFIG_DIR` when
+   * the environment sets it, `~/.claude.json` otherwise
+   */
   configPath?: string;
-  /** Where Claude Code keeps a person's settings, `~/.claude/settings.json` by default */
+  /**
+   * Where Claude Code keeps a person's settings: `settings.json` in `CLAUDE_CONFIG_DIR` when the
+   * environment sets it, `~/.claude/settings.json` otherwise
+   */
   userSettingsPath?: string;
   /** How long a started session may take to show up among the running ones, 30 s by default */
   sessionListedMs?: number;
@@ -224,6 +230,10 @@ function readJson(path: string): unknown {
 export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): BridgeAdapter {
   const command = options.command ?? 'claude';
   const env = options.env ?? process.env;
+  const configDir = env.CLAUDE_CONFIG_DIR?.trim();
+  const configPath = options.configPath ?? join(configDir || homedir(), '.claude.json');
+  const userSettingsPath =
+    options.userSettingsPath ?? join(configDir || join(homedir(), '.claude'), 'settings.json');
   const hook = {
     ...(options.bridgeCommand !== undefined && { bridgeCommand: options.bridgeCommand }),
     ...(options.hookTimeoutS !== undefined && { timeoutS: options.hookTimeoutS }),
@@ -255,7 +265,7 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
   }
 
   async function createSession(request: SessionRequest): Promise<CreatedSession> {
-    if (claudeTrust(request.cwd, options.configPath) === 'untrusted') throw untrusted(request.cwd);
+    if (claudeTrust(request.cwd, configPath) === 'untrusted') throw untrusted(request.cwd);
     const whole = fitsArgument(request.firstLetter.text);
     const settings = claudeWaitHook({ ...hook, agentName: request.agentName });
     const result = await runCommand(
@@ -391,7 +401,7 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
       ...(!listing && { fix: 'Update Claude Code: claude update' }),
     });
 
-    const trust = claudeTrust(context.cwd, options.configPath);
+    const trust = claudeTrust(context.cwd, configPath);
     checks.push({
       id: 'trust',
       title: 'Folder trust',
@@ -410,7 +420,7 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     const places = [
       join(context.cwd, '.claude', 'settings.local.json'),
       join(context.cwd, '.claude', 'settings.json'),
-      options.userSettingsPath ?? join(homedir(), '.claude', 'settings.json'),
+      userSettingsPath,
     ];
     const armed = places.find((place) => hasClaudeWaitHook(readJson(place)));
     checks.push({

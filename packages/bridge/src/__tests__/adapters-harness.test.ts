@@ -374,6 +374,28 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
     expect(after?.[4].fix).toBeUndefined();
   });
 
+  it('looks for what Claude Code keeps where CLAUDE_CONFIG_DIR says', async () => {
+    const configDir = join(home, 'claude-config');
+    mkdirSync(configDir);
+    writeFileSync(
+      join(configDir, '.claude.json'),
+      JSON.stringify({ projects: { [project]: { hasTrustDialogAccepted: true } } })
+    );
+    writeFileSync(
+      join(configDir, 'settings.json'),
+      JSON.stringify(claudeWaitHook({ bridgeCommand: BRIDGE_COMMAND }))
+    );
+    const adapter = claudeCodeAdapter({ env: { ...env(), CLAUDE_CONFIG_DIR: configDir } });
+
+    const checks = await adapter.health?.({ cwd: project });
+
+    expect(checks?.find((check) => check.id === 'trust')?.status).toBe('ok');
+    expect(checks?.find((check) => check.id === 'hook')).toMatchObject({
+      status: 'ok',
+      detail: expect.stringContaining(join(configDir, 'settings.json')),
+    });
+  });
+
   it('reports a version too old for the bridge, an untrusted folder, and a missing install', async () => {
     const old = claudeCodeAdapter({
       env: { ...env(), FAKE_CLAUDE_MISSING: 'bg,agents-json' },
