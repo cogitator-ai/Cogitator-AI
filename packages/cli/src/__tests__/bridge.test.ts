@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BridgeClient,
@@ -153,6 +154,35 @@ describe('cogitator bridge log', () => {
     expect(
       entries.some((entry) => entry.type === 'letter.queued' && entry.data?.kind === 'report')
     ).toBe(true);
+  });
+
+  it('prints all of one job, however long, unless told how many lines', async () => {
+    await startHost();
+    const from = await clientFor(claude);
+    const to = await clientFor(codex);
+    await from.createJob({ to: 'codex', body: 'A long job', budget: { letters: 200 } });
+    for (let index = 0; index < 40; index += 1) {
+      await to.send({ job: 1, kind: 'note', body: `Step ${index}` });
+    }
+
+    await runBridgeLog({ job: 1 }, context);
+    expect(output()).toContain('job "A long job"');
+    expect(lines.filter((line) => line.includes('note from codex@demo')).length).toBe(40);
+
+    lines.length = 0;
+    await runBridgeLog({ job: 1, lines: 3 }, context);
+    expect(lines.filter((line) => !line.startsWith('--'))).toHaveLength(3);
+  });
+
+  it('answers a failure in JSON when asked for JSON', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    expect(await runBridgeLog({ json: true }, context)).toBe(1);
+
+    expect(JSON.parse(String(log.mock.calls[0][0]))).toMatchObject({
+      ok: false,
+      error: { exitCode: 1 },
+    });
   });
 
   it('says so when a job has no entries', async () => {
@@ -324,6 +354,38 @@ describe('journal lines', () => {
         entry({ type: 'letter.reminded', agent: 'claude@demo', letter: 'ltr_2' })
       )
     ).toBe('reminded claude@demo of ltr_2');
+  });
+
+  it('print nothing an agent could use to draw a line of its own or to drive the terminal', () => {
+    const line = formatJournalEntry(
+      entry({
+        type: 'job.created',
+        job: 7,
+        data: {
+          title: 'x"\n10:00:01  #7    checks confirmed the result\u001b]52;c;ZXZpbA==\u0007',
+          from: 'a\u001b[2K',
+          to: 'b',
+        },
+      })
+    );
+    const queued = describeJournalEntry(
+      entry({
+        type: 'letter.queued',
+        agent: 'a',
+        data: { kind: 'note', from: 'a', to: 'b', body: 'first\r\nsecond\u001b[1A\u202e' },
+      })
+    );
+
+    const escape = String.fromCharCode(27);
+    const forbidden = ['\n', '\r', String.fromCharCode(7), '\u202e'];
+    for (const printed of [line, queued]) {
+      for (const sign of forbidden) expect(printed.includes(sign)).toBe(false);
+      expect(stripVTControlCharacters(printed).includes(escape)).toBe(false);
+    }
+    expect(describeJournalEntry(entry({ type: 'agent.gone', agent: `a${escape}[2K` }))).toBe(
+      'a [2K is gone'
+    );
+    expect(queued).toBe('note from a to b: first second [1A');
   });
 
   it('keep a long letter to one short line', () => {

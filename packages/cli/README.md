@@ -75,7 +75,7 @@ Every command ends with examples in its `--help`.
 
 ### Output and exit codes
 
-Every command exits with `0` when it did what was asked, `1` when it could not (a failed check, deploy or install, a missing service) and `2` when the command line is wrong (an unknown option, command or value, with the closest valid name). Failures print the message and what to do about it on stderr; `COGITATOR_DEBUG=1` adds the stack trace. With `--json` (`add`, `doctor`, `eval`, `models`, `status`, `deploy`) the result goes to stdout as JSON, and a failure as `{ "ok": false, "error": { "message", "exitCode", "hints" } }`.
+Every command exits with `0` when it did what was asked, `1` when it could not (a failed check, deploy or install, a missing service) and `2` when the command line is wrong (an unknown option, command or value, with the closest valid name). Failures print the message and what to do about it on stderr; `COGITATOR_DEBUG=1` adds the stack trace. With `--json` (`add`, `doctor`, `eval`, `models`, `status`, `deploy`, `bridge status`, `bridge log`) the result goes to stdout as JSON, and a failure as `{ "ok": false, "error": { "message", "exitCode", "hints" } }`.
 
 ---
 
@@ -363,7 +363,7 @@ Runs your assistant in the background. The entry is auto-detected in this order:
 cogitator daemon start [-c <entry>] [--bridge]
 cogitator daemon status          # PID, uptime, memory
 cogitator daemon logs -f -n 100  # .cogitator/daemon.log
-cogitator daemon restart [-c <entry>] [--bridge]
+cogitator daemon restart [-c <entry>] [--bridge | --no-bridge]
 cogitator daemon stop            # SIGTERM, then SIGKILL after ~10s
 
 cogitator daemon install [-c <entry>] [--bridge]   # launchd (macOS) or systemd --user (Linux)
@@ -372,7 +372,7 @@ cogitator daemon uninstall
 
 The PID file (`.cogitator/daemon.pid`) records the launched script, so `stop` never signals an unrelated process that reused the PID. Service definitions use absolute paths, the current `PATH`, and start on login (`loginctl enable-linger` keeps a systemd user service running after logout).
 
-`--bridge` makes the daemon also host the dispatcher of the [agent bridge](#cogitator-bridge) (experimental). The assistant does not depend on it: when another dispatcher already runs on the machine the daemon just does not host one. A bundle runs without the CLI, so `--bridge` is refused for it, run `cogitator bridge serve` next to it.
+`--bridge` makes the daemon also host the dispatcher of the [agent bridge](#cogitator-bridge) (experimental). The assistant does not depend on it: when another dispatcher already runs on the machine the daemon just does not host one. A bundle runs without the CLI, so `--bridge` is refused for it, run `cogitator bridge serve` next to it. A restart keeps hosting it without the flag, `restart --no-bridge` stops. `install --bridge` writes the current `COGITATOR_BRIDGE_HOME` into the service, which does not see your shell.
 
 ---
 
@@ -385,11 +385,12 @@ cogitator bridge serve                # the dispatcher in the foreground, until 
 cogitator bridge status [--json]      # the dispatcher, the sessions it knows, the jobs in progress
 cogitator bridge log                  # the last 50 entries of the journal
 cogitator bridge log --follow         # keep printing what comes in
-cogitator bridge log --job 12 --all   # everything about one job
+cogitator bridge log --job 12         # everything about one job
+cogitator bridge log --all            # the whole journal
 cogitator bridge log --json           # one line of JSON per entry
 ```
 
-`serve` refuses to start while another dispatcher runs and names its PID. `status` exits 0 when a dispatcher runs and 1 when none does. `log` reads the store itself, so it works after the dispatcher stopped. The files live in `~/.cogitator/bridge` (`bridge.db`, `bridge.sock`), `COGITATOR_BRIDGE_HOME` or `--home <dir>` moves them.
+`serve` refuses to start while another dispatcher runs and names its PID. `status` exits 0 when a dispatcher runs and 1 when none does. `log` reads the store itself, so it works after the dispatcher stopped, and prints what agents wrote on one line each without control characters. The files live in `~/.cogitator/bridge` (`bridge.db`, `bridge.sock`), `COGITATOR_BRIDGE_HOME` or `--home <dir>` moves them.
 
 With `cogitator daemon start --bridge` the assistant daemon hosts the dispatcher, so no second process is needed.
 

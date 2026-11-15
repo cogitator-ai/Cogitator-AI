@@ -81,13 +81,21 @@ function stopRequested(context: BridgeContext): { stopped: Promise<void>; dispos
   };
 }
 
-function preview(text: string): string {
-  const line = text.replace(/\s+/g, ' ').trim();
+/**
+ * Text that agents wrote, safe to print: on one line and without control characters, so a
+ * letter cannot draw a second journal line or send escape sequences to the terminal.
+ */
+function plain(value: string): string {
+  return value.replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim();
+}
+
+function preview(value: string): string {
+  const line = plain(value);
   return line.length > PREVIEW_LENGTH ? `${line.slice(0, PREVIEW_LENGTH - 3)}...` : line;
 }
 
 function text(value: unknown): string {
-  return typeof value === 'string' ? value : '';
+  return typeof value === 'string' ? plain(value) : '';
 }
 
 function clock(at: string): string {
@@ -103,8 +111,9 @@ function day(at: string): string {
 }
 
 /** What a journal entry says, without the time and the job number. */
-export function describeJournalEntry(entry: JournalEntry): string {
-  const data = entry.data ?? {};
+export function describeJournalEntry(raw: JournalEntry): string {
+  const data = raw.data ?? {};
+  const entry = { ...raw, agent: text(raw.agent), letter: text(raw.letter) };
   switch (entry.type) {
     case 'agent.registered':
       return `${entry.agent} joined (${text(data.harness)}${data.started ? ', started by the bridge' : ''})`;
@@ -185,9 +194,10 @@ export async function runBridgeLog(
     };
 
     const filter = flags.job !== undefined ? { job: flags.job } : {};
+    const whole = flags.all ?? (flags.job !== undefined && flags.lines === undefined);
     const first = reader.readJournal({
       ...filter,
-      ...(flags.all ? {} : { tail: flags.lines ?? DEFAULT_LOG_LINES }),
+      ...(whole ? {} : { tail: flags.lines ?? DEFAULT_LOG_LINES }),
     });
     show(first);
     if (first.length === 0 && !flags.follow && !flags.json) {
@@ -215,7 +225,7 @@ export async function runBridgeLog(
     }
     return 0;
   } catch (error) {
-    return reportFailure(error, { json: false });
+    return reportFailure(error, { json: flags.json ?? false });
   } finally {
     store?.close();
   }
@@ -231,7 +241,7 @@ function age(since: string): string {
 }
 
 function agentLine(agent: AgentRecord): string {
-  const session = agent.sessionName ? ` "${agent.sessionName}"` : '';
+  const session = agent.sessionName ? ` "${plain(agent.sessionName)}"` : '';
   const state = agent.status === 'active' ? '' : chalk.yellow(` ${agent.status}`);
   return `  ${agent.name.padEnd(28)} ${agent.harness}${session}, ${agent.delivery}${state}`;
 }
@@ -411,12 +421,12 @@ bridgeCommand
   .option('-f, --follow', 'keep printing what comes in')
   .option(
     '-n, --lines <number>',
-    `the last entries to print (default ${DEFAULT_LOG_LINES})`,
+    `the last entries to print (default ${DEFAULT_LOG_LINES}, with --job all of them)`,
     positiveInt
   )
   .option('--all', 'the whole journal')
   .option(...homeOption)
-  .option('--json', 'print each entry as one line of JSON')
+  .option('--json', 'print each entry as one line of JSON, a failure as one JSON object')
   .action(async (flags: BridgeLogFlags) => {
     process.exitCode = await runBridgeLog(flags);
   });
