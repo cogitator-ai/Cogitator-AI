@@ -489,8 +489,9 @@ function ruleCovers(rule, toolName, input) {
 
 /**
  * Gets leave for a call of one of the session's own tools, the way Claude Code decides: the
- * mode, the deny and allow rules, the `PermissionRequest` hooks that match the tool, and when
- * none of them settles it, the dialog a person answers. While the dialog is open the session is
+ * mode (`acceptEdits` takes an edit inside the folder of the session), the deny and allow rules,
+ * the `PermissionRequest` hooks that match the tool, and when none of them settles it, the
+ * dialog a person answers. While the dialog is open the session is
  * listed as blocked on a permission prompt, its `Notification` hooks are told, and it waits for
  * `__answer` as long as it takes.
  */
@@ -503,6 +504,10 @@ async function leaveFor(session, toolName, input) {
   const covered = (list) => rules(list).some((rule) => ruleCovers(rule, toolName, input));
   if (covered('deny')) return refused(`Permission to use ${toolName} has been denied.`);
   if (mode === 'bypassPermissions' || covered('allow')) return { allowed: true };
+  const edited = toolName === 'Edit' && typeof input.file_path === 'string' && input.file_path;
+  if (mode === 'acceptEdits' && edited && isWithin(edited, record.cwd)) {
+    return { allowed: true };
+  }
 
   const payload = {
     session_id: record.sessionId,

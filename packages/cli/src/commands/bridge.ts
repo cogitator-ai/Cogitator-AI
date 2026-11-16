@@ -21,7 +21,7 @@ import {
   type Lease,
 } from '@cogitator-ai/bridge';
 import { CommandError, examplesHelp, printJson, reportFailure } from '../utils/cli.js';
-import { bridgeAdapters, CODEX_SANDBOXES } from '../utils/bridge-adapters.js';
+import { bridgeAdapters, CLAUDE_MODES, CODEX_SANDBOXES } from '../utils/bridge-adapters.js';
 import { bridgePerson, type BridgePerson } from '../utils/bridge-person.js';
 import {
   INSTALL_CHOICES,
@@ -90,6 +90,7 @@ interface HomeFlags {
 
 interface ServeFlags extends HomeFlags {
   codexSandbox?: string;
+  claudeMode?: string;
 }
 
 const DEFAULT_LOG_LINES = 50;
@@ -398,6 +399,7 @@ export async function runBridgeServe(
         bridgeAdapters(context.env, {
           ...(flags.home && { home: flags.home }),
           ...(flags.codexSandbox && { codexSandbox: flags.codexSandbox }),
+          ...(flags.claudeMode && { claudeMode: flags.claudeMode }),
           onError,
         }),
       rights: reach.rights,
@@ -489,6 +491,12 @@ bridgeCommand
       '--codex-sandbox <mode>',
       'the sandbox of the Codex threads it starts (default: workspace-write)'
     ).choices(CODEX_SANDBOXES)
+  )
+  .addOption(
+    new Option(
+      '--claude-mode <mode>',
+      'the permission mode of the Claude Code sessions it starts (default: acceptEdits)'
+    ).choices(CLAUDE_MODES)
   )
   .action(async (flags: ServeFlags) => {
     process.exitCode = await runBridgeServe(flags);

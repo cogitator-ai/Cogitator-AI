@@ -631,7 +631,9 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
       ask: { tool: 'Bash', access: 'command', command: 'echo pushed', cwd: realpathSync(project) },
     });
     expect((await conductor.job(1)).state).toBe('input-required');
-    expect((await conductor.agents({ harness: 'claude-code' }))[0].permissionMode).toBe('default');
+    expect((await conductor.agents({ harness: 'claude-code' }))[0].permissionMode).toBe(
+      'acceptEdits'
+    );
     await conductor.send({ job: 1, kind: 'answer', body: 'Go', verdict: 'allow' });
     await requestOf('echo forced');
     await conductor.send({ job: 1, kind: 'answer', body: 'Never forced', verdict: 'deny' });
@@ -643,6 +645,44 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
     ]);
     expect(turn.answer).toBe('Shipped');
     expect((await fakes.claudeSessions())[0]).not.toHaveProperty('waitingFor');
+    expect(errors).toEqual([]);
+  });
+
+  it('lets a session it starts change files in the folder of its job, and asks leave for one outside', async () => {
+    fakes.trustFolder(project);
+    const asked: string[][] = [];
+    await startHost([claudeAdapter()], {
+      rights: ({ ask }) => {
+        asked.push(ask.paths ?? []);
+        return 'deny';
+      },
+    });
+    const conductor = await orchestrator();
+    const outside = join(home, 'elsewhere.txt');
+
+    await conductor.createJob({
+      to: 'claude',
+      body: `Write the notes\nedit: notes/a.txt\nedit: ${outside}\nsay: Written`,
+    });
+    const agent = await until(
+      async () => (await conductor.agents({ harness: 'claude-code', statuses: ['active'] }))[0],
+      'the session to start'
+    );
+    const turn = await fakes.waitForTurn('claude', agent.sessionId, () => true);
+
+    expect(turn.ran.map((run) => [run.command, run.code])).toEqual([
+      ['edit notes/a.txt', 0],
+      [`edit ${outside}`, null],
+    ]);
+    expect(turn.ran[1].stderr).toMatch(
+      /^Refused by bridge: The rules of conductor@\S+ forbid this/
+    );
+    expect(readFileSync(join(project, 'notes', 'a.txt'), 'utf8')).toBe('edited\n');
+    expect(existsSync(outside)).toBe(false);
+    expect(asked).toEqual([[outside]]);
+    expect((await conductor.agents({ harness: 'claude-code' }))[0].permissionMode).toBe(
+      'acceptEdits'
+    );
     expect(errors).toEqual([]);
   });
 

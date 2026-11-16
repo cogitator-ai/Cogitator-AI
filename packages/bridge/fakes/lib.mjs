@@ -488,11 +488,11 @@ export function abandonWork() {
 /**
  * The directives of an input, in the order of its lines. A line counts after its leading
  * whitespace is trimmed, a quoted line (`> run: ...`) is not a directive.
- * @returns {{ kind: 'run' | 'bash' | 'sleep' | 'say' | 'tool', value: string }[]}
+ * @returns {{ kind: 'run' | 'bash' | 'edit' | 'sleep' | 'say' | 'tool', value: string }[]}
  */
 function directives(input) {
   return input.split(/\r?\n/).flatMap((line) => {
-    const match = /^(run|bash|sleep|say|tool): (.+)$/.exec(line.trimStart());
+    const match = /^(run|bash|edit|sleep|say|tool): (.+)$/.exec(line.trimStart());
     if (!match) return [];
     const [, kind, text] = match;
     const value = text.trim();
@@ -546,10 +546,38 @@ async function runWithLeave(command, cwd, env, askLeave) {
 }
 
 /**
+ * An `edit:` directive: a file the session's own edit tool changes, by adding a line to it,
+ * which the session needs leave for the way its harness decides. It is in the turn as a command
+ * `edit <path>`, refused or done. A harness that imitates no edit tool of its own fails it.
+ * @param {string} path as the model wrote it, relative to the folder of the session or absolute
+ * @param {LeaveAsker | undefined} askLeave
+ * @returns {Promise<CommandRun>}
+ */
+async function editWithLeave(path, cwd, askLeave) {
+  const file = resolve(cwd, path);
+  const command = `edit ${path}`;
+  if (!askLeave) {
+    return { command, code: 1, stdout: '', stderr: 'this stand-in has no edit tool of its own' };
+  }
+  const leave = await askLeave({ tool: 'Edit', input: { file_path: file } });
+  if (!leave.allowed) {
+    return { command, code: null, stdout: '', stderr: leave.message ?? 'denied', denied: true };
+  }
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    appendFileSync(file, 'edited\n');
+    return { command, code: 0, stdout: '', stderr: '' };
+  } catch (error) {
+    return { command, code: 1, stdout: '', stderr: error.message };
+  }
+}
+
+/**
  * The scripted model: runs every `run: <command>` line with `sh -c`, asks leave for and then
- * runs every `bash: <command>` line, calls the tool of every `tool: <server>.<tool> {json}` line
- * and waits out every `sleep: <ms>` line, one after another, and answers with the last
- * `say: <text>` line, or `ok`.
+ * runs every `bash: <command>` line, asks leave for and then changes the file of every
+ * `edit: <path>` line, calls the tool of every `tool: <server>.<tool> {json}` line and waits
+ * out every `sleep: <ms>` line, one after another, and answers with the last `say: <text>`
+ * line, or `ok`.
  * @param {object} turn
  * @param {string} turn.input
  * @param {string} turn.cwd where the commands run
@@ -566,6 +594,7 @@ export async function performTurn({ input, cwd, env, callTool, askLeave }) {
   for (const { kind, value } of directives(input)) {
     if (kind === 'run') ran.push(await runCommand(value, cwd, env));
     else if (kind === 'bash') ran.push(await runWithLeave(value, cwd, env, askLeave));
+    else if (kind === 'edit') ran.push(await editWithLeave(value, cwd, askLeave));
     else if (kind === 'tool') tools.push(await runTool(value, callTool));
     else if (kind === 'sleep') await sleep(Number(value));
     else answer = value;

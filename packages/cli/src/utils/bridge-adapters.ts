@@ -93,6 +93,38 @@ export function codexSandboxOf(
   ]);
 }
 
+/** Names the permission mode of the Claude Code sessions the bridge starts, when no flag does. */
+export const BRIDGE_CLAUDE_MODE_ENV = 'COGITATOR_BRIDGE_CLAUDE_MODE';
+
+/** The permission modes `claude --permission-mode` knows. */
+export const CLAUDE_MODES = [
+  'default',
+  'acceptEdits',
+  'plan',
+  'auto',
+  'dontAsk',
+  'bypassPermissions',
+] as const;
+
+/**
+ * The permission mode of the Claude Code sessions the bridge starts: what the flag says, else
+ * `COGITATOR_BRIDGE_CLAUDE_MODE`, else undefined for the adapter's own default.
+ *
+ * @throws UsageError when the name is not a permission mode of Claude Code
+ */
+export function claudeModeOf(
+  env: NodeJS.ProcessEnv = process.env,
+  flag?: string
+): (typeof CLAUDE_MODES)[number] | undefined {
+  const named = flag?.trim() || env[BRIDGE_CLAUDE_MODE_ENV]?.trim();
+  if (!named) return undefined;
+  const mode = CLAUDE_MODES.find((known) => known === named);
+  if (mode) return mode;
+  throw new UsageError(`"${named}" is not a permission mode of Claude Code`, [
+    `Use one of: ${CLAUDE_MODES.join(', ')}`,
+  ]);
+}
+
 export interface BridgeAdapterSettings {
   /**
    * The folder of the bridge the adapters work for, when a flag named one: the sessions they
@@ -101,6 +133,8 @@ export interface BridgeAdapterSettings {
   home?: string;
   /** The sandbox of the Codex threads the bridge starts, from `--codex-sandbox` */
   codexSandbox?: string;
+  /** The permission mode of the Claude Code sessions the bridge starts, from `--claude-mode` */
+  claudeMode?: string;
   /** Hears what an adapter could not do outside a call, such as a report it could not send */
   onError?: (error: Error) => void;
 }
@@ -108,7 +142,8 @@ export interface BridgeAdapterSettings {
 /**
  * The adapters of the harnesses the command line reaches: Claude Code and Codex.
  *
- * @throws UsageError when the sandbox named for Codex is not one it knows
+ * @throws UsageError when the sandbox named for Codex or the permission mode named for Claude
+ * Code is not one they know
  */
 export function bridgeAdapters(
   env: NodeJS.ProcessEnv = process.env,
@@ -119,8 +154,14 @@ export function bridgeAdapters(
   const bridgeCommand = bridgeCommandOf(env);
   const toolsServer = bridgeToolsServerOf(env, bridgeHomeOf(env, home));
   const sandbox = codexSandboxOf(env, settings.codexSandbox);
+  const permissionMode = claudeModeOf(env, settings.claudeMode);
   return [
-    claudeCodeAdapter({ env: scoped, bridgeCommand, toolsServer }),
+    claudeCodeAdapter({
+      env: scoped,
+      bridgeCommand,
+      toolsServer,
+      ...(permissionMode && { permissionMode }),
+    }),
     codexAdapter({
       env: scoped,
       bridgeCommand,
