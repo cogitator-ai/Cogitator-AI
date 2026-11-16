@@ -467,7 +467,13 @@ export function abandonWork() {
   for (const file of [...heldLocks]) unlock(file);
 }
 
-/** @typedef {{ command: string, code: number | null, stdout: string, stderr: string }} CommandRun */
+/**
+ * A command of a turn. `denied` marks one that never ran because leave for it was refused, with
+ * the refusal in `stderr`
+ * @typedef {{ command: string, code: number | null, stdout: string, stderr: string, denied?: boolean }} CommandRun
+ */
+
+/** @typedef {(call: { tool: string, input: Record<string, unknown> }) => Promise<{ allowed: boolean, message?: string }>} LeaveAsker */
 
 /**
  * A tool call of a turn: `args` as the model wrote them, `sent` as they reached the server when
@@ -482,11 +488,11 @@ export function abandonWork() {
 /**
  * The directives of an input, in the order of its lines. A line counts after its leading
  * whitespace is trimmed, a quoted line (`> run: ...`) is not a directive.
- * @returns {{ kind: 'run' | 'sleep' | 'say' | 'tool', value: string }[]}
+ * @returns {{ kind: 'run' | 'bash' | 'sleep' | 'say' | 'tool', value: string }[]}
  */
 function directives(input) {
   return input.split(/\r?\n/).flatMap((line) => {
-    const match = /^(run|sleep|say|tool): (.+)$/.exec(line.trimStart());
+    const match = /^(run|bash|sleep|say|tool): (.+)$/.exec(line.trimStart());
     if (!match) return [];
     const [, kind, text] = match;
     const value = text.trim();
@@ -527,23 +533,39 @@ async function runTool(value, callTool) {
 }
 
 /**
- * The scripted model: runs every `run: <command>` line with `sh -c`, calls the tool of every
- * `tool: <server>.<tool> {json}` line and waits out every `sleep: <ms>` line, one after another,
- * and answers with the last `say: <text>` line, or `ok`.
+ * A `bash:` directive: a command the session's own shell tool runs, which the session needs
+ * leave for the way its harness decides. A refused one does not run.
+ * @param {string} command
+ * @param {LeaveAsker | undefined} askLeave
+ * @returns {Promise<CommandRun>}
+ */
+async function runWithLeave(command, cwd, env, askLeave) {
+  const leave = askLeave ? await askLeave({ tool: 'Bash', input: { command } }) : { allowed: true };
+  if (leave.allowed) return runCommand(command, cwd, env);
+  return { command, code: null, stdout: '', stderr: leave.message ?? 'denied', denied: true };
+}
+
+/**
+ * The scripted model: runs every `run: <command>` line with `sh -c`, asks leave for and then
+ * runs every `bash: <command>` line, calls the tool of every `tool: <server>.<tool> {json}` line
+ * and waits out every `sleep: <ms>` line, one after another, and answers with the last
+ * `say: <text>` line, or `ok`.
  * @param {object} turn
  * @param {string} turn.input
  * @param {string} turn.cwd where the commands run
  * @param {NodeJS.ProcessEnv} turn.env what the commands see
  * @param {ToolCaller} [turn.callTool] how the session calls a tool of one of its MCP servers
+ * @param {LeaveAsker} [turn.askLeave] how the session gets leave for a call of its own tools
  * @returns {Promise<TurnOutcome>}
  */
-export async function performTurn({ input, cwd, env, callTool }) {
+export async function performTurn({ input, cwd, env, callTool, askLeave }) {
   const at = new Date().toISOString();
   const ran = [];
   const tools = [];
   let answer = 'ok';
   for (const { kind, value } of directives(input)) {
     if (kind === 'run') ran.push(await runCommand(value, cwd, env));
+    else if (kind === 'bash') ran.push(await runWithLeave(value, cwd, env, askLeave));
     else if (kind === 'tool') tools.push(await runTool(value, callTool));
     else if (kind === 'sleep') await sleep(Number(value));
     else answer = value;

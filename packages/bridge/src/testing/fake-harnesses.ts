@@ -20,6 +20,8 @@ export interface FakeCommandRun {
   code: number | null;
   stdout: string;
   stderr: string;
+  /** The command never ran: leave for it was refused, and `stderr` says how */
+  denied?: boolean;
 }
 
 /** A call of a tool of an MCP server the session has. */
@@ -52,8 +54,10 @@ export interface FakeClaudeSession {
   name?: string;
   cwd: string;
   kind: 'background' | 'interactive';
-  status?: 'busy' | 'idle';
+  status?: 'busy' | 'idle' | 'waiting';
   state?: string;
+  /** What a session that waits is waiting for: `permission prompt` while its dialog is open */
+  waitingFor?: string;
   pid?: number;
 }
 
@@ -105,6 +109,11 @@ export interface FakeHarnesses {
   }): Promise<string>;
   /** A person types into a Claude Code session */
   say(sessionId: string, text: string): Promise<void>;
+  /**
+   * A person answers the permission dialog a Claude Code session shows. A `bash: <command>`
+   * line of a turn opens one, unless the mode, a rule or a `PermissionRequest` hook settles it
+   */
+  answerPermission(sessionId: string, answer: 'allow' | 'deny'): Promise<void>;
   claudeSessions(options?: { all?: boolean }): Promise<FakeClaudeSession[]>;
   /**
    * A Codex thread sitting idle, owned by the stand-in of the desktop app unless `owner` is
@@ -239,6 +248,9 @@ export function installFakeHarnesses(options: FakeHarnessOptions = {}): FakeHarn
     },
     async say(sessionId, text) {
       await succeed('claude', ['__say', sessionId, text]);
+    },
+    async answerPermission(sessionId, answer) {
+      await succeed('claude', ['__answer', sessionId, answer]);
     },
     async claudeSessions({ all = false } = {}) {
       const listing = await succeed('claude', ['agents', '--json', ...(all ? ['--all'] : [])]);
