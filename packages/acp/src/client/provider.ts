@@ -75,6 +75,12 @@ export interface AcpAgentProviderOptions {
   clientInfo?: { name: string; version: string };
   /** Milliseconds a command the agent runs in a terminal may take (default 30 minutes) */
   terminalTimeout?: number;
+  /**
+   * Milliseconds the agent has to answer `initialize` once it is started (default 30 seconds, 0
+   * for no limit). An agent that stays silent longer is stopped and the turn that waits for it
+   * fails, as happens with an agent that is not signed in
+   */
+  handshakeTimeout?: number;
   /** Hears what the launched agent writes to stderr */
   onStderr?: (chunk: string) => void;
   /** Hears what went wrong outside a turn, such as the agent exiting */
@@ -90,6 +96,12 @@ interface Connected {
   init: InitializeResponse;
   sessions: Set<string>;
   closed: boolean;
+}
+
+/** A start of the agent: the connection it ends in, and what ends it before the agent answered */
+interface Launch {
+  connected: Promise<Connected>;
+  stop: AbortController;
 }
 
 interface SessionState {
@@ -128,7 +140,7 @@ function permissionRefused(what: string): RequestError {
 export class AcpAgentProvider implements SessionProvider {
   readonly description?: string;
   readonly model?: string;
-  private connecting: Promise<Connected> | undefined;
+  private launch: Launch | undefined;
   private readonly active = new Map<string, ActiveTurn>();
   private readonly loading = new Set<string>();
   private readonly states = new Map<string, SessionState>();
@@ -199,36 +211,44 @@ export class AcpAgentProvider implements SessionProvider {
     }
   }
 
-  /** Stops the agent and every command it runs */
+  /** Stops the agent and every command it runs, also an agent that has not answered yet */
   async close(): Promise<void> {
-    const connecting = this.connecting;
-    this.connecting = undefined;
+    const launch = this.launch;
+    this.launch = undefined;
+    launch?.stop.abort(new Error('The provider was closed while the ACP agent started'));
     await this.terminals.releaseAll();
-    if (!connecting) return;
-    const connected = await connecting.catch(() => undefined);
+    if (!launch) return;
+    const connected = await launch.connected.catch(() => undefined);
     if (connected) shutdown(connected);
   }
 
   private connection(): Promise<Connected> {
-    const current = this.connecting;
+    const current = this.launch;
     if (current) {
-      return current.then((connected) => {
+      return current.connected.then((connected) => {
         if (!connected.closed) return connected;
-        if (this.connecting === current) this.connecting = undefined;
+        if (this.launch === current) this.launch = undefined;
         return this.connection();
       });
     }
-    const started = this.start();
-    this.connecting = started;
-    started.catch(() => {
-      if (this.connecting === started) this.connecting = undefined;
+    const stop = new AbortController();
+    const launch: Launch = { connected: this.start(stop.signal), stop };
+    this.launch = launch;
+    launch.connected.catch(() => {
+      if (this.launch === launch) this.launch = undefined;
     });
-    return started;
+    return launch.connected;
   }
 
-  private async start(): Promise<Connected> {
+  /**
+   * Starts the agent and waits for its handshake. The wait ends early, with the agent stopped,
+   * when `stopped` aborts, when the agent exits, and when `initialize` takes longer than
+   * `handshakeTimeout`
+   */
+  private async start(stopped: AbortSignal): Promise<Connected> {
     const app = this.clientApp();
     const target = this.options.agent;
+    const label = labelOf(target, this.name);
     let child: ChildProcess | undefined;
     let connection: ClientConnection;
     if ('app' in target) {
@@ -261,28 +281,51 @@ export class AcpAgentProvider implements SessionProvider {
       connected.closed = true;
       connection.close();
     };
+    const failed = new AbortController();
+    const ended = AbortSignal.any([stopped, failed.signal]);
+    const reason = () => reasonOf(ended);
+    let step: 'initialize' | 'authenticate' = 'initialize';
     child?.once('exit', (code, signal) => {
-      if (!connected.closed) {
-        this.options.onError?.(
-          new Error(`The ACP agent exited (${signal ?? `code ${String(code)}`})`)
-        );
-      }
+      const how = signal ?? `code ${String(code)}`;
+      if (!connected.closed) this.options.onError?.(new Error(`The ACP agent exited (${how})`));
+      failed.abort(new Error(`The ACP agent ${label} exited (${how}) before it answered ${step}`));
       lost();
     });
     void connection.closed.then(lost, lost);
+    const limit = this.options.handshakeTimeout ?? DEFAULT_HANDSHAKE_TIMEOUT;
+    const timer =
+      limit > 0 && Number.isFinite(limit)
+        ? setTimeout(() => failed.abort(silentError(label, limit, child !== undefined)), limit)
+        : undefined;
     try {
-      connected.init = await connection.agent.request('initialize', {
-        protocolVersion: PROTOCOL_VERSION,
-        clientCapabilities: CLIENT_CAPABILITIES,
-        clientInfo: this.options.clientInfo ?? { name: 'cogitator', version: '0.1.0' },
-      });
+      connected.init = await untilAborted(
+        connection.agent.request('initialize', {
+          protocolVersion: PROTOCOL_VERSION,
+          clientCapabilities: CLIENT_CAPABILITIES,
+          clientInfo: this.options.clientInfo ?? { name: 'cogitator', version: '0.1.0' },
+        }),
+        ended,
+        reason
+      );
+      clearTimeout(timer);
       const method = this.options.authMethodId;
       if (method !== undefined && (connected.init.authMethods ?? []).some((m) => m.id === method)) {
-        await connection.agent.request('authenticate', { methodId: method });
+        step = 'authenticate';
+        await untilAborted(
+          connection.agent.request('authenticate', { methodId: method }),
+          ended,
+          reason
+        );
       }
     } catch (error) {
+      clearTimeout(timer);
+      let failure = describe(error);
+      if (child && !ended.aborted && !(error instanceof RequestError)) {
+        await abortedWithin(ended, EXIT_GRACE);
+        if (ended.aborted) failure = reason();
+      }
       shutdown(connected);
-      throw describe(error);
+      throw failure;
     }
     return connected;
   }
@@ -622,16 +665,64 @@ function modeOfOption(optionId: string): PermissionMode {
   return LEAVING_MODES.find((mode) => mode === optionId) ?? 'default';
 }
 
+/** Milliseconds an agent has to answer `initialize`, unless `handshakeTimeout` says otherwise */
+const DEFAULT_HANDSHAKE_TIMEOUT = 30_000;
+
+/** Milliseconds an agent whose output ended has to exit, for the error to say how it exited */
+const EXIT_GRACE = 500;
+
+/** How an error names the agent: the command line it is launched with, or its name for an app */
+function labelOf(target: AcpAgentTarget, name: string): string {
+  return 'app' in target ? `"${name}"` : `"${[target.command, ...(target.args ?? [])].join(' ')}"`;
+}
+
+/** The error of an agent that did not answer `initialize` in `limit` milliseconds */
+function silentError(label: string, limit: number, launched: boolean): Error {
+  const hint = launched
+    ? '. An agent that is not signed in often behaves this way: run it in a terminal and sign in.' +
+      ' An agent that only starts slowly needs a larger handshakeTimeout'
+    : '';
+  return new Error(`The ACP agent ${label} did not answer initialize in ${limit} ms${hint}`);
+}
+
+function reasonOf(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason));
+}
+
+/** Resolves once `signal` aborts, after `ms` at the latest */
+function abortedWithin(signal: AbortSignal, ms: number): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
+
 /** Throws when the turn was interrupted */
 function refuseAborted(signal: AbortSignal): void {
   if (signal.aborted) throw new Error('The turn was cancelled');
 }
 
-/** `work`, or a rejection as soon as the turn is interrupted: the work goes on, the turn does not wait */
-function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(new Error('The turn was cancelled'));
+/**
+ * `work`, or a rejection with `reason` as soon as `signal` aborts, by default that the turn was
+ * interrupted: the work goes on, its caller does not wait
+ */
+function untilAborted<T>(
+  work: Promise<T>,
+  signal: AbortSignal,
+  reason: () => Error = () => new Error('The turn was cancelled')
+): Promise<T> {
+  if (signal.aborted) {
+    work.catch(() => undefined);
+    return Promise.reject(reason());
+  }
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new Error('The turn was cancelled'));
+    const onAbort = () => reject(reason());
     signal.addEventListener('abort', onAbort, { once: true });
     work.then(
       (value) => {

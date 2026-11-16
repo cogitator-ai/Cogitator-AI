@@ -11,7 +11,7 @@ import {
 import { Cogitator, LocalWorkspace } from '@cogitator-ai/core';
 import type { StreamEvent } from '@cogitator-ai/server-shared';
 import { AcpAgentProvider, type AcpAgentProviderOptions } from '../client/provider';
-import { fakeAcpAgent } from './fake-agent';
+import { SILENT_AGENT_ARGS, fakeAcpAgent } from './fake-agent';
 import { waitUntil } from './helpers';
 
 let dir: string;
@@ -333,5 +333,171 @@ describe('AcpAgentProvider', () => {
     ).rejects.toThrow(/outside the runtime/);
     await provider.close();
     await host.close();
+  });
+});
+
+const never = () => new Promise<void>(() => undefined);
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A provider of a silent agent process, and the pid the process reports once it runs */
+function silentProcess(options: Partial<AcpAgentProviderOptions> = {}) {
+  let stderr = '';
+  const provider = new AcpAgentProvider({
+    agent: { command: process.execPath, args: SILENT_AGENT_ARGS },
+    workspace,
+    onStderr: (chunk) => {
+      stderr += chunk;
+    },
+    ...options,
+  });
+  const pid = async (): Promise<number> => {
+    await waitUntil(() => /^\d+$/.test(stderr));
+    return Number(stderr);
+  };
+  return { provider, pid };
+}
+
+/** `work`, or a rejection when it has not settled in `ms`: a hang shows as a failed test */
+function within<T>(work: Promise<T>, ms = 3000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Not settled in ${ms} ms`)), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    );
+  });
+}
+
+describe('AcpAgentProvider handshake', () => {
+  it('gives up on a launched agent that never answers initialize, names it and kills it', async () => {
+    const { provider, pid } = silentProcess({ handshakeTimeout: 300 });
+    const connecting = provider.connect();
+    const failure = await within(
+      connecting.then(
+        () => undefined,
+        (error: Error) => error
+      )
+    );
+    expect(failure?.message).toContain(process.execPath);
+    expect(failure?.message).toMatch(/did not answer initialize in 300 ms/);
+    expect(failure?.message).toMatch(/not signed in/);
+    const child = await pid();
+    await waitUntil(() => !alive(child));
+    await within(provider.close());
+  });
+
+  it('fails the turn of an agent that never answers initialize', async () => {
+    const { host, provider, run } = setup({ handshakeTimeout: 100 }, { initializes: never });
+    const thread = await host.startThread({});
+    const { done } = await run(thread.id, 'speak hello');
+    expect(done.status).toBe('failed');
+    expect(done.error?.message).toBe('The ACP agent "fake" did not answer initialize in 100 ms');
+    await within(provider.close());
+    await host.close();
+  });
+
+  it('launches the agent again for the turn after one it gave up on', async () => {
+    let launches = 0;
+    const { host, provider, run } = setup(
+      { handshakeTimeout: 100 },
+      { initializes: () => (launches++ === 0 ? never() : undefined) }
+    );
+    const thread = await host.startThread({});
+    expect((await run(thread.id, 'speak one')).done.status).toBe('failed');
+    const second = await run(thread.id, 'speak two');
+    expect(second.done).toMatchObject({ status: 'completed', output: 'two' });
+    await provider.close();
+    await host.close();
+  });
+
+  it('ends a launch in progress when closed, and kills the agent', async () => {
+    const { provider, pid } = silentProcess();
+    const failure = provider.connect().then(
+      () => undefined,
+      (error: Error) => error
+    );
+    const child = await pid();
+    await within(provider.close());
+    expect((await within(failure))?.message).toMatch(/closed/);
+    await waitUntil(() => !alive(child));
+  });
+
+  it.each(['initialize', 'authenticate'] as const)(
+    'ends a handshake with an agent in this process stuck on %s when closed',
+    async (stuck) => {
+      const { provider } = setup(
+        {},
+        stuck === 'initialize' ? { initializes: never } : { authenticates: never }
+      );
+      const failure = provider.connect().then(
+        () => undefined,
+        (error: Error) => error
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await within(provider.close());
+      expect((await within(failure))?.message).toMatch(/closed/);
+    }
+  );
+
+  it('ends a turn interrupted while it waits for the agent to answer initialize', async () => {
+    const { host, provider, completed } = setup({}, { initializes: never });
+    const thread = await host.startThread({});
+    const turn = await host.startTurn({
+      threadId: thread.id,
+      input: [{ type: 'text', text: 'speak late' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    host.interruptTurn(thread.id, turn.id);
+    expect((await completed(turn.id)).status).toBe('interrupted');
+    await within(provider.close());
+    await host.close();
+  });
+
+  it('rejects when the launched agent exits before it answers initialize', async () => {
+    const errors: string[] = [];
+    const provider = new AcpAgentProvider({
+      agent: { command: process.execPath, args: ['-e', 'process.exit(3)'] },
+      workspace,
+      onError: (error) => errors.push(error.message),
+    });
+    const failure = await within(
+      provider.connect().then(
+        () => undefined,
+        (error: Error) => error
+      )
+    );
+    expect(failure?.message).toContain(process.execPath);
+    expect(failure?.message).toMatch(/exited \(code 3\) before it answered initialize/);
+    await within(provider.close());
+  });
+
+  it('waits for initialize without a limit when the timeout is 0', async () => {
+    const { provider } = setup({ handshakeTimeout: 0 }, { initializes: never });
+    let settled = false;
+    const failure = provider.connect().then(
+      () => undefined,
+      (error: Error) => {
+        settled = true;
+        return error;
+      }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(settled).toBe(false);
+    await within(provider.close());
+    expect((await within(failure))?.message).toMatch(/closed/);
   });
 });
