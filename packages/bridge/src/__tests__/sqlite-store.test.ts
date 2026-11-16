@@ -672,6 +672,7 @@ describe('SqliteBridgeStore', () => {
         ALTER TABLE letters DROP COLUMN verdict;
         ALTER TABLE letters DROP COLUMN needs_person;
         ALTER TABLE letters DROP COLUMN person_asked_at;
+        ALTER TABLE agents DROP COLUMN permission_mode;
       `);
       raw.pragma('user_version = 1');
       raw.close();

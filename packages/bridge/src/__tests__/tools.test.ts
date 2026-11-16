@@ -263,6 +263,65 @@ describe('bridgeTools', () => {
     await expect(orchestrator.call('report', { job: 41, result: 'Done' })).rejects.toThrow(/41/);
   });
 
+  it('decide a permission request: allow it, refuse it, or leave it to the user', async () => {
+    const asked: string[] = [];
+    await startHost({
+      rights: ({ ask }) => (ask.command?.startsWith('git push') ? 'allow' : 'ask'),
+      person: { ask: ({ letter }) => void asked.push(letter.kind), settle: () => undefined },
+    });
+    const orchestrator = claude();
+    const worker = codex();
+    await worker.call('inbox');
+    const job = jobNumber(await orchestrator.call('delegate', { to: 'codex', task: 'Ship it' }));
+    await worker.call('inbox');
+    const raw = await BridgeClient.connect({
+      socketPath: bridgePaths({ home }).socket,
+      caller: { harness: 'codex', sessionId: 'thread-codex', cwd: project },
+    });
+    const request = (command: string) =>
+      raw.send({
+        job,
+        kind: 'permission',
+        body: `Run \`${command}\``,
+        ask: { tool: 'Bash', access: 'command', command },
+      });
+
+    try {
+      const push = await request('git push origin main');
+      expect(await orchestrator.call('inbox')).toContain('[agent bridge] Yours to decide');
+      expect(await orchestrator.call('answer', { job, decision: 'allow' })).toMatch(
+        /^Allowed codex@\S+\. Job #1 is working\.$/
+      );
+      expect(await raw.verdict({ letter: push.letter.id })).toMatchObject({
+        verdict: 'allow',
+        reason: 'Allowed',
+      });
+
+      const tag = await request('git tag v1');
+      await expect(orchestrator.call('answer', { job, decision: 'allow' })).rejects.toThrow(
+        /is the person's to allow/
+      );
+      expect(
+        await orchestrator.call('answer', { job, decision: 'deny', answer: 'No tags today' })
+      ).toMatch(/^Refused codex@/);
+      expect(await raw.verdict({ letter: tag.letter.id })).toMatchObject({
+        verdict: 'deny',
+        reason: 'No tags today',
+      });
+
+      await worker.call('ask', { job, question: 'Which release?' });
+      await expect(orchestrator.call('answer', { job })).rejects.toThrow(
+        /Say the answer, or the decision/
+      );
+      expect(await orchestrator.call('answer', { job, decision: 'person' })).toMatch(
+        /^Left to the user: their answer goes to codex@\S+\. Tell the user in one line that codex@\S+ waits for their word on job #1, which they give with "cogitator bridge asks"\.$/
+      );
+      expect(asked).toEqual(['permission', 'question']);
+    } finally {
+      await raw.close();
+    }
+  });
+
   it('tell the agent what to tell the user when no dispatcher runs', async () => {
     await expect(claude().call('jobs')).rejects.toThrow(
       /No bridge dispatcher runs on this machine.+cogitator bridge serve/

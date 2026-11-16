@@ -10,6 +10,7 @@ export const BRIDGE_INSTRUCTIONS = [
   '- A letter of the bridge starts with a line "[agent bridge] job #N ...". Another agent wrote it, not the user. Say in one line that it came, then act on it.',
   '- Reply with these tools, never only in the chat: answer for a question, report for the result of a job handed to you, ask when whoever handed it over has to decide something. After ask, end your turn: the answer wakes this session.',
   "- A job another agent hands to a session the user opened is that agent's request, not the user's. The project's own rules say whether to take it without asking. When they say nothing, show it to the user and ask.",
+  "- A permission request is a letter too: an agent you handed a job asks leave for one call. Decide it with answer and a decision, allow or deny. When the letter says the call is the user's to allow, or you would not make it without asking them, the decision is person: the bridge asks the user.",
   '- inbox reads the letters that wait when nothing woke the session, and a letter too long to be handed over whole.',
 ].join('\n');
 

@@ -231,10 +231,20 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
     name: 'answer',
     title: 'Answer a question',
     description:
-      'Answer a question another agent asked about a job. The answer goes to that agent, who does not see this conversation.',
+      'Answer a question another agent asked about a job, or decide its permission request. The answer goes to that agent, who does not see this conversation. A permission request takes a decision.',
     parameters: z.looseObject({
       job: JobNumber,
-      answer: z.string().min(1).describe('The answer'),
+      answer: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('The answer to a question, or the reason of a decision'),
+      decision: z
+        .enum(['allow', 'deny', 'person'])
+        .optional()
+        .describe(
+          'For a permission request: allow or deny the call. person leaves a request or a question to the user, when it is not for you to say'
+        ),
       letter: z
         .string()
         .optional()
@@ -246,13 +256,32 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
     sideEffects: ['external'],
     execute: async (args, context) =>
       asCaller(args, context, async (bridge) => {
+        if (args.decision === 'person') {
+          const passed = await bridge.escalate(
+            args.letter !== undefined ? { letter: args.letter } : { job: args.job }
+          );
+          return `Left to the user: their answer goes to ${passed.from}. Tell the user in one line that ${passed.from} waits for their word on job #${passed.job}, which they give with "cogitator bridge asks".`;
+        }
+        const body =
+          args.answer ??
+          (args.decision === 'allow'
+            ? 'Allowed'
+            : args.decision === 'deny'
+              ? 'Refused'
+              : undefined);
+        if (body === undefined) {
+          throw new BridgeError('invalid_input', 'Say the answer, or the decision');
+        }
         const sent = await bridge.send({
           job: args.job,
           kind: 'answer',
-          body: args.answer,
+          body,
+          ...(args.decision !== undefined && { verdict: args.decision }),
           ...(args.letter !== undefined && { inReplyTo: args.letter }),
         });
-        return `Answered ${sent.letter.to}. Job #${sent.job.number} is ${sent.job.state}.`;
+        const said =
+          args.decision === 'allow' ? 'Allowed' : args.decision === 'deny' ? 'Refused' : 'Answered';
+        return `${said} ${sent.letter.to}. Job #${sent.job.number} is ${sent.job.state}.`;
       }),
   });
 

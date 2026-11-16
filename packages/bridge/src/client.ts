@@ -7,12 +7,17 @@ import {
 } from '@cogitator-ai/server-shared';
 import { BridgeError } from './errors.js';
 import {
+  DEFAULT_VERDICT_WAIT_MS,
   DEFAULT_WAIT_MS,
   type CreateJobInput,
   type CreateJobResult,
+  type EscalateInput,
   type InboxInput,
+  type PersonAnswerInput,
   type SendLetterInput,
   type SendLetterResult,
+  type VerdictInput,
+  type VerdictResult,
   type WaitInput,
   type WaitResult,
 } from './inputs.js';
@@ -189,6 +194,33 @@ export class BridgeClient {
   /** Says the letters a wait returned reached the session */
   delivered(letters: readonly string[]): Promise<Letter[]> {
     return this.call(BRIDGE_METHODS.delivered, { letters });
+  }
+
+  /** Passes a question or a permission request addressed to the session on to the person */
+  escalate(input: EscalateInput): Promise<Letter> {
+    return this.call(BRIDGE_METHODS.escalate, input);
+  }
+
+  /**
+   * Whether a permission request the session sent is decided, see `BridgeDispatcher.verdict`.
+   * It waits for the decision as long as `timeoutMs` says, and answers `waiting` after that
+   */
+  verdict(input: VerdictInput): Promise<VerdictResult> {
+    const waitMs = input.timeoutMs ?? DEFAULT_VERDICT_WAIT_MS;
+    return this.call(BRIDGE_METHODS.verdict, input, waitMs + this.timeoutMs);
+  }
+
+  /** The letters that wait for the person */
+  forPerson(): Promise<RenderedLetter[]> {
+    return this.call(BRIDGE_METHODS.forPerson, {});
+  }
+
+  /**
+   * Answers a letter that waits for the person, as the person. Only a connection that did not
+   * say hello as a session of an agent may
+   */
+  personAnswer(input: PersonAnswerInput): Promise<SendLetterResult> {
+    return this.call(BRIDGE_METHODS.personAnswer, input);
   }
 
   cancel(job: number, reason?: string): Promise<BridgeJob> {

@@ -439,6 +439,66 @@ describe('BridgeClient', () => {
     });
   });
 
+  it('takes a permission request to the person and back, and no agent answers for them', async () => {
+    const asked: string[] = [];
+    await startHost({
+      rights: () => 'ask',
+      person: {
+        ask: ({ letter }) => void asked.push(letter.id),
+        settle: () => undefined,
+      },
+    });
+    const claude = await clientFor(claudeCaller);
+    const codex = await clientFor(codexCaller);
+    const person = await clientFor();
+    const { job } = await claude.createJob({ to: 'codex', body: 'Ship the fix' });
+    await codex.inbox();
+
+    const { letter } = await codex.send({
+      job: job.number,
+      kind: 'permission',
+      body: 'Run `git push origin main`',
+      ask: { tool: 'Bash', access: 'command', command: 'git push origin main' },
+    });
+    const waiting = codex.verdict({ letter: letter.id, timeoutMs: 5_000 });
+    await until(() => asked.length === 1, 'the person to be asked');
+
+    expect((await person.forPerson()).map((found) => found.id)).toEqual([letter.id]);
+    await expect(claude.personAnswer({ letter: letter.id, verdict: 'allow' })).rejects.toThrow(
+      /claude@demo is a session of an agent, and only the person answers for the person/
+    );
+    await person.personAnswer({ letter: letter.id, verdict: 'allow', body: 'Go ahead' });
+
+    expect(await waiting).toEqual({
+      state: 'decided',
+      verdict: 'allow',
+      reason: 'Go ahead',
+      by: 'person',
+    });
+    expect(await person.forPerson()).toEqual([]);
+  });
+
+  it('passes a question on to the person when its recipient says so', async () => {
+    const asked: string[] = [];
+    await startHost({
+      person: { ask: ({ letter }) => void asked.push(letter.body), settle: () => undefined },
+    });
+    const claude = await clientFor(claudeCaller);
+    const codex = await clientFor(codexCaller);
+    const { job } = await claude.createJob({ to: 'codex', body: 'Ship the fix' });
+    const { letter } = await codex.send({ job: job.number, kind: 'question', body: 'Which one?' });
+
+    expect((await claude.escalate({ job: job.number })).needsPerson).toBe(true);
+    expect(letter.to).toBe('claude@demo');
+    await until(() => asked.length === 1, 'the person to be asked');
+    await (await clientFor()).personAnswer({ letter: letter.id, body: 'The second' });
+
+    expect(asked).toEqual(['Which one?']);
+    expect((await codex.inbox()).map((got) => [got.from, got.body])).toEqual([
+      ['person', 'The second'],
+    ]);
+  });
+
   it('does not let a connection say that the result of a job holds', async () => {
     const host = await startHost();
     const claude = await clientFor(claudeCaller);

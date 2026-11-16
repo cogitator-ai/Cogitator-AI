@@ -138,11 +138,17 @@ export interface SendLetterResult {
   duplicate: boolean;
 }
 
-export const EscalateInputSchema = z.strictObject({ letter: LetterIdSchema });
+export const EscalateInputSchema = z
+  .strictObject({ letter: LetterIdSchema.optional(), job: JobNumberSchema.optional() })
+  .refine((input) => input.letter !== undefined || input.job !== undefined, {
+    message: 'Name the letter, or the job it belongs to',
+  });
 
 /** A question or a permission request the caller passes on to the person. */
 export interface EscalateInput {
-  letter: string;
+  letter?: string;
+  /** Instead of the letter: the job, when one letter of it waits for the caller's answer */
+  job?: number;
 }
 
 export const PersonAnswerInputSchema = z.strictObject({

@@ -198,9 +198,29 @@ class Connection {
     on(BRIDGE_METHODS.delivered, (value) =>
       dispatcher.delivered(this.caller(), params(DeliveredParamsSchema, value).letters)
     );
+    on(BRIDGE_METHODS.escalate, (value) =>
+      dispatcher.escalate(this.caller(), value as Parameters<BridgeDispatcher['escalate']>[1])
+    );
+    on(BRIDGE_METHODS.verdict, (value) =>
+      dispatcher.verdict(
+        this.caller(),
+        value as Parameters<BridgeDispatcher['verdict']>[1],
+        this.gone.signal
+      )
+    );
     on(BRIDGE_METHODS.listLetters, (value) =>
       dispatcher.letters((value ?? {}) as Parameters<BridgeDispatcher['letters']>[0])
     );
+    on(BRIDGE_METHODS.forPerson, () => dispatcher.forPerson());
+    on(BRIDGE_METHODS.personAnswer, (value) => {
+      if (this.agent) {
+        throw new BridgeError(
+          'not_a_party',
+          `${this.agent} is a session of an agent, and only the person answers for the person`
+        );
+      }
+      return dispatcher.personAnswer(value as Parameters<BridgeDispatcher['personAnswer']>[0]);
+    });
     on(BRIDGE_METHODS.listAgents, (value) =>
       dispatcher.agents((value ?? {}) as Parameters<BridgeDispatcher['agents']>[0])
     );

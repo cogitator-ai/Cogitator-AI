@@ -48,6 +48,24 @@ describe('register', () => {
     expect(await kit.bridge.agents()).toHaveLength(3);
   });
 
+  it('keeps the permission mode a session told, until it tells another', async () => {
+    kit = await makeKit();
+    const session = (permissionMode?: string) =>
+      kit.bridge.register({
+        harness: 'claude-code',
+        sessionId: 'session-claude',
+        cwd: '/work/demo',
+        project: '/work/demo',
+        ...(permissionMode && { permissionMode }),
+      });
+
+    expect(kit.claude.permissionMode).toBeUndefined();
+    expect((await session('acceptEdits')).permissionMode).toBe('acceptEdits');
+    expect((await session()).permissionMode).toBe('acceptEdits');
+    expect((await session('plan')).permissionMode).toBe('plan');
+    await expect(session('two\nlines')).rejects.toThrow(code('invalid_input'));
+  });
+
   it('records how the harness of a session is reached when it has an adapter', async () => {
     kit = await makeKit({ adapters: [new FakeAdapter()] });
 

@@ -80,6 +80,12 @@ export interface AgentRecord {
   registeredAt: string;
   /** ISO 8601 time of the last call it made as an agent: a job, a letter, its inbox */
   lastSeenAt: string;
+  /**
+   * The permission mode the session said it runs in the last time it told: `default`,
+   * `acceptEdits`, `plan` and so on, in the words of its harness. Absent for a harness that does
+   * not tell
+   */
+  permissionMode?: string;
 }
 
 /** Who calls the bridge, as read from the caller's environment. */
@@ -94,6 +100,8 @@ export interface CallerIdentity {
   sessionName?: string;
   /** The name the bridge gave a session it started, handed to that session in its environment */
   agentName?: string;
+  /** The permission mode the session runs in right now, when its harness tells */
+  permissionMode?: string;
 }
 
 /**
@@ -129,6 +137,7 @@ export const CallerIdentitySchema = z.strictObject({
   project: AbsolutePathSchema.optional(),
   sessionName: OneLineSchema.optional(),
   agentName: OneLineSchema.optional(),
+  permissionMode: OneLineSchema.optional(),
 });
 
 /**

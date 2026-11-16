@@ -223,6 +223,46 @@ describe('a call an agent asks leave for', () => {
     expect(kit.errors.map((error) => error.message)).toEqual(['cannot read the settings']);
   });
 
+  it('is bound by every agent up the chain of jobs it comes from', async () => {
+    const person = new FakeRoute();
+    const said: Record<string, Rights> = {};
+    kit = await makeKit({
+      person,
+      rights: ({ job }) => said[job.from] ?? 'allow',
+    });
+    const { bridge, claude, codex } = kit;
+    const gemini = await bridge.register({
+      harness: 'gemini',
+      sessionId: 'g1',
+      cwd: '/work/demo',
+      project: '/work/demo',
+    });
+    const outer = await bridge.createJob(claude.name, { to: 'codex', body: 'Ship the fix' });
+    await bridge.inbox(codex.name);
+    const inner = await bridge.createJob(codex.name, {
+      to: 'gemini',
+      body: 'Push the branch',
+      parent: outer.job.number,
+    });
+    await bridge.inbox(gemini.name);
+    const ask = (body: string) =>
+      bridge.send(gemini.name, { job: inner.job.number, kind: 'permission', body, ask: PUSH });
+
+    const first = await ask('First');
+    expect(first.letter).toMatchObject({ to: codex.name });
+    expect(first.letter.needsPerson).toBeUndefined();
+
+    said[claude.name] = 'ask';
+    expect((await ask('Second')).letter).toMatchObject({ to: codex.name, needsPerson: true });
+
+    said[claude.name] = 'deny';
+    const refused = await ask('Third');
+    expect(await bridge.verdict(gemini.name, { letter: refused.letter.id })).toMatchObject({
+      verdict: 'deny',
+      by: BRIDGE_SENDER,
+    });
+  });
+
   it('takes a decision and not just words, and only from the one it is for', async () => {
     const { bridge, claude, codex, job, ask } = await asking({ rights: judge('allow') });
     const sent = await ask();
