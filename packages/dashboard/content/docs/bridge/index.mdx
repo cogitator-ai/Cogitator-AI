@@ -204,7 +204,7 @@ An agent that carries a job out sometimes needs leave for one call: to run a com
 | allowed       | The request goes to that agent, which answers `allow` or `deny`       |
 | ask a person  | Only the person can allow it. The agent is told, and can still refuse |
 
-So an agent never gets leave from another agent that the other one does not have itself. A job handed over from inside a job is bound by every agent up the chain.
+So an agent never gets leave from another agent that the other one does not have itself. A job handed over from inside a job is bound by every agent up the chain. Without a rule the person is asked what a person at a session would be asked: a command, an address to fetch, a file outside the project. A change to the settings files themselves is always the person's to allow, whatever the rules and the mode say: an agent does not write the rules it is judged by.
 
 The one who asked does not get the answer as mail: it waits for it with `verdict({ letter })`, which answers the moment the request is decided. A request whose job ends first counts as refused. The same call may be asked for again once it was allowed, and is held back as a repeat once it was refused.
 
@@ -221,7 +221,7 @@ cogitator bridge reply 12 "the release in March"
 
 `serve` and the daemon also keep these letters in an inbox, `inbox.json` next to the database (an `experimental_Inbox` of core, so its sinks and whatever reads the file see them), and send them to a Telegram chat when `COGITATOR_BRIDGE_TELEGRAM_TOKEN` and `COGITATOR_BRIDGE_TELEGRAM_CHAT` name a bot and a chat: a permission request with Allow and Refuse buttons, a question to be answered by replying to it. `COGITATOR_BRIDGE_TELEGRAM_USERS` limits who in that chat is listened to. Give the bridge a bot of its own.
 
-Waiting for the person does not spend the job's time: the deadline does not fail a job that waits for them, and moves by as long as it waited once they answered. The person has a limit of their own instead: after 4 hours they are reminded, after as long again the job fails.
+Waiting for the person does not spend the job's time: the deadline does not fail a job that waits for them, nor the jobs it is part of, and moves by as long as they waited once the person answered. An agent that takes a letter back from the person and answers it itself gets no time for it. The person has a limit of their own instead: after 4 hours they are reminded, after as long again the job fails. A permission request is a letter of the job like any other and counts against its letters.
 
 In your own process the pieces are `hostBridge({ rights, person })`:
 

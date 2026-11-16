@@ -104,9 +104,62 @@ describe('the rights the settings of a project give', () => {
     symlinkSync(project, join(project, 'again'));
     symlinkSync(join(project, '.env'), join(project, 'src', 'harmless.txt'));
 
+    symlinkSync(join(project, '.env'), join(project, '.env.link'));
+
     expect(await rights(read(join(project, 'again', '.env')))).toBe('deny');
     expect(await rights(read(join(project, 'src', 'harmless.txt')))).toBe('deny');
-    expect(await rights(edit(join(project, 'again', 'src', 'limiter.ts')))).toBe('allow');
+    expect(await rights(edit(join(project, 'src', 'limiter.ts')))).toBe('allow');
+    expect(await rights(edit(join(project, 'again', 'src', 'limiter.ts')))).toBe('ask');
+  });
+
+  it('hold a rule that names a link for the link, and for what it points at', async () => {
+    if (process.platform === 'win32') return;
+    settings({ deny: ['Read(.env)'] });
+    writeFileSync(join(project, '.env.development'), 'KEY=1');
+    symlinkSync(join(project, '.env.development'), join(project, '.env'));
+
+    expect(await rights(read(join(project, '.env')))).toBe('deny');
+    expect(await rights(read(join(project, '.env.development')))).toBe('allow');
+  });
+
+  it('leave to the person what a person at a session would be asked: a file outside the project, an address', async () => {
+    const outside = join(project, '..', 'elsewhere', 'id_rsa');
+    const fetch = (url: string): PermissionAsk => ({ tool: 'WebFetch', access: 'fetch', url });
+
+    expect(await rights(read(outside))).toBe('ask');
+    expect(await rights(read(join(project, 'README.md'), outside))).toBe('ask');
+    expect(await rights(fetch('https://example.com/page'))).toBe('ask');
+
+    settings({
+      allow: ['WebFetch(domain:example.com)'],
+      additionalDirectories: [join(project, '..', 'elsewhere')],
+    });
+    expect(await rights(fetch('https://example.com/page'))).toBe('allow');
+    expect(await rights(fetch('https://other.example.org'))).toBe('ask');
+    expect(await rights(read(outside))).toBe('allow');
+  });
+
+  it('hold a rule that names a tool for the calls of that tool, whatever a harness calls it', async () => {
+    settings({ deny: ['Write', 'Grep'], allow: ['Edit(src/**)'] });
+    const file = join(project, 'src', 'limiter.ts');
+
+    expect(await rights({ tool: 'Write', access: 'edit', paths: [file] })).toBe('deny');
+    expect(await rights({ tool: 'write_file', access: 'edit', paths: [file] })).toBe('deny');
+    expect(await rights({ tool: 'Edit', access: 'edit', paths: [file] })).toBe('allow');
+    expect(await rights({ tool: 'Grep', access: 'read', paths: [project] })).toBe('deny');
+    expect(await rights({ tool: 'Read', access: 'read', paths: [file] })).toBe('allow');
+  });
+
+  it('never let an agent allow a change to the settings it is judged by', async () => {
+    settings({ allow: ['Edit'] });
+    const own = join(project, '.claude', 'settings.local.json');
+
+    expect(await rights(edit(join(project, 'src', 'limiter.ts')))).toBe('allow');
+    expect(await rights(edit(own))).toBe('ask');
+    expect(await rights(edit(join(project, '.cogitator', 'settings.json')))).toBe('ask');
+    expect(await rights(edit(own), 'acceptEdits')).toBe('ask');
+    expect(await rights(edit(own), 'bypassPermissions')).toBe('ask');
+    expect(await rights(edit(join(project, 'src', 'a.ts'), own), 'bypassPermissions')).toBe('ask');
   });
 
   it('take an edit rule for the files it names and no others', async () => {

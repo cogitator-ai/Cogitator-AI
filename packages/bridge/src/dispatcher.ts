@@ -813,12 +813,15 @@ export class BridgeDispatcher
         const settled = this.refuse(tx, letter, refused);
         return { letter: settled, job: this.requireJob(job.number).job, duplicate: false };
       }
-      if (forPerson) tx.asked.push({ letter: letter.id, again: false });
+      if (forPerson) {
+        tx.asked.push({ letter: letter.id, again: false });
+        await this.startWaiting(job.number, now);
+      }
 
       if (answered && request.kind === 'answer') {
         this.markHandled(tx, answered);
         if (answered.ask) this.markHandled(tx, letter);
-        await this.giveBackTheWait(job, answered, now);
+        if (answered.needsPerson) await this.stopWaiting(job.number, now, false);
       }
       if (request.kind === 'report') {
         const state = letter.outcome === 'failed' ? 'failed' : 'completed';
@@ -826,6 +829,7 @@ export class BridgeDispatcher
         if (state === 'failed')
           await this.patchRecord(job.taskId, { reason: `reported as failed by ${from.name}` });
         this.closeLetters(tx, job.number, letter.id);
+        await this.stopWaiting(job.number, now, false);
         await this.cancelChildren(tx, job);
       } else if (isAssignee && NEEDS_ANSWER.includes(request.kind)) {
         await this.transition(
@@ -906,6 +910,7 @@ export class BridgeDispatcher
         agent: agent.name,
       });
       tx.asked.push({ letter: letter.id, again: false });
+      await this.startWaiting(job.number, now);
       return updated;
     });
   }
@@ -968,7 +973,7 @@ export class BridgeDispatcher
       });
       this.markHandled(tx, target);
       const sent = target.ask ? this.markHandled(tx, letter) : letter;
-      await this.giveBackTheWait(job, target, this.now());
+      await this.stopWaiting(job.number, this.now(), true);
       await this.resumeIfAnswered(tx, job, forHistory(body, letter.id));
       return { letter: sent, job: this.requireJob(job.number).job, duplicate: false };
     });
@@ -1123,30 +1128,67 @@ export class BridgeDispatcher
     return settled;
   }
 
-  /** Whether a letter of the job waits for the person right now. */
+  /**
+   * Whether a job waits for the person right now: a letter of it does, or a job handed over
+   * from inside it waits for them.
+   */
   private waitsForPerson(number: number): boolean {
-    return (
-      this.store.countLetters({
-        job: number,
-        needsPerson: true,
-        states: ['queued', 'delivered', 'read'],
-      }) > 0
-    );
+    const own = this.store.countLetters({
+      job: number,
+      needsPerson: true,
+      states: ['queued', 'delivered', 'read'],
+    });
+    if (own > 0) return true;
+    return this.store.jobTasks({ parent: number, states: ACTIVE_JOB_STATES }).some((task) => {
+      const child = jobOf(task);
+      return child !== undefined && this.waitsForPerson(child.number);
+    });
+  }
+
+  /** A job and the jobs it was handed over from inside of, the nearest first, while they run. */
+  private chainOf(number: number): BridgeJob[] {
+    const chain: BridgeJob[] = [];
+    for (let at: number | undefined = number; at !== undefined;) {
+      const job = this.jobIfAny(at);
+      if (!job) break;
+      if (!isFinishedJobState(job.state)) chain.push(job);
+      at = job.parent;
+    }
+    return chain;
   }
 
   /**
-   * The time a job spent waiting for the person is not time its agents worked: once the letter
-   * is answered, the job's deadline moves by as long as it waited. While it waits, the deadline
-   * does not fail the job at all, the person's own time limit does.
+   * Notes that a job began to wait for the person, and with it every job it is part of: none
+   * of them is failed by its deadline while the wait lasts.
    */
-  private async giveBackTheWait(job: BridgeJob, answered: Letter, now: number): Promise<void> {
-    if (!answered.personAskedAt) return;
-    const waited = now - Date.parse(answered.personAskedAt);
-    if (waited <= 0) return;
-    const { job: fresh } = this.requireJob(job.number);
-    await this.patchRecord(fresh.taskId, {
-      deadlineAt: this.iso(Date.parse(fresh.deadlineAt) + waited),
-    });
+  private async startWaiting(number: number, now: number): Promise<void> {
+    for (const job of this.chainOf(number)) {
+      if (!job.personWaitSince) {
+        await this.patchRecord(job.taskId, { personWaitSince: this.iso(now) });
+      }
+    }
+  }
+
+  /**
+   * Settles the wait of a job and of every job it is part of after a letter that waited for the
+   * person was dealt with. Time spent waiting for the person is not time the agents worked:
+   * when the person answered (`answered`), the deadline moves by as long as the job waited so
+   * far. When an agent dealt with the letter itself, or the job ended, nothing is given back, so
+   * agents cannot buy a job time by leaving letters to the person and taking them back. A job
+   * that still waits for another letter goes on waiting.
+   */
+  private async stopWaiting(number: number, now: number, answered: boolean): Promise<void> {
+    for (const job of this.chainOf(number)) {
+      if (!job.personWaitSince) continue;
+      const waited = Math.max(0, now - Date.parse(job.personWaitSince));
+      const still = this.waitsForPerson(job.number);
+      await this.patchRecord(job.taskId, {
+        ...(answered && { deadlineAt: this.iso(Date.parse(job.deadlineAt) + waited) }),
+        personWaitSince: still
+          ? this.iso(answered ? now : Date.parse(job.personWaitSince))
+          : undefined,
+      });
+    }
   }
 
   /** Puts a job that waited for an answer back to work once nothing of it waits for one. */
@@ -1835,7 +1877,8 @@ export class BridgeDispatcher
 
   /**
    * Hands the person route what a call changed for it, after the call is stored and in the
-   * order it happened. A route that throws stops nothing: the letter still waits in the bridge.
+   * order it happened. A route that throws, or takes longer than a delivery may, stops nothing:
+   * the letter still waits in the bridge, and what comes after it is still told.
    */
   private tellPerson(tx: Pick<Transaction, 'asked' | 'settled'>): void {
     const route = this.person;
@@ -1858,9 +1901,17 @@ export class BridgeDispatcher
       if (found) news.push(() => route.settle(found));
     }
     for (const tell of news) {
-      this.personNews = this.personNews.then(tell).catch((error: unknown) => {
-        this.onError(asError(error));
-      });
+      this.personNews = this.personNews
+        .then(() =>
+          within(
+            Promise.resolve().then(tell),
+            this.limits.deliveryTimeoutMs,
+            'Telling the person of a letter'
+          )
+        )
+        .catch((error: unknown) => {
+          this.onError(asError(error));
+        });
     }
     this.track(this.personNews);
   }
@@ -1960,6 +2011,7 @@ export class BridgeDispatcher
     await this.transition(tx, number, 'failed', reason);
     await this.patchRecord(job.taskId, { reason });
     this.closeLetters(tx, number);
+    await this.stopWaiting(number, this.now(), false);
     const text = `Job #${number} has failed: ${reason}.`;
     this.systemNote(tx, job, job.from, text);
     this.systemNote(tx, job, job.to, `${text} Stop working on it.`);
@@ -1977,6 +2029,7 @@ export class BridgeDispatcher
     await this.transition(tx, number, 'canceled', reason);
     await this.patchRecord(job.taskId, { reason });
     this.closeLetters(tx, number);
+    await this.stopWaiting(number, this.now(), false);
     this.systemNote(tx, job, job.to, note);
     await this.cancelChildren(tx, job);
   }
