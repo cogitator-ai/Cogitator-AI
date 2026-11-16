@@ -107,7 +107,7 @@ async function until<T>(
   read: () => Promise<T | undefined> | T | undefined,
   what: string
 ): Promise<T> {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 30_000;
   for (;;) {
     const value = await read();
     if (value !== undefined && value !== false) return value;

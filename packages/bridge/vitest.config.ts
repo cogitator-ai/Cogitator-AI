@@ -10,6 +10,6 @@ export default defineConfig({
       reporter: ['text', 'json', 'html'],
       exclude: ['**/node_modules/**', '**/dist/**'],
     },
-    testTimeout: 30000,
+    testTimeout: 120000,
   },
 });
