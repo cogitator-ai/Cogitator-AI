@@ -10,7 +10,7 @@ import {
   BridgeClient,
   CommandMissingError,
   bridgePaths,
-  findProjectRoot,
+  findCheckoutRoot,
   type AdapterSetup,
   type SetupContext,
   type SetupStep,
@@ -214,7 +214,7 @@ async function carryOut(
 
 function contextOf(flags: SharedFlags, context: BridgeInstallContext): SetupContext {
   return {
-    project: findProjectRoot(resolve(context.cwd, flags.cwd ?? '.')),
+    project: findCheckoutRoot(resolve(context.cwd, flags.cwd ?? '.')),
     scope: flags.user ? 'user' : 'project',
   };
 }
