@@ -28,6 +28,11 @@
       "import": "./dist/tools/index.js",
       "default": "./dist/tools/index.js"
     },
+    "./rights": {
+      "types": "./dist/rights/index.d.ts",
+      "import": "./dist/rights/index.js",
+      "default": "./dist/rights/index.js"
+    },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js",

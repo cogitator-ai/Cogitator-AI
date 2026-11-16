@@ -385,6 +385,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
           cwd,
           project,
           ...(caller.sessionName && { sessionName: caller.sessionName }),
+          ...(caller.permissionMode && { permissionMode: caller.permissionMode }),
           status: 'active',
           lastSeenAt: now,
         };
@@ -411,6 +412,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
           ...reach,
           sessionId: caller.sessionId,
           ...(caller.sessionName && { sessionName: caller.sessionName }),
+          ...(caller.permissionMode && { permissionMode: caller.permissionMode }),
           status: 'active',
           lastSeenAt: now,
         };
@@ -429,6 +431,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
         harness: caller.harness,
         sessionId: caller.sessionId,
         ...(caller.sessionName && { sessionName: caller.sessionName }),
+        ...(caller.permissionMode && { permissionMode: caller.permissionMode }),
         project,
         cwd,
         ...reach,
@@ -854,7 +857,10 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
     const request = parse(EscalateInputSchema, input, 'Cannot pass the letter on');
     return this.asCaller(caller, async (tx) => {
       const agent = this.requireCaller(caller);
-      const letter = this.store.getLetter(request.letter);
+      const letter =
+        request.letter === undefined
+          ? this.openLetter(request.job ?? 0, agent.name)
+          : this.store.getLetter(request.letter);
       if (letter?.to !== agent.name) {
         throw new BridgeError(
           'unknown_letter',
@@ -1054,20 +1060,33 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
   }
 
   /**
-   * What the rules of the agent that handed a job over make of a call. A judge that throws, and
-   * a bridge without one, leave the call to the person: nothing is allowed by accident.
+   * What the rules of the agent that handed a job over make of a call. A job handed over from
+   * inside a job is bound by every agent up the chain: the call is theirs to allow only when it
+   * is each one's, and forbidden when any of them may not make it. A judge that throws, and a
+   * bridge without one, leave the call to the person: nothing is allowed by accident.
    */
   private async rightsFor(number: number, ask: PermissionAsk): Promise<Rights> {
     if (!this.rights) return 'ask';
-    const task = this.store.taskOfJob(number);
-    const job = task && jobOf(task);
-    if (!job) return 'ask';
+    let rights: Rights = 'allow';
     try {
-      return await this.rights({ job, delegator: this.store.getAgent(job.from), ask });
+      for (let at: number | undefined = number; at !== undefined;) {
+        const job = this.jobIfAny(at);
+        if (!job) return 'ask';
+        const said = await this.rights({ job, delegator: this.store.getAgent(job.from), ask });
+        if (said === 'deny') return 'deny';
+        if (said === 'ask') rights = 'ask';
+        at = job.parent;
+      }
     } catch (error) {
       this.onError(asError(error));
       return 'ask';
     }
+    return rights;
+  }
+
+  private jobIfAny(number: number): BridgeJob | undefined {
+    const task = this.store.taskOfJob(number);
+    return task && jobOf(task) ? this.requireJob(number).job : undefined;
   }
 
   /** Whether a permission request was answered with `allow`: the same call may be asked for again. */
@@ -2140,8 +2159,17 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
       return target;
     }
     if (request.kind !== 'answer') return undefined;
+    return this.openLetter(job.number, caller);
+  }
+
+  /**
+   * The one letter of a job that waits for the caller's answer.
+   *
+   * @throws BridgeError `invalid_letter` when none does, or several do
+   */
+  private openLetter(number: number, caller: string): Letter {
     const open = this.store.listLetters({
-      job: job.number,
+      job: number,
       to: caller,
       kinds: NEEDS_ANSWER,
       states: ['queued', 'delivered', 'read'],
@@ -2150,16 +2178,16 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
     if (open.length === 0) {
       throw new BridgeError(
         'invalid_letter',
-        `Nothing on job ${job.number} waits for your answer. Send a note instead`,
+        `Nothing on job ${number} waits for your answer. Send a note instead`,
         {
-          job: job.number,
+          job: number,
         }
       );
     }
     throw new BridgeError(
       'invalid_letter',
-      `Several letters on job ${job.number} wait for your answer: ${open.map((letter) => letter.id).join(', ')}. Say which one with inReplyTo`,
-      { job: job.number, letters: open.map((letter) => letter.id) }
+      `Several letters on job ${number} wait for your answer: ${open.map((letter) => letter.id).join(', ')}. Say which one with inReplyTo`,
+      { job: number, letters: open.map((letter) => letter.id) }
     );
   }
 

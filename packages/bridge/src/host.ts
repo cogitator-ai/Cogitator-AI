@@ -11,6 +11,7 @@ import { serveBridge, type BridgeServer } from './server.js';
 import { SqliteBridgeStore } from './store/sqlite.js';
 import type { Lease } from './store/store.js';
 import type { BridgeAdapter } from './adapter.js';
+import type { PersonRoute, RightsJudge } from './person.js';
 
 export interface HostBridgeOptions {
   /** The folder of the bridge's files: `COGITATOR_BRIDGE_HOME` by default, else `~/.cogitator/bridge` */
@@ -18,6 +19,14 @@ export interface HostBridgeOptions {
   env?: NodeJS.ProcessEnv;
   adapters?: readonly BridgeAdapter[];
   limits?: BridgeLimitsInput;
+  /**
+   * What the rules of the agent that handed a job over say of a call the one carrying it out
+   * asks leave for, `settingsRights()` of `@cogitator-ai/bridge/rights` to read them from the
+   * project's permission settings. Without it every such call is the person's to decide
+   */
+  rights?: RightsJudge;
+  /** How a letter that waits for the person reaches them. Without it nothing can wait for them */
+  person?: PersonRoute;
   /** How often the dispatcher says it is alive and looks at what time did to jobs, 5 s by default */
   tickMs?: number;
   /**
@@ -128,6 +137,8 @@ export async function hostBridge(options: HostBridgeOptions = {}): Promise<Bridg
       store,
       ...(options.adapters && { adapters: options.adapters }),
       ...(options.limits && { limits: options.limits }),
+      ...(options.rights && { rights: options.rights }),
+      ...(options.person && { person: options.person }),
       onError,
       assertWritable: () => {
         if (store.readLease()?.nonce === nonce) return;

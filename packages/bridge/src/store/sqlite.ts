@@ -53,6 +53,7 @@ const UPGRADES: readonly string[] = [
   ALTER TABLE letters ADD COLUMN verdict TEXT;
   ALTER TABLE letters ADD COLUMN needs_person INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE letters ADD COLUMN person_asked_at INTEGER;
+  ALTER TABLE agents ADD COLUMN permission_mode TEXT;
   CREATE INDEX letters_reply ON letters (in_reply_to) WHERE in_reply_to IS NOT NULL;
   CREATE INDEX letters_person ON letters (seq) WHERE needs_person = 1;
   `,
@@ -104,7 +105,8 @@ const SCHEMA = `
     capabilities TEXT NOT NULL,
     status TEXT NOT NULL,
     registered_at INTEGER NOT NULL,
-    last_seen_at INTEGER NOT NULL
+    last_seen_at INTEGER NOT NULL,
+    permission_mode TEXT
   );
   CREATE UNIQUE INDEX agents_session ON agents (harness, session_id) WHERE session_id <> '';
   CREATE INDEX agents_project ON agents (project, harness);
@@ -177,6 +179,7 @@ interface AgentRow {
   status: string;
   registered_at: number;
   last_seen_at: number;
+  permission_mode?: string | null;
 }
 
 interface LetterRow {
@@ -253,6 +256,7 @@ function toAgent(row: AgentRow): AgentRecord {
     status: row.status as AgentStatus,
     registeredAt: iso(row.registered_at),
     lastSeenAt: iso(row.last_seen_at),
+    ...(row.permission_mode && { permissionMode: row.permission_mode }),
   };
 }
 
@@ -672,8 +676,9 @@ export class SqliteBridgeStore implements BridgeStore {
     this.db
       .prepare(
         `INSERT INTO agents
-           (name, harness, session_id, session_name, project, cwd, delivery, capabilities, status, registered_at, last_seen_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (name, harness, session_id, session_name, project, cwd, delivery, capabilities, status, registered_at, last_seen_at,
+            permission_mode)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (name) DO UPDATE SET
            harness = excluded.harness,
            session_id = excluded.session_id,
@@ -684,7 +689,8 @@ export class SqliteBridgeStore implements BridgeStore {
            capabilities = excluded.capabilities,
            status = excluded.status,
            registered_at = excluded.registered_at,
-           last_seen_at = excluded.last_seen_at`
+           last_seen_at = excluded.last_seen_at,
+           permission_mode = excluded.permission_mode`
       )
       .run(
         agent.name,
@@ -697,7 +703,8 @@ export class SqliteBridgeStore implements BridgeStore {
         JSON.stringify(agent.capabilities),
         agent.status,
         ms(agent.registeredAt),
-        ms(agent.lastSeenAt)
+        ms(agent.lastSeenAt),
+        agent.permissionMode ?? null
       );
   }
 
