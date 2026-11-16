@@ -152,6 +152,7 @@ export type {
   IdentifyContext,
   LetterDelivery,
   LiveSession,
+  PermissionHookCall,
   SessionRequest,
 } from './adapter.js';
 
@@ -161,6 +162,9 @@ export {
   CLAUDE_TOOLS_PREFIX,
   DEFAULT_HOOK_TIMEOUT_S,
   claudeCallerCommand,
+  claudePermissionCall,
+  claudePermitCommand,
+  claudePermitHook,
   claudeCodeAdapter,
   claudeToolCallHook,
   claudeToolsHook,
@@ -174,6 +178,8 @@ export {
 export type {
   ClaudeCodeAdapterOptions,
   ClaudeHookSettings,
+  ClaudePermitHookOptions,
+  ClaudePermitHookSettings,
   ClaudeToolsHookOptions,
   ClaudeToolsHookSettings,
   ClaudeTrust,
@@ -223,4 +229,6 @@ export type {
 } from './setup/index.js';
 
 export { mailText, waitForMail } from './waiter.js';
+export { answerPermissionHook, askLeave, describeAsk } from './permit.js';
+export type { AskLeaveOptions, LeaveOutcome } from './permit.js';
 export type { WaitForMailOptions, WaitForMailResult } from './waiter.js';

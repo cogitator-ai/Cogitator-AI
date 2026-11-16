@@ -4,7 +4,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { bridgePaths, type BridgeAdapter } from '@cogitator-ai/bridge';
+import { answerPermissionHook, bridgePaths, type BridgeAdapter } from '@cogitator-ai/bridge';
 import { BRIDGE_INSTRUCTIONS, bridgeTools } from '@cogitator-ai/bridge/tools';
 import { MCPServer } from '@cogitator-ai/mcp';
 import { bridgeAdapters } from '../utils/bridge-adapters.js';
@@ -98,6 +98,54 @@ const defaultCallerContext = (): BridgeCallerContext => ({
   cwd: process.cwd(),
   stdin: pipedInput,
 });
+
+export interface BridgePermitFlags {
+  hook: string;
+  /** Seconds to wait for the decision */
+  timeout?: number;
+  home?: string;
+}
+
+const DEFAULT_PERMIT_S = 600;
+
+/**
+ * cogitator bridge permit --hook <harness>: the hook a harness runs when a session needs leave
+ * for a call. It takes the call to the bridge as a permission request on the job the session
+ * carries out, waits for the verdict and answers the harness with it. It answers with nothing,
+ * so the harness decides as it would without the hook, when the input is not that of such a
+ * hook, the session carries out no one job, no dispatcher runs or nobody decided in time. It
+ * never exits with 2, and a failure of its own never refuses the call.
+ */
+export async function runBridgePermit(
+  flags: BridgePermitFlags,
+  context: BridgeCallerContext = defaultCallerContext()
+): Promise<number> {
+  try {
+    const harness = flags.hook.trim().toLowerCase();
+    const adapters =
+      context.adapters ?? bridgeAdapters(context.env, { ...(flags.home && { home: flags.home }) });
+    const adapter = adapters.find((candidate) => candidate.harness === harness);
+    if (!adapter?.permissionHook) {
+      throw new CommandError(`No adapter asks leave for the sessions of "${flags.hook}"`);
+    }
+    const hookInput = await context.stdin();
+    const call =
+      hookInput === undefined
+        ? undefined
+        : adapter.permissionHook({ env: context.env, cwd: context.cwd, hookInput });
+    if (!call) return 0;
+    const answer = await answerPermissionHook({
+      socketPath: bridgePaths({ ...(flags.home && { home: flags.home }), env: context.env }).socket,
+      call,
+      timeoutMs: (flags.timeout ?? DEFAULT_PERMIT_S) * 1000,
+    });
+    if (answer !== undefined) context.write(answer);
+    return 0;
+  } catch (error) {
+    reportFailure(error, { json: false });
+    return EXIT.failed;
+  }
+}
 
 /**
  * cogitator bridge caller --hook <harness>: the hook a harness runs before a call of a bridge

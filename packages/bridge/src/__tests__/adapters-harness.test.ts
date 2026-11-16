@@ -14,6 +14,7 @@ import type { BridgeAdapter } from '../adapter';
 import {
   CLAUDE_TOOLS_PERMISSION,
   claudeCodeAdapter,
+  claudePermitHook,
   claudeToolsHook,
   claudeWaitHook,
 } from '../adapters/claude';
@@ -80,12 +81,16 @@ function toolsServer(): ToolsServerCommand {
 const connecting = (): string =>
   `run: ${process.execPath} -e ${JSON.stringify(CONNECT)} ${JSON.stringify(bridgePaths({ home }).socket)}`;
 
-async function startHost(adapters: BridgeAdapter[]): Promise<BridgeHost> {
+async function startHost(
+  adapters: BridgeAdapter[],
+  more: Pick<Parameters<typeof hostBridge>[0] & object, 'rights' | 'person'> = {}
+): Promise<BridgeHost> {
   const host = await hostBridge({
     home,
     adapters,
     tickMs: 50,
     onError: (error) => errors.push(error),
+    ...more,
   });
   hosts.push(host);
   return host;
@@ -595,6 +600,73 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
       body: 'Two findings, both in limiter.ts',
     });
     expect(await conductor.agents({ harness: 'claude-code' })).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+
+  it('has a session it starts ask leave through the bridge for a call no rule of its own settles', async () => {
+    fakes.trustFolder(project);
+    await startHost([claudeAdapter()], { rights: () => 'allow' });
+    const conductor = await orchestrator();
+
+    await conductor.createJob({
+      to: 'claude',
+      body: 'Ship the fix\nbash: echo pushed\nbash: echo forced\nsay: Shipped',
+    });
+    const agent = await until(
+      async () => (await conductor.agents({ harness: 'claude-code', statuses: ['active'] }))[0],
+      'the session to start'
+    );
+    const requestOf = (command: string) =>
+      until(async () => {
+        const asked = await conductor.inbox();
+        return asked.find((letter) => letter.ask?.command === command);
+      }, `the request for ${command}`);
+
+    const first = await requestOf('echo pushed');
+    expect(first).toMatchObject({
+      kind: 'permission',
+      from: agent.name,
+      body: `Run in ${realpathSync(project)}:\necho pushed`,
+      ask: { tool: 'Bash', access: 'command', command: 'echo pushed', cwd: realpathSync(project) },
+    });
+    expect((await conductor.job(1)).state).toBe('input-required');
+    expect((await conductor.agents({ harness: 'claude-code' }))[0].permissionMode).toBe('default');
+    await conductor.send({ job: 1, kind: 'answer', body: 'Go', verdict: 'allow' });
+    await requestOf('echo forced');
+    await conductor.send({ job: 1, kind: 'answer', body: 'Never forced', verdict: 'deny' });
+    const turn = await fakes.waitForTurn('claude', agent.sessionId, () => true);
+
+    expect(turn.ran.map((run) => [run.command, run.code, run.stdout || run.stderr])).toEqual([
+      ['echo pushed', 0, 'pushed\n'],
+      ['echo forced', null, 'Refused by conductor@' + agent.name.split('@')[1] + ': Never forced'],
+    ]);
+    expect(turn.answer).toBe('Shipped');
+    expect((await fakes.claudeSessions())[0]).not.toHaveProperty('waitingFor');
+    expect(errors).toEqual([]);
+  });
+
+  it('leaves the dialog to the person when its session carries out no job of the bridge', async () => {
+    await startHost([claudeAdapter()], { rights: () => 'allow' });
+    mkdirSync(join(project, '.claude'), { recursive: true });
+    writeFileSync(
+      join(project, '.claude', 'settings.local.json'),
+      JSON.stringify(claudePermitHook({ bridgeCommand: BRIDGE_COMMAND, bridgeHome: home }))
+    );
+    const sessionId = await fakes.openClaudeWindow({ cwd: project, env: env() });
+
+    await fakes.say(sessionId, 'bash: echo mine');
+    await until(
+      async () =>
+        (await fakes.claudeSessions()).find((session) => session.sessionId === sessionId)
+          ?.waitingFor === 'permission prompt' || undefined,
+      'the dialog of the person'
+    );
+    await fakes.answerPermission(sessionId, 'allow');
+
+    expect((await fakes.waitForTurn('claude', sessionId, () => true)).ran[0]).toMatchObject({
+      code: 0,
+      stdout: 'mine\n',
+    });
     expect(errors).toEqual([]);
   });
 

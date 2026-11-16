@@ -30,7 +30,12 @@ import {
   type BridgeInstallFlags,
   type BridgeUninstallFlags,
 } from './bridge-install.js';
-import { runBridgeCaller, runBridgeMcp } from './bridge-tools.js';
+import {
+  runBridgeCaller,
+  runBridgeMcp,
+  runBridgePermit,
+  type BridgePermitFlags,
+} from './bridge-tools.js';
 import {
   DECISIONS,
   SENDABLE_KINDS,
@@ -651,6 +656,18 @@ bridgeCommand
   .option(...homeOption)
   .action(async (flags: HomeFlags) => {
     process.exitCode = await runBridgeMcp(flags);
+  });
+
+bridgeCommand
+  .command('permit')
+  .description(
+    'Ask leave for a call of a session through the bridge: what a hook runs when the session would show its permission dialog'
+  )
+  .requiredOption('--hook <harness>', 'the harness whose hook runs the command')
+  .option('--timeout <seconds>', 'how long to wait for the decision', positiveInt)
+  .option(...homeOption)
+  .action(async (flags: BridgePermitFlags) => {
+    process.exitCode = await runBridgePermit(flags);
   });
 
 bridgeCommand

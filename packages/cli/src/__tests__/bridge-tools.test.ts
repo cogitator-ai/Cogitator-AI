@@ -27,6 +27,7 @@ import {
   BRIDGE_SERVER_NAME,
   createBridgeMcpServer,
   runBridgeCaller,
+  runBridgePermit,
   type BridgeCallerContext,
 } from '../commands/bridge-tools.js';
 import {
@@ -108,6 +109,124 @@ describe('bridge mcp', () => {
     expect(bridgeHomeOf({})).toBeUndefined();
     expect(bridgeHomeOf({ COGITATOR_BRIDGE_HOME: ' /srv/bridge ' })).toBe('/srv/bridge');
     expect(bridgeHomeOf({ COGITATOR_BRIDGE_HOME: '/srv/bridge' }, '/tmp/other')).toBe('/tmp/other');
+  });
+});
+
+describe('bridge permit', () => {
+  const hookInput = (command: string) =>
+    JSON.stringify({
+      session_id: 'worker-1',
+      cwd: project,
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command, description: 'Push the branch' },
+    });
+
+  function hook(input: string | undefined, extra: Partial<BridgeCallerContext> = {}) {
+    const written: string[] = [];
+    const context: BridgeCallerContext = {
+      write: (text) => written.push(text),
+      env: { COGITATOR_BRIDGE_HOME: bridgeDir },
+      cwd: project,
+      stdin: async () => input,
+      adapters: [claudeCodeAdapter(), codexAdapter()],
+      ...extra,
+    };
+    return { context, written };
+  }
+
+  /** A dispatcher, a conductor, and a Claude Code session that carries a job of it out. */
+  async function working(rights: 'allow' | 'deny') {
+    const host = await hostBridge({ home: bridgeDir, tickMs: 25, rights: () => rights });
+    hosts.push(host);
+    const connect = (harness: string, sessionId: string) =>
+      BridgeClient.connect({
+        socketPath: bridgePaths({ home: bridgeDir }).socket,
+        caller: { harness, sessionId, cwd: project },
+      });
+    const conductor = await connect('conductor', 'conductor-1');
+    const worker = await connect('claude-code', 'worker-1');
+    const { job } = await conductor.createJob({ to: 'claude', body: 'Ship the fix' });
+    await worker.inbox();
+    await worker.close();
+    return { conductor, job };
+  }
+
+  it('takes the call to the bridge and answers Claude Code with the verdict', async () => {
+    const { conductor, job } = await working('allow');
+    try {
+      const allowed = hook(hookInput('git push origin main'));
+      const running = runBridgePermit({ hook: 'claude-code', timeout: 20 }, allowed.context);
+      const request = await vi.waitFor(async () => {
+        const [letter] = await conductor.inbox();
+        expect(letter).toBeDefined();
+        return letter;
+      });
+      expect(request).toMatchObject({
+        kind: 'permission',
+        body: `Push the branch\nRun in ${project}:\ngit push origin main`,
+        ask: { tool: 'Bash', access: 'command', command: 'git push origin main', cwd: project },
+      });
+      await conductor.send({ job: job.number, kind: 'answer', body: 'Go', verdict: 'allow' });
+
+      expect(await running).toBe(0);
+      expect(JSON.parse(allowed.written.join(''))).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: { behavior: 'allow' },
+        },
+      });
+    } finally {
+      await conductor.close();
+    }
+  });
+
+  it('answers with the refusal and who refused, the bridge itself included', async () => {
+    const { conductor } = await working('deny');
+    try {
+      const refused = hook(hookInput('rm -rf build'));
+
+      expect(await runBridgePermit({ hook: 'claude-code', timeout: 20 }, refused.context)).toBe(0);
+
+      expect(JSON.parse(refused.written.join(''))).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: {
+            behavior: 'deny',
+            message: expect.stringMatching(
+              /^Refused by bridge: The rules of conductor@\S+ forbid this, so it is refused$/
+            ),
+          },
+        },
+      });
+    } finally {
+      await conductor.close();
+    }
+  });
+
+  it("answers nothing, and leaves the dialog to Claude Code, when the call is not the bridge's to ask about", async () => {
+    const noDispatcher = hook(hookInput('git push'));
+    expect(await runBridgePermit({ hook: 'claude-code' }, noDispatcher.context)).toBe(0);
+    expect(noDispatcher.written).toEqual([]);
+
+    const host = await hostBridge({ home: bridgeDir, tickMs: 25 });
+    hosts.push(host);
+    for (const input of [undefined, 'not json', JSON.stringify({ session_id: 'x' })]) {
+      const other = hook(input);
+      expect(await runBridgePermit({ hook: 'claude-code' }, other.context)).toBe(0);
+      expect(other.written).toEqual([]);
+    }
+    const noJob = hook(hookInput('git push'));
+    expect(await runBridgePermit({ hook: 'claude-code' }, noJob.context)).toBe(0);
+    expect(noJob.written).toEqual([]);
+  });
+
+  it('never exits with the code a harness reads as a refusal, whatever goes wrong', async () => {
+    const codexHook = hook(hookInput('git push'));
+    expect(await runBridgePermit({ hook: 'codex' }, codexHook.context)).toBe(1);
+    expect(codexHook.written).toEqual([]);
+    expect(failed()).toContain('No adapter asks leave for the sessions of "codex"');
   });
 });
 
