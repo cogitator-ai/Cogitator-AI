@@ -12,6 +12,12 @@ const LOOK_MS = 30_000;
 /** The pause after a look that came back at once without a verdict, as from a closing dispatcher. */
 const RETRY_MS = 250;
 
+/** The environment a command sets for itself, in words for a letter: ` with A=1, B=2`. */
+function envWords(env: Record<string, string> | undefined): string {
+  const set = Object.entries(env ?? {}).map(([name, value]) => `${name}=${value}`);
+  return set.length > 0 ? ` with ${set.join(', ')}` : '';
+}
+
 /**
  * The words of a letter that asks leave for a call: what the agent said of the call, when it
  * said anything, and then the call itself.
@@ -19,7 +25,7 @@ const RETRY_MS = 250;
 export function describeAsk(ask: PermissionAsk, said?: string): string {
   const call =
     ask.access === 'command' && ask.command
-      ? `Run in ${ask.cwd ?? 'its folder'}:\n${ask.command}`
+      ? `Run in ${ask.cwd ?? 'its folder'}${envWords(ask.env)}:\n${ask.command}`
       : ask.access === 'fetch' && ask.url
         ? `Fetch ${ask.url}`
         : ask.paths && ask.paths.length > 0
