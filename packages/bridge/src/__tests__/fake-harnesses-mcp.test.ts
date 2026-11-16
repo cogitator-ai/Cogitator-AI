@@ -454,10 +454,10 @@ describe.skipIf(!posix)('fake claude with MCP servers', () => {
         'claude',
         [
           '--bg',
-          '--settings',
-          JSON.stringify(settings),
           '--mcp-config',
           JSON.stringify({ mcpServers: { probe: probe() } }),
+          '--settings',
+          JSON.stringify(settings),
           'tool: probe.whoami',
         ],
         { cwd: work }
@@ -481,6 +481,42 @@ describe.skipIf(!posix)('fake claude with MCP servers', () => {
     const result = await fakes.run('claude', ['__open', '--mcp-config', '{broken'], { cwd: work });
 
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain('cannot load --mcp-config');
+    expect(result.stderr).toContain('Invalid MCP configuration');
+  });
+
+  it('reads a prompt right after --mcp-config as one more file of servers, and the session dies before it begins', async () => {
+    fakes.trustFolder(work);
+
+    const result = await fakes.run(
+      'claude',
+      ['--bg', '--mcp-config', JSON.stringify({ mcpServers: { probe: probe() } }), 'say hello'],
+      { cwd: work }
+    );
+
+    expect(result).toMatchObject({ code: 0, stderr: '' });
+    expect(result.stdout).toMatch(/^backgrounded · [0-9a-f]{8} \(idle — send a prompt to start\)/);
+    expect(await fakes.claudeSessions()).toEqual([]);
+    const [session] = await fakes.claudeSessions({ all: true });
+    expect(session).toMatchObject({ kind: 'background', state: 'failed' });
+    expect(session.pid).toBeUndefined();
+  });
+
+  it('takes several files of servers after one --mcp-config', async () => {
+    const sessionId = await fakes
+      .run(
+        'claude',
+        [
+          '__open',
+          '--mcp-config',
+          JSON.stringify({ mcpServers: { probe: probe({ PROBE_MARK: 'one' }) } }),
+          JSON.stringify({ mcpServers: { second: probe({ PROBE_MARK: 'two' }) } }),
+        ],
+        { cwd: work }
+      )
+      .then((result) => result.stdout.trim());
+
+    const turn = await turnOf(sessionId, 'tool: probe.whoami\ntool: second.whoami');
+
+    expect(turn.tools.map((tool) => seenBy(tool).mark)).toEqual(['one', 'two']);
   });
 });

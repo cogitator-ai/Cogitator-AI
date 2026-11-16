@@ -180,6 +180,13 @@ describe('the notes of the bridge in an instructions file', () => {
     expect(withoutBridgeNotes(`${notes}\n\n## More\n`)).toBe('## More\n');
   });
 
+  it('come out with the blank lines around them, however many, and leave one', () => {
+    const blankLines = '\n'.repeat(50_000);
+    const before = `# Project\n${blankLines}${notes}\n${blankLines}## More\n`;
+
+    expect(withoutBridgeNotes(before)).toBe('# Project\n\n## More\n');
+  });
+
   it('are found only when they are whole', () => {
     expect(hasBridgeNotes(`# Project\n\n${notes}\n`)).toBe(true);
     expect(hasBridgeNotes('# Project\n')).toBe(false);

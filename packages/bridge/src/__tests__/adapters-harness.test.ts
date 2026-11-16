@@ -420,6 +420,24 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
     ).rejects.toThrow('claude --bg failed: You have hit your usage limit');
   });
 
+  it('says so when the session it started died before its first turn', async () => {
+    fakes.trustFolder(project);
+    const adapter = claudeAdapter({ sessionArgs: ['--mcp-config', 'no-such-servers.json'] });
+
+    await expect(
+      adapter.createSession?.({
+        agentName: 'claude@demo',
+        harness: 'claude-code',
+        project,
+        cwd: project,
+        job: { number: 1 } as never,
+        firstLetter: { text: '[agent bridge] job #1', body: 'x', job: 1 } as never,
+      })
+    ).rejects.toThrow(
+      /^Claude Code started the background session [0-9a-f]{8}, and it failed before its first turn$/
+    );
+  });
+
   it('lists the sessions whose process is alive, and none when Claude Code is not installed', async () => {
     const adapter = claudeAdapter();
     const window = await fakes.openClaudeWindow({ cwd: project, name: 'reviewer' });

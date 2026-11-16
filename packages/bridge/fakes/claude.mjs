@@ -12,7 +12,7 @@
  * session calls only the tools its settings allow: nobody sits there to be asked.
  */
 import { randomUUID } from 'node:crypto';
-import { readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -38,6 +38,7 @@ import {
   recordTurn,
   renderHelp,
   repeated,
+  several,
   runCli,
   sleep,
   spawnDetached,
@@ -57,7 +58,7 @@ const NOT_TRUSTED =
 
 const OPEN_FLAGS = {
   '--settings': option('settings'),
-  '--mcp-config': option('mcpConfig'),
+  '--mcp-config': several('mcpConfig'),
   '-n': option('name'),
   '--name': option('name'),
 };
@@ -101,7 +102,7 @@ const HELP = [
   'Options:',
   ['bg', '  --bg, --background             Start the session in the background and return'],
   ['settings', '  --settings <file-or-json>      A settings JSON file or a JSON string to load'],
-  '  --mcp-config <file-or-json>    MCP servers to load from a JSON file or string',
+  '  --mcp-config <configs...>      Load MCP servers from JSON files or strings',
   '  -n, --name <name>              Set a display name for the session',
   '  --permission-mode <mode>       Permission mode to use for the session',
   '  --model <model>                Model for the session',
@@ -175,7 +176,10 @@ async function main(argv) {
 async function background(argv) {
   const { values, positionals } = parseArgs(argv, START_FLAGS);
   const [prompt] = positionals;
-  if (!values.bg || positionals.length !== 1 || prompt.trim() === '') throw new Unsupported();
+  const brokenServers = mcpConfigProblem(values.mcpConfig);
+  const promptIsThere = positionals.length === 1 && prompt.trim() !== '';
+  const promptWasTaken = positionals.length === 0 && brokenServers !== undefined;
+  if (!values.bg || !(promptIsThere || promptWasTaken)) throw new Unsupported();
   for (const [feature, name] of REMOVABLE_START_OPTIONS) {
     if (missing().has(feature) && values[feature] !== undefined) {
       throw new CliError(`error: unknown option '${name}'`);
@@ -183,6 +187,10 @@ async function background(argv) {
   }
   if (process.env.FAKE_CLAUDE_BG_FAIL) throw new CliError(process.env.FAKE_CLAUDE_BG_FAIL);
   if (!isTrusted(process.cwd())) throw new CliError(NOT_TRUSTED);
+  if (brokenServers !== undefined) {
+    const failed = failedSession(values.name, brokenServers);
+    return print(`backgrounded · ${failed.id} (idle — send a prompt to start)`);
+  }
   const session = startSession({
     kind: 'background',
     name: values.name ?? defaultName(prompt),
@@ -220,7 +228,8 @@ function defaultName(prompt) {
  */
 function startSession({ kind, name, settings, mcpConfig, permissionMode, prompt }) {
   checkSettings(settings);
-  checkSettings(mcpConfig, '--mcp-config');
+  const brokenServers = mcpConfigProblem(mcpConfig);
+  if (brokenServers !== undefined) throw new CliError(`Error: ${brokenServers}`);
   const sessionId = randomUUID();
   const files = sessionFiles(sessionId);
   const inBackground = kind === 'background';
@@ -243,6 +252,45 @@ function startSession({ kind, name, settings, mcpConfig, permissionMode, prompt 
   return record;
 }
 
+/**
+ * The record of a background session that died before it began: `claude --bg` still says it
+ * started one and exits with 0, and `agents --json --all` shows the session as `failed`.
+ */
+function failedSession(name, detail) {
+  const sessionId = randomUUID();
+  const record = {
+    id: shortId(sessionId),
+    sessionId,
+    name,
+    cwd: process.cwd(),
+    kind: 'background',
+    startedAt: Date.now(),
+    state: 'failed',
+    detail: `exit 1 before init — Error: ${detail}`,
+  };
+  writeJson(sessionFiles(sessionId).record, record);
+  return record;
+}
+
+/**
+ * What is wrong with the values of `--mcp-config`, if anything. The option takes every argument
+ * up to the next option, so a prompt right after it is read as one more file of servers.
+ */
+function mcpConfigProblem(values = []) {
+  for (const value of values) {
+    const file = resolve(process.cwd(), value);
+    if (!value.trimStart().startsWith('{') && !existsSync(file)) {
+      return `Invalid MCP configuration: MCP config file not found: ${file}`;
+    }
+    try {
+      readSettingsOption(value, process.cwd());
+    } catch (error) {
+      return `Invalid MCP configuration: ${error.message}`;
+    }
+  }
+  return undefined;
+}
+
 const shortId = (sessionId) => sessionId.slice(0, 8);
 
 /** The value of `--settings`: a JSON string, or the path of a JSON file */
@@ -253,12 +301,12 @@ function readSettingsOption(value, cwd) {
   return JSON.parse(json);
 }
 
-function checkSettings(value, option = '--settings') {
+function checkSettings(value) {
   if (value === undefined) return;
   try {
     readSettingsOption(value, process.cwd());
   } catch (error) {
-    throw new CliError(`Error: cannot load ${option}: ${error.message}`);
+    throw new CliError(`Error: cannot load --settings: ${error.message}`);
   }
 }
 
@@ -334,8 +382,8 @@ function sessionServers(record) {
     Object.assign(servers, readJson(join(dir, '.mcp.json'), {}).mcpServers);
     Object.assign(servers, config.projects?.[dir]?.mcpServers);
   }
-  if (record.mcpConfig !== undefined) {
-    Object.assign(servers, readSettingsOption(record.mcpConfig, record.cwd).mcpServers);
+  for (const value of record.mcpConfig ?? []) {
+    Object.assign(servers, readSettingsOption(value, record.cwd).mcpServers);
   }
   return servers;
 }
@@ -596,8 +644,9 @@ function wake(files, text) {
   if (text !== undefined) enqueue(files.spool, { wokenBy: 'hook', text });
 }
 
-/** A record as it stands now: a session whose process is gone counts as stopped */
+/** A record as it stands now: a session whose process is gone counts as stopped, unless it never began */
 function current(record) {
+  if (record.state === 'failed') return record;
   if (record.pid !== undefined && isAlive(record.pid)) return record;
   return { ...record, pid: undefined, status: undefined, hookPids: undefined, state: 'stopped' };
 }
