@@ -24,7 +24,12 @@ import {
   runBridgeWait,
   type BridgeSessionContext,
 } from '../commands/bridge-session.js';
-import { bridgeAdapters, bridgeCommandOf, codexSandboxOf } from '../utils/bridge-adapters.js';
+import {
+  bridgeAdapters,
+  bridgeCommandOf,
+  claudeModeOf,
+  codexSandboxOf,
+} from '../utils/bridge-adapters.js';
 import { UsageError, exitCodeFor } from '../utils/cli.js';
 import { createProgram } from '../program.js';
 
@@ -609,6 +614,27 @@ describe('how a hook reaches the command line', () => {
       'read-only',
       'workspace-write',
       'danger-full-access',
+    ]);
+  });
+
+  it('take the permission mode of the Claude Code sessions they start from the flag, then the environment', () => {
+    expect(claudeModeOf({})).toBeUndefined();
+    expect(claudeModeOf({ COGITATOR_BRIDGE_CLAUDE_MODE: ' plan ' })).toBe('plan');
+    expect(claudeModeOf({ COGITATOR_BRIDGE_CLAUDE_MODE: 'plan' }, 'default')).toBe('default');
+    expect(() => claudeModeOf({}, 'yolo')).toThrow(
+      '"yolo" is not a permission mode of Claude Code'
+    );
+    expect(() => bridgeAdapters({ COGITATOR_BRIDGE_CLAUDE_MODE: 'yolo' })).toThrow(UsageError);
+    const serve = createProgram()
+      .commands.find((command) => command.name() === 'bridge')
+      ?.commands.find((command) => command.name() === 'serve');
+    expect(serve?.options.find((option) => option.long === '--claude-mode')?.argChoices).toEqual([
+      'default',
+      'acceptEdits',
+      'plan',
+      'auto',
+      'dontAsk',
+      'bypassPermissions',
     ]);
   });
 });

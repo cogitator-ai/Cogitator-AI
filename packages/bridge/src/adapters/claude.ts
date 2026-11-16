@@ -305,6 +305,13 @@ export interface ClaudeStuckHookSettings {
   };
 }
 
+/**
+ * The permission mode of a Claude Code session the bridge starts, unless the adapter is told
+ * another: edits inside the folder of the job need no leave, everything else goes by the rules
+ * of the project and, where they are silent, through the bridge.
+ */
+export const CLAUDE_SESSION_MODE = 'acceptEdits';
+
 /** What Claude Code calls the notification of an open permission dialog. */
 const PERMISSION_PROMPT = 'permission_prompt';
 
@@ -571,7 +578,11 @@ export interface ClaudeCodeAdapterOptions {
   bridgeHome?: string;
   /** The environment of the commands and of the sessions it starts, `process.env` by default */
   env?: NodeJS.ProcessEnv;
-  /** The permission mode of the sessions it starts, Claude Code's own default when absent */
+  /**
+   * The permission mode of the sessions it starts, `acceptEdits` by default: a session changes
+   * files in the folder of its job without asking, and asks leave through the bridge for the
+   * rest. `default` asks for every change too, `plan` lets it change nothing
+   */
   permissionMode?: string;
   /** More arguments for `claude --bg`, such as `['--model', 'sonnet']` */
   sessionArgs?: readonly string[];
@@ -710,7 +721,8 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
         '--settings',
         JSON.stringify(settings),
         ...(request.sessionName ? ['--name', request.sessionName] : []),
-        ...(options.permissionMode ? ['--permission-mode', options.permissionMode] : []),
+        '--permission-mode',
+        options.permissionMode ?? CLAUDE_SESSION_MODE,
         ...(options.sessionArgs ?? []),
         whole
           ? request.firstLetter.text

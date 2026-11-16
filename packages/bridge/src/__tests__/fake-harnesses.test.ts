@@ -926,6 +926,46 @@ describe('fake claude permission dialogs', () => {
     ]);
   });
 
+  it('changes a file inside its folder without asking in acceptEdits mode, and asks for one outside', async () => {
+    fakes.trustFolder(work);
+    const outside = join(fakes.home, 'elsewhere.txt');
+    const id = await background(`edit: src/a.txt\nedit: ${outside}\nsay: done`, {
+      args: ['--permission-mode', 'acceptEdits'],
+    });
+
+    await until(
+      async () => (await sessionOf(id)).state === 'blocked',
+      'the dialog for the file outside'
+    );
+    expect(readText('src', 'a.txt')).toBe('edited\n');
+    await fakes.answerPermission(id, 'deny');
+    const turn = await fakes.waitForTurn('claude', (await sessionOf(id)).sessionId, saying('done'));
+
+    expect(turn.ran.map((run) => [run.command, run.code, run.denied ?? false])).toEqual([
+      ['edit src/a.txt', 0, false],
+      [`edit ${outside}`, null, true],
+    ]);
+    expect(existsSync(outside)).toBe(false);
+  });
+
+  it('asks before it changes a file in the default mode, and a thread of codex has no such tool', async () => {
+    const sessionId = await fakes.openClaudeWindow({ cwd: work });
+    await fakes.say(sessionId, 'edit: notes.txt');
+    await until(
+      async () => (await sessionOf(sessionId)).waitingFor === 'permission prompt',
+      'the dialog'
+    );
+    await fakes.answerPermission(sessionId, 'allow');
+    expect((await first(sessionId))[0]).toMatchObject({ command: 'edit notes.txt', code: 0 });
+    expect(readText('notes.txt')).toBe('edited\n');
+
+    const { threadId } = await execJson(['edit: notes.txt']);
+    expect(fakes.transcript('codex', threadId)[0].ran[0]).toMatchObject({
+      code: 1,
+      stderr: 'this stand-in has no edit tool of its own',
+    });
+  });
+
   it('lets a PermissionRequest hook that matches the tool decide instead of the dialog', async () => {
     const decide =
       'input=$(cat); echo "$input" > asked.json; case "$input" in *"echo yes"*) echo \'{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}\';; *"echo no"*) echo \'{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Not this one"}}}\';; esac';
