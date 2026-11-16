@@ -436,6 +436,8 @@ interface MCPServerConfig {
   version: string;
   transport: 'stdio' | 'http' | 'sse';
 
+  instructions?: string; // How to use the server, told to every client when it connects
+
   // For HTTP transport
   port?: number; // Default: 3000 (use 0 for a random free port)
   host?: string; // Default: 'localhost'
@@ -799,6 +801,39 @@ const deleteBranch = tool({
 Form fields (`MCPElicitField`) are the primitives of the MCP elicitation schema (protocol 2025-11-25): strings (with `minLength`, `maxLength`, `format` of `email`, `uri`, `date` or `date-time`, a single choice as `enum` or as `oneOf` with labels), numbers and integers (with `minimum` and `maximum`), booleans, and multiple choices (`type: 'array'` with string `items`), each with an optional `title`, `description` and `default`. The reply is `{ action: 'accept', content }` or `{ action: 'decline' | 'cancel' }`.
 
 An elicitation waits for the user up to `elicitationTimeoutMs` (default 10 minutes, instead of the MCP SDK's 60 s request timeout, which is too short for a person, `0` waits as long as the tool call lasts), and stops when the tool call is cancelled. One nobody answers in time counts as dismissed (`cancel`): a tool call waiting for approval is then declined.
+
+### Instructions and the request
+
+`instructions` is what the server tells every client about itself when it connects. Clients hand it to their model next to the tools, so it is the place for what holds across tools: the order to call them in, what to do after a call.
+
+A tool also learns what came with the call besides its arguments. `context.request.meta` is the `_meta` of the request without the protocol's own keys, where clients put what identifies the call (Codex its thread and turn, Claude Code the id of the tool use), and `context.request.client` is the client's name and version:
+
+```typescript
+import { tool } from '@cogitator-ai/core';
+import { MCPServer, type MCPToolContext } from '@cogitator-ai/mcp';
+import { z } from 'zod';
+
+const whoami = tool({
+  name: 'whoami',
+  description: 'Say which client and thread is calling',
+  parameters: z.object({}),
+  execute: async (_args, context: MCPToolContext) => {
+    const client = context.request?.client?.name ?? 'an unnamed client';
+    const thread = context.request?.meta?.threadId;
+    return typeof thread === 'string' ? `${client}, thread ${thread}` : client;
+  },
+});
+
+const server = new MCPServer({
+  name: 'my-tools',
+  version: '1.0.0',
+  transport: 'stdio',
+  instructions: 'Call whoami first. Its answer names the thread the other tools act for.',
+});
+server.registerTool(whoami);
+```
+
+A tool that takes keys outside its schema (`z.looseObject`) gets them as sent, which is how a client-side hook hands a call something the model never wrote.
 
 ### Stdio Server (for Claude Desktop)
 

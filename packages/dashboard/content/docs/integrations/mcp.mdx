@@ -443,6 +443,32 @@ The tool answers `{ status: 'completed', output, threadId }`. Each tool is named
 
 `agentTools(cog, agents, toolNames?)` returns the same tools to register on an `MCPServer` you configure yourself. Both accept anything with Cogitator's `run` and `resume` (`AgentHost`).
 
+### Instructions and the request
+
+`instructions` in the server's config is what it tells every client about itself when it connects. Clients hand it to their model next to the tools, so it is the place for what holds across tools: the order to call them in, what to do after a call.
+
+A tool also learns what came with the call besides its arguments: `context.request.meta` is the `_meta` of the request without the protocol's own keys, where clients put what identifies the call (Codex its thread and turn, Claude Code the id of the tool use), and `context.request.client` is the client's name and version. A tool that takes keys outside its schema (`z.looseObject`) gets them as sent.
+
+```typescript
+const whoami = tool({
+  name: 'whoami',
+  description: 'Say which client and thread is calling',
+  parameters: z.object({}),
+  execute: async (_args, context: MCPToolContext) => {
+    const client = context.request?.client?.name ?? 'an unnamed client';
+    const thread = context.request?.meta?.threadId;
+    return typeof thread === 'string' ? `${client}, thread ${thread}` : client;
+  },
+});
+
+const server = new MCPServer({
+  name: 'my-tools',
+  version: '1.0.0',
+  transport: 'stdio',
+  instructions: 'Call whoami first. Its answer names the thread the other tools act for.',
+});
+```
+
 ### Sessions
 
 2026-07-28 clients have no sessions: the server asks them with the answer of a round. For 2025-11-25 clients `MCPServer` over HTTP serves each request on its own by default, and `sessions: true` keeps a session per client (`mcp-session-id`), which requests from the server to such a client, like elicitation, need. A session belongs to the caller that started it: a request with another caller's credentials gets `403`.

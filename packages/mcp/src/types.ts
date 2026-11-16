@@ -458,6 +458,27 @@ export interface MCPToolContext extends ToolContext {
    * client can answer elicitation requests
    */
   input?: MCPToolInput;
+  /** The request the call came in: what the client sent next to the arguments, and who it is */
+  request?: MCPRequestInfo;
+}
+
+/** The client of an MCP server, as it named itself when it connected. */
+export interface MCPClientInfo {
+  name: string;
+  version?: string;
+  title?: string;
+}
+
+/** What an MCP server knows of the request a tool call came in, besides its arguments. */
+export interface MCPRequestInfo {
+  /**
+   * `_meta` of the request as the client sent it, without the keys of the protocol itself
+   * (`io.modelcontextprotocol/*`). Clients put what identifies the call there: Codex its thread
+   * and turn, Claude Code the id of the tool use
+   */
+  meta?: Record<string, unknown>;
+  /** Absent when the client did not say: a request of an earlier revision outside a session */
+  client?: MCPClientInfo;
 }
 
 /** What a call asked in its last round and what it kept, see {@link MCPToolContext.input} */
@@ -522,6 +543,13 @@ export interface MCPServerConfig {
 
   /** Transport type */
   transport: MCPTransportType;
+
+  /**
+   * How to use the server, told to every client when it connects (`instructions` of
+   * `initialize` and `server/discover`). Clients hand it to their model next to the tools, so it
+   * is the place for what holds across tools: the order to call them in, what to do after a call
+   */
+  instructions?: string;
 
   /** For HTTP transport: port to listen on */
   port?: number;

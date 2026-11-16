@@ -73,6 +73,8 @@ export type {
   MCPCaller,
   MCPAuthFunction,
   MCPToolContext,
+  MCPRequestInfo,
+  MCPClientInfo,
   MCPElicitRequest,
   MCPElicitResult,
   MCPElicitField,

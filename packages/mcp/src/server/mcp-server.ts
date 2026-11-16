@@ -10,6 +10,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 import {
   CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
   McpServer,
   MissingRequiredClientCapabilityError,
   ResourceTemplate,
@@ -52,6 +53,7 @@ import type {
   MCPPromptConfig,
   MCPPromptMessage,
   MCPProtectedResourceConfig,
+  MCPRequestInfo,
   MCPToolContent,
 } from '../types';
 import { mcpOutputSchema, resultToMCPContent } from '../adapter/tool-adapter';
@@ -159,6 +161,8 @@ interface RunMode {
   /** The approvals the person gave in earlier rounds, by the digest of the request */
   approvals?: GrantedApproval[];
   input?: { responses: Record<string, MCPElicitResult>; state: unknown; stateRejected: boolean };
+  /** What the tool learns of the request besides its arguments */
+  request?: MCPRequestInfo;
 }
 
 /**
@@ -391,6 +395,7 @@ export class MCPServer {
     const server = new McpServer(
       { name: this.config.name, version: this.config.version },
       {
+        ...(this.config.instructions !== undefined && { instructions: this.config.instructions }),
         ...(Object.keys(extensions).length > 0 && { capabilities: { extensions } }),
         requestState: { verify: codec.verify },
         inputRequired: { roundTimeoutMs: this.elicitationTimeout() },
@@ -475,6 +480,7 @@ export class MCPServer {
   ): Promise<CallToolResult | InputRequiredResult> {
     let args = callArgs.parsed;
     const capabilities = this.clientCapabilities(ctx, scope);
+    const request = this.requestInfo(ctx, scope);
     const owner = scope.owner;
     const takesTasks =
       scope.era === 'modern' && capabilities?.extensions?.[TASKS_EXTENSION] !== undefined;
@@ -482,7 +488,8 @@ export class MCPServer {
       const mode = capabilities?.elicitation === undefined ? 'direct' : 'legacy';
       const execution = this.startExecution(tool, args, owner, '', scope.caller, outputSchema, {
         mode,
-        elicit: (request) => this.legacyElicit(ctx, request),
+        elicit: (question) => this.legacyElicit(ctx, question),
+        request,
       });
       return this.drive(execution, ctx, scope, tool, args, mint, outputSchema, takesTasks, mode);
     }
@@ -538,6 +545,7 @@ export class MCPServer {
     }
     const execution = this.startExecution(tool, args, owner, digest, scope.caller, outputSchema, {
       mode: 'round',
+      request,
       approvals,
       input: {
         responses: input?.responses ?? {},
@@ -585,6 +593,7 @@ export class MCPServer {
             outputSchema,
             {
               mode: taskMode === 'legacy' ? 'direct' : taskMode,
+              request: this.requestInfo(ctx, scope),
               approvals: execution.carry.approvals,
               ...(resume.input && { input: { ...resume.input, stateRejected: false } }),
             }
@@ -720,9 +729,11 @@ export class MCPServer {
         agentId: 'mcp-server',
         signal: askers.signal,
         ...(caller?.userId !== undefined && { userId: caller.userId }),
-        ...((elicit || input) && {
-          context: { ...(elicit && { elicit }), ...(input && { input }) },
-        }),
+        context: {
+          ...(elicit && { elicit }),
+          ...(input && { input }),
+          ...(run.request && { request: run.request }),
+        },
         onApproval,
       });
       const asked = askers.asked();
@@ -837,6 +848,31 @@ export class MCPServer {
     }
     if (!scope.legacyCanAsk) return undefined;
     return scope.server?.server.getClientCapabilities();
+  }
+
+  /**
+   * What a tool learns of the request besides its arguments: the `_meta` the client sent, and the
+   * client itself, named in every request on the 2026-07-28 revision and once, in the handshake,
+   * before it
+   */
+  private requestInfo(ctx: ServerContext, scope: ServeScope): MCPRequestInfo {
+    const envelope: Record<string, unknown> | undefined = ctx.mcpReq.envelope;
+    const named =
+      scope.era === 'modern'
+        ? envelope?.[CLIENT_INFO_META_KEY]
+        : scope.server?.server.getClientVersion();
+    const meta: Record<string, unknown> | undefined = ctx.mcpReq._meta;
+    return {
+      ...(meta && Object.keys(meta).length > 0 && { meta: { ...meta } }),
+      ...(isRecord(named) &&
+        typeof named.name === 'string' && {
+          client: {
+            name: named.name,
+            ...(typeof named.version === 'string' && { version: named.version }),
+            ...(typeof named.title === 'string' && { title: named.title }),
+          },
+        }),
+    };
   }
 
   private registerTaskHandlers(server: McpServer, scope: ServeScope, tasks: ServerTasks): void {
