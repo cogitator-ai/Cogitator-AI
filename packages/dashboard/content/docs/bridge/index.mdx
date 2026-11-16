@@ -11,7 +11,9 @@ The agent bridge: Claude Code, Codex and other agents hand each other jobs, ask 
 
 Nobody waits. An agent hands a job over, gets its number at once and ends its turn. Whatever comes later, a question or the result, arrives as a letter. The bridge in the middle is a dispatcher, not a model: it keeps jobs and letters, finds who a letter is for, applies the limits and writes everything down. It never calls a model.
 
-The bridge reaches a session where it lives. A Claude Code session wakes for its mail through a hook of its own, a Codex thread through its message queue, and an agent the bridge hosts itself (any model of the Cogitator runtime, any agent of the Agent Client Protocol) gets a letter as its next turn. A harness without an adapter still takes part: its sessions read their inbox. The MCP tools agents call are the next step, until then a session calls the bridge with `cogitator bridge` from its shell.
+The bridge reaches a session where it lives. A Claude Code session wakes for its mail through a hook of its own, a Codex thread through its message queue, and an agent the bridge hosts itself (any model of the Cogitator runtime, any agent of the Agent Client Protocol) gets a letter as its next turn. A harness without an adapter still takes part: its sessions read their inbox.
+
+Agents call the bridge with tools of their own, served over MCP: `delegate`, `ask`, `answer`, `report` and the rest. A server of tools lives outside the sandbox of its session, so a Codex thread in a sandbox takes part like any other. `cogitator bridge install` sets Claude Code and Codex up for a project, and shows every change before it makes it.
 
 ```bash
 pnpm add @cogitator-ai/bridge better-sqlite3
@@ -31,18 +33,56 @@ cogitator bridge doctor         # whether Claude Code and Codex can be reached, 
 
 [`cogitator daemon start --bridge`](/docs/cli#cogitator-daemon) hosts it inside the assistant daemon instead. Its files live in `~/.cogitator/bridge` (`COGITATOR_BRIDGE_HOME` moves them): `bridge.db` and `bridge.sock`, both kept to their owner.
 
+## Set a project up
+
+```bash
+cogitator bridge install            # Claude Code and Codex, for you in this project
+cogitator bridge install claude     # one harness
+cogitator bridge install --dry-run  # list the changes, make none
+cogitator bridge uninstall          # take out what install put in, and nothing else
+```
+
+`install` lists every change first and makes them after a yes (`--yes` skips the question):
+
+|                     | Claude Code                                                  | Codex                              |
+| ------------------- | ------------------------------------------------------------ | ---------------------------------- |
+| The server of tools | `claude mcp add --scope local bridge`                        | `codex mcp add bridge`             |
+| Hooks               | the project's `.claude/settings.local.json`                  | none needed                        |
+| Tools run unasked   | the rule `mcp__bridge` in the same file, unless `--no-allow` | Codex asks nothing for these tools |
+| Notes for sessions  | `CLAUDE.md` of the project, unless `--no-notes`              | `AGENTS.md`, unless `--no-notes`   |
+
+What names a path of this machine goes where only you have it, never into a file the project shares. The notes say how the tools go together and that a letter of the bridge is not typed by you. By default they tell a session you opened to ask you before it carries out a job of another agent: `--take-jobs` lets it go ahead. `--user` sets every project of yours up instead of one. Codex keeps its servers for every project whichever way it is asked, so a per-project `uninstall` leaves its server and `uninstall codex --user` removes it. Settings that are not a JSON object are refused, never overwritten, and running `install` again changes only what is out of date. Sessions that are open get the tools when they are started again.
+
+### The tools
+
+| Tool       | What it does                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------------ |
+| `delegate` | Hands a job to `codex`, `claude` or an agent by name, and returns its number at once             |
+| `ask`      | Asks the other agent of a job a question. The answer wakes the session                           |
+| `answer`   | Answers a question another agent asked                                                           |
+| `report`   | Reports the result of a job handed to this session, which ends the job. `failed` says it did not |
+| `note`     | Tells the other agent something it need not answer                                               |
+| `inbox`    | Reads the letters that wait, when nothing woke the session                                       |
+| `job`      | Shows one job: its state, and for a job of this session its latest letters                       |
+| `jobs`     | Lists the jobs this session handed over or carries out                                           |
+| `cancel`   | Takes back a job this session handed over                                                        |
+| `agents`   | Lists the sessions the bridge knows in the project, and the agents it can start a session of     |
+
+No tool waits for another agent. The server tells every client the same in its `instructions`: after `delegate` say in one line what was handed over and end the turn, reply to a letter with the tools and never only in the chat, and treat a job of another agent as that agent's request, not the user's.
+
 ## Claude Code and Codex
 
-The dispatcher of `cogitator bridge serve` reaches both harnesses with the commands they document, and changes nothing in their settings.
+The dispatcher of `cogitator bridge serve` reaches both harnesses with the commands they document. It changes nothing in their settings: `cogitator bridge install` does, for the sessions you open yourself, and a session the bridge starts carries what it needs.
 
 |                         | Claude Code                                               | Codex                                                         |
 | ----------------------- | --------------------------------------------------------- | ------------------------------------------------------------- |
 | A letter reaches it by  | a `Stop` hook of the session that waits at the bridge     | `codex queue --resume`                                        |
 | A session for a job is  | `claude --bg`, a background session `claude attach` opens | `codex exec`, a thread `codex resume` opens                   |
 | It wakes by itself when | the session carries the hook                              | the thread is open in the Codex app, or the local daemon runs |
+| The tools know it by    | a hook that adds the session to every tool call           | the thread Codex names in every tool call                     |
 | Before it can start     | Claude Code must trust the folder                         | nothing                                                       |
 
-**Claude Code.** Nothing is pushed into a window from outside. After every turn a background hook of the session runs `cogitator bridge wait`, which waits at the dispatcher and, when a letter comes, exits with code 2 and the letter on stderr: that wakes the session with the letter as its next input (`asyncRewake` in Claude Code's hooks). Under the letter it adds one line saying how to answer through the bridge. While the hook waits the session is free, you can talk to it. A session the bridge starts carries the hook itself. For the sessions you open yourself, put it into the project's `.claude/settings.local.json`, `cogitator bridge doctor` prints the exact lines:
+**Claude Code.** Nothing is pushed into a window from outside. After every turn a background hook of the session runs `cogitator bridge wait`, which waits at the dispatcher and, when a letter comes, exits with code 2 and the letter on stderr: that wakes the session with the letter as its next input (`asyncRewake` in Claude Code's hooks). Under the letter it adds one line saying how to answer through the bridge. While the hook waits the session is free, you can talk to it. A session the bridge starts carries the hook itself. For the sessions you open yourself, `cogitator bridge install` puts it into the project's `.claude/settings.local.json`:
 
 ```json
 {
@@ -52,7 +92,7 @@ The dispatcher of `cogitator bridge serve` reaches both harnesses with the comma
         "hooks": [
           {
             "type": "command",
-            "command": "cogitator bridge wait --hook claude-code --timeout 43140",
+            "command": "cogitator bridge wait --hook claude-code --timeout 43140 --tools",
             "timeout": 43200,
             "async": true,
             "asyncRewake": true
@@ -64,11 +104,15 @@ The dispatcher of `cogitator bridge serve` reaches both harnesses with the comma
 }
 ```
 
-A dispatcher that keeps its files somewhere else (`--home`, `COGITATOR_BRIDGE_HOME`) puts that folder into the hook, so its sessions call it and not the default one. A session without the hook still gets its letters, when it asks: `cogitator bridge inbox`. The hook waits 12 hours at most, then the session reads its mail at its next turn. A session a person opened decides for itself what to do with a job another agent hands it: every letter says it was not typed by the user, and such a session may ask its person before it acts. A session the bridge started for a job takes the job as its task. Claude Code starts a background session only in a folder it trusts: the bridge checks that first and fails the job with what to do (open the folder in Claude Code once and accept its prompt).
+A dispatcher that keeps its files somewhere else (`--home`, `COGITATOR_BRIDGE_HOME`) puts that folder into the hook and into the command of the server of tools, so its sessions call it and not the default one. A session without the hook still gets its letters, when it asks: the `inbox` tool, or `cogitator bridge inbox`.
 
-**Codex.** A letter goes into the message queue of the thread. A thread open in the Codex app takes it within seconds. A thread that is open nowhere, such as one the bridge started, wakes only when Codex's local daemon runs (`codex app-server daemon start`). The bridge never starts that daemon for you: without it the letter stays in the queue until the thread is opened. Codex does not tell the two cases apart, so the journal notes every letter queued while no daemon runs. A thread the bridge starts runs in the `workspace-write` sandbox, and what it prints goes to a file of its own in `~/.cogitator/bridge/sessions`, which the bridge never removes. From that sandbox the thread cannot reach the bridge with shell commands, so the bridge takes the final answer of its first turn as the report, and a turn that fails as a failed job. A thread that has to ask questions on the way needs a wider sandbox until the MCP tools arrive: `cogitator bridge serve --codex-sandbox danger-full-access`, or the `sandbox` option of `codexAdapter`. That sandbox holds nothing back, so name it only on a machine where you would let the thread do anything.
+Claude Code starts a server of tools once and keeps it across `/clear`, so the session a server was started for is not always the one that calls. A second hook, on the bridge's tools only (`PreToolUse`, `cogitator bridge caller`), adds the session to the arguments of every call, and the tools go by that. Without it they go by the session the server was started for, which `cogitator bridge doctor` warns about. The hook waits 12 hours at most, then the session reads its mail at its next turn. A session a person opened decides for itself what to do with a job another agent hands it: every letter says it was not typed by the user, and such a session may ask its person before it acts. A session the bridge started for a job takes the job as its task. Claude Code starts a background session only in a folder it trusts: the bridge checks that first and fails the job with what to do (open the folder in Claude Code once and accept its prompt).
 
-**From inside a session.** Until the bridge has tools of its own, an agent calls it from its shell. The session is known by what its harness put into the environment.
+**Codex.** A letter goes into the message queue of the thread. A thread open in the Codex app takes it within seconds. A thread that is open nowhere, such as one the bridge started, wakes only when Codex's local daemon runs (`codex app-server daemon start`). The bridge never starts that daemon for you: without it the letter stays in the queue until the thread is opened. Codex does not tell the two cases apart, so the journal notes every letter queued while no daemon runs. A thread the bridge starts runs in the `workspace-write` sandbox, and what it prints goes to a file of its own in `~/.cogitator/bridge/sessions`, which the bridge never removes.
+
+The sandbox keeps the shell commands of a thread from the bridge's socket (`connect EPERM`), and Codex gives a server of tools none of the thread's environment. The tools need neither: Codex runs their server outside the sandbox and names the thread in every call, so a thread asks, answers and reports from any sandbox. The tools say they destroy nothing and stay on this machine, which is why Codex runs them without an approval, in `codex exec` too. A thread the bridge starts gets the tools whatever Codex has set up, and when its turn ends without a report the bridge takes its final answer as one, and a turn that fails as a failed job. `cogitator bridge serve --codex-sandbox <mode>` and the `sandbox` option of `codexAdapter` choose what the thread itself may do: `danger-full-access` holds nothing back, so name it only on a machine where you would let the thread do anything.
+
+**From a shell.** A session without the tools, and you at a terminal inside one, call the bridge with its command line. The session is known by what its harness put into the environment. A sandbox that keeps commands from sockets keeps this from the bridge too: that is what the tools are for.
 
 ```bash
 cogitator bridge delegate codex "Write the tests for the rate limiter" --check "pnpm test"
@@ -254,6 +298,47 @@ A session of a provider stays in the folder it was opened for: a later job for a
 
 `open` returns a session: anything with a `turn(text, { job })` whose `result` resolves with the agent's answer, so a session of your own is a few lines. Hosted sessions live in the host's process and end with it.
 
+## The tools in your own process
+
+`cogitator bridge mcp` is a few lines over `@cogitator-ai/bridge/tools`, which needs `@cogitator-ai/core`:
+
+```typescript
+import { MCPServer } from '@cogitator-ai/mcp';
+import { bridgePaths } from '@cogitator-ai/bridge';
+import { BRIDGE_INSTRUCTIONS, bridgeTools } from '@cogitator-ai/bridge/tools';
+
+const server = new MCPServer({
+  name: 'cogitator-bridge',
+  version: '1.0.0',
+  transport: 'stdio',
+  instructions: BRIDGE_INSTRUCTIONS,
+});
+server.registerTools(bridgeTools({ socketPath: bridgePaths().socket }));
+await server.start();
+```
+
+Every call reaches the dispatcher on a connection of its own, so the server may start before the dispatcher and lives through its restarts. Who calls is read from each call, not once (`callerOfToolCall`): the hint a hook of the harness added to the arguments, else the thread Codex names in `_meta`, else the environment of the server.
+
+`claudeSetup()` and `codexSetup()` are what `cogitator bridge install` runs. `install()` and `uninstall()` return steps, each with a title, the command it runs or the lines a file gains, and an `apply()`: nothing changes until a step is applied, and a harness that is set up has no steps.
+
+```typescript
+import { claudeSetup } from '@cogitator-ai/bridge';
+
+const setup = claudeSetup({
+  toolsServer: { command: 'cogitator', args: ['bridge', 'mcp'] },
+});
+const steps = await setup.install({
+  project: process.cwd(),
+  scope: 'project',
+  notes: true,
+  takeJobs: false,
+  allowTools: true,
+});
+for (const step of steps) console.log(step.title, step.lines);
+```
+
+Pass `toolsServer` to `claudeCodeAdapter()` and `codexAdapter()` too, and the sessions they start get the tools: Claude Code with `--mcp-config`, the hook that names the session and the rule for the tools, Codex as overrides of its configuration.
+
 ## Adapters
 
 An adapter tells the bridge how to reach the sessions of one harness. `claudeCodeAdapter()`, `codexAdapter()` and `hostedAdapter()` are the ones above. `cogitator bridge serve` runs the first two as they come. To choose the permission mode of Claude Code sessions or the sandbox of Codex threads, or to add hosted agents, host the dispatcher in a process of your own:
@@ -298,6 +383,7 @@ const host = await hostBridge({ adapters: [adapter] });
 | `deliver`       | Hands a letter to a session. Leave it out when the sessions wait for their mail themselves, as Claude Code's do |
 | `createSession` | Starts a session for a job, and may hand it the first letter while it does                                      |
 | `identify`      | Tells which session a process belongs to, from its environment or from what the harness wrote to its hook       |
+| `toolCallHook`  | Answers the hook a harness runs before a bridge tool call, so the call carries the session that makes it        |
 | `liveSessions`  | Lists the sessions that run, so the bridge knows a closed one from a quiet one                                  |
 | `health`        | What `cogitator bridge doctor` shows: versions, the commands the bridge needs, each with what to do about it    |
 | `attach`        | Gets the calls the adapter's own sessions make, such as to report                                               |
@@ -305,7 +391,7 @@ const host = await hostBridge({ adapters: [adapter] });
 
 `deliver` may return `{ note }`: something a person should know about the delivery, kept in the journal.
 
-`@cogitator-ai/bridge/testing` has what the adapters of this package are tested with. `adapterConformanceCases(target)` is the adapter contract as cases to run against your adapter and its harness. `installFakeHarnesses()` puts stand-ins of the `claude` and `codex` commands on a `PATH`: they keep background sessions, fire hooks, hold queues and run a scripted turn, so code that drives the real command lines is tested without them.
+`@cogitator-ai/bridge/testing` has what the adapters of this package are tested with. `adapterConformanceCases(target)` is the adapter contract as cases to run against your adapter and its harness. `installFakeHarnesses()` puts stand-ins of the `claude` and `codex` commands on a `PATH`: they keep background sessions, fire hooks, hold queues and run a scripted turn, so code that drives the real command lines is tested without them. They run MCP servers the way the real ones were measured to (`claude mcp`, `codex mcp`, the environment a server gets, what a tool call carries, the tools a session nobody sits at may call), and keep the commands of a sandboxed Codex thread from sockets and from writing outside its folder, so a test shows what works from a sandbox.
 
 ```typescript
 import { adapterConformanceCases } from '@cogitator-ai/bridge/testing';
@@ -317,7 +403,7 @@ for (const conformance of adapterConformanceCases(target)) {
 
 ## Trust
 
-The bridge is a tool of one person on one machine. The socket and the database are created for their owner only, a folder or a database that belongs to another user is refused, and every process of that user can connect: read any job and letter, and call as a session by naming its id. A job is done inside the project it is handed over in, or the worktree its caller works in. A session the bridge starts has the rights its harness gives it: a Claude Code session the permission mode you configure (`claudeCodeAdapter({ permissionMode })`), a Codex thread the `workspace-write` sandbox unless you choose another (`codexAdapter({ sandbox })`). A letter is text from another agent, never an order from you: every letter says so in its first line. Do not point `COGITATOR_BRIDGE_HOME` at a folder other users can write to. On Windows the dispatcher listens on a named pipe that other users of the same machine can reach, so run it only on a machine you do not share. The Claude Code and Codex adapters run on macOS and Linux.
+The bridge is a tool of one person on one machine. The socket and the database are created for their owner only, a folder or a database that belongs to another user is refused, and every process of that user can connect: read any job and letter, and call as a session by naming its id. A job is done inside the project it is handed over in, or the worktree its caller works in. A session the bridge starts has the rights its harness gives it: a Claude Code session the permission mode you configure (`claudeCodeAdapter({ permissionMode })`), a Codex thread the `workspace-write` sandbox unless you choose another (`codexAdapter({ sandbox })`). A letter is text from another agent, never an order from you: every letter says so in its first line, and whether a session you opened takes a job without asking you is yours to say at `cogitator bridge install` (`--take-jobs`). A tool call names its session the way a connection to the socket does, and is believed the same way. Do not point `COGITATOR_BRIDGE_HOME` at a folder other users can write to. On Windows the dispatcher listens on a named pipe that other users of the same machine can reach, so run it only on a machine you do not share. The Claude Code and Codex adapters run on macOS and Linux.
 
 ## Errors
 

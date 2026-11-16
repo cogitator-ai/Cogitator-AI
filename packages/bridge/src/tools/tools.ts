@@ -223,7 +223,7 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
     execute: async (args, context) =>
       asCaller(args, context, async (bridge) => {
         const sent = await bridge.send({ job: args.job, kind: 'question', body: args.question });
-        return `Asked ${sent.letter.to} (letter ${sent.letter.id}). Job #${sent.job.number} is ${sent.job.state}. End your turn: the answer wakes this session.`;
+        return `Asked ${sent.letter.to}. Job #${sent.job.number} is ${sent.job.state}. End your turn: the answer wakes this session.`;
       }),
   });
 
