@@ -1,0 +1,486 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
+import { CommanderError } from 'commander';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  BridgeClient,
+  CommandMissingError,
+  bridgePaths,
+  claudeCodeAdapter,
+  codexAdapter,
+  hostBridge,
+  type AdapterSetup,
+  type BridgeHost,
+  type SetupStep,
+} from '@cogitator-ai/bridge';
+import { BRIDGE_NOTES_START } from '@cogitator-ai/bridge/tools';
+import { installFakeHarnesses, type FakeHarnesses } from '@cogitator-ai/bridge/testing';
+import {
+  runBridgeInstall,
+  runBridgeUninstall,
+  type BridgeInstallContext,
+} from '../commands/bridge-install.js';
+import { TOOLS_REPLY_HINT, runBridgeWait } from '../commands/bridge-session.js';
+import {
+  BRIDGE_SERVER_NAME,
+  createBridgeMcpServer,
+  runBridgeCaller,
+  type BridgeCallerContext,
+} from '../commands/bridge-tools.js';
+import {
+  bridgeAdapters,
+  bridgeHomeOf,
+  bridgeSetups,
+  bridgeToolsServerOf,
+} from '../utils/bridge-adapters.js';
+import { exitCodeFor } from '../utils/cli.js';
+
+let bridgeDir: string;
+let project: string;
+let lines: string[];
+let failures: string[];
+const hosts: BridgeHost[] = [];
+
+const output = () => stripVTControlCharacters(lines.join('\n'));
+const failed = () => stripVTControlCharacters(failures.join('\n'));
+
+beforeEach(() => {
+  const base = process.platform !== 'win32' && existsSync('/tmp') ? '/tmp' : tmpdir();
+  bridgeDir = mkdtempSync(join(base, 'cb-cli-'));
+  project = mkdtempSync(join(base, 'cb-proj-'));
+  lines = [];
+  failures = [];
+  vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+    failures.push(args.map(String).join(' '));
+  });
+  vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    lines.push(args.map(String).join(' '));
+  });
+});
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(hosts.splice(0).map((host) => host.close()));
+  for (const folder of [bridgeDir, project]) rmSync(folder, { recursive: true, force: true });
+});
+
+describe('bridge mcp', () => {
+  it('serves the tools of the bridge', () => {
+    const server = createBridgeMcpServer({ home: bridgeDir, env: {} });
+
+    expect(server.getRegisteredTools()).toEqual([
+      'delegate',
+      'ask',
+      'answer',
+      'report',
+      'note',
+      'inbox',
+      'job',
+      'jobs',
+      'cancel',
+      'agents',
+    ]);
+    expect(BRIDGE_SERVER_NAME).toBe('cogitator-bridge');
+  });
+
+  it('is started the way this process was, with the folder of the bridge when it is not the default', () => {
+    const [script] = process.argv.slice(1);
+
+    expect(bridgeToolsServerOf({})).toEqual({
+      command: process.execPath,
+      args: [script, 'bridge', 'mcp'],
+    });
+    expect(bridgeToolsServerOf({}, '/srv/bridge').args.slice(-2)).toEqual([
+      '--home',
+      '/srv/bridge',
+    ]);
+    expect(
+      bridgeToolsServerOf({ COGITATOR_BRIDGE_COMMAND: 'my-cogitator bridge' }, '/srv/my bridge')
+    ).toEqual({
+      command: 'sh',
+      args: ['-c', "exec my-cogitator bridge mcp --home '/srv/my bridge'"],
+    });
+  });
+
+  it('is told a folder of the bridge that a flag or the environment names', () => {
+    expect(bridgeHomeOf({})).toBeUndefined();
+    expect(bridgeHomeOf({ COGITATOR_BRIDGE_HOME: ' /srv/bridge ' })).toBe('/srv/bridge');
+    expect(bridgeHomeOf({ COGITATOR_BRIDGE_HOME: '/srv/bridge' }, '/tmp/other')).toBe('/tmp/other');
+  });
+});
+
+describe('bridge caller', () => {
+  const hookInput = JSON.stringify({
+    session_id: 'session-now',
+    cwd: '/work/demo',
+    hook_event_name: 'PreToolUse',
+    tool_name: 'mcp__bridge__report',
+    tool_input: { job: 3, result: 'Done' },
+  });
+
+  function caller(input: string | undefined, extra: Partial<BridgeCallerContext> = {}) {
+    const written: string[] = [];
+    const context: BridgeCallerContext = {
+      write: (text) => written.push(text),
+      env: { CLAUDE_CODE_SESSION_ID: 'session-then' },
+      cwd: project,
+      stdin: async () => input,
+      adapters: [claudeCodeAdapter(), codexAdapter()],
+      ...extra,
+    };
+    return { context, written };
+  }
+
+  it('answers a hook of Claude Code with the arguments and the session of the call', async () => {
+    const { context, written } = caller(hookInput);
+
+    expect(await runBridgeCaller({ hook: 'claude-code' }, context)).toBe(0);
+
+    expect(JSON.parse(written.join(''))).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        updatedInput: {
+          job: 3,
+          result: 'Done',
+          _bridge: { harness: 'claude-code', session: 'session-now', cwd: '/work/demo' },
+        },
+      },
+    });
+  });
+
+  it('answers nothing, and lets the call go on, when the input names no session', async () => {
+    for (const input of [undefined, '', 'not json', JSON.stringify({ tool_input: {} })]) {
+      const { context, written } = caller(input);
+
+      expect(await runBridgeCaller({ hook: 'claude-code' }, context)).toBe(0);
+      expect(written).toEqual([]);
+    }
+  });
+
+  it('never exits with the code a harness reads as a refusal of the tool call', async () => {
+    const codexHook = caller(hookInput);
+    expect(await runBridgeCaller({ hook: 'codex' }, codexHook.context)).toBe(1);
+    expect(codexHook.written).toEqual([]);
+    expect(failed()).toContain('No adapter names the sessions of "codex" to the tools');
+
+    const broken = caller(hookInput, {
+      stdin: async () => {
+        throw new Error('stdin is gone');
+      },
+    });
+    expect(await runBridgeCaller({ hook: 'claude-code' }, broken.context)).toBe(1);
+
+    const usage = new CommanderError(
+      1,
+      'commander.missingMandatoryOptionValue',
+      "error: required option '--hook <harness>' not specified"
+    );
+    expect(exitCodeFor(usage, ['bridge', 'caller'])).toBe(1);
+    expect(exitCodeFor(usage, ['bridge', 'install', '--bogus'])).toBe(2);
+  });
+});
+
+describe('bridge wait --tools', () => {
+  it('tells a woken session to reply with the tools, not with the command line', async () => {
+    const host = await hostBridge({ home: bridgeDir, tickMs: 25 });
+    hosts.push(host);
+    const env = { COGITATOR_BRIDGE_HOME: bridgeDir, CLAUDE_CODE_SESSION_ID: 'claude-1' };
+    const woken: string[] = [];
+    const waiting = runBridgeWait(
+      { timeout: 30, tools: true },
+      {
+        print: (line) => lines.push(line),
+        wake: (text) => woken.push(text),
+        env,
+        cwd: project,
+        stdin: async () => undefined,
+        adapters: [],
+      }
+    );
+    const sender = await BridgeClient.connect({
+      socketPath: bridgePaths({ home: bridgeDir }).socket,
+      caller: { harness: 'codex', sessionId: 'thread-1', cwd: project, project },
+    });
+    try {
+      const deadline = Date.now() + 5_000;
+      for (;;) {
+        const [claude] = await sender.agents({ harness: 'claude-code' });
+        if (claude) {
+          await sender.createJob({ to: claude.name, body: 'Review the diff' });
+          break;
+        }
+        if (Date.now() > deadline) throw new Error('the waiter never registered');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(await waiting).toBe(2);
+    } finally {
+      await sender.close();
+    }
+
+    expect(woken[0]).toContain('Review the diff');
+    expect(woken[0].endsWith(TOOLS_REPLY_HINT)).toBe(true);
+    expect(woken[0]).not.toContain('send --job');
+  });
+});
+
+describe('bridge install and uninstall', () => {
+  const calls: string[] = [];
+
+  function step(title: string, fail?: string): SetupStep {
+    return {
+      title,
+      lines: [`+ ${title.toLowerCase()}`],
+      apply: async () => {
+        if (fail) throw new Error(fail);
+        calls.push(title);
+      },
+    };
+  }
+
+  function setup(install: SetupStep[], uninstall: SetupStep[] = []): AdapterSetup {
+    return {
+      install: vi.fn(async () => install),
+      uninstall: vi.fn(async () => uninstall),
+    };
+  }
+
+  function context(
+    setups: BridgeInstallContext['setups'],
+    answer?: boolean
+  ): BridgeInstallContext & { asked: string[] } {
+    const asked: string[] = [];
+    return {
+      asked,
+      io: {
+        print: (line) => lines.push(line),
+        confirm: async (question) => {
+          asked.push(question);
+          return answer;
+        },
+      },
+      env: { COGITATOR_BRIDGE_HOME: bridgeDir },
+      cwd: project,
+      setups,
+    };
+  }
+
+  beforeEach(() => {
+    calls.length = 0;
+  });
+
+  it('lists every change, asks once, and makes them in order after a yes', async () => {
+    const claude = setup([step('Register the server'), step('Edit the settings')]);
+    const codex = setup([step('Register with Codex')]);
+    const ctx = context({ claude, codex }, true);
+
+    expect(await runBridgeInstall(undefined, { takeJobs: true }, ctx)).toBe(0);
+
+    expect(output()).toContain(`Setting up the agent bridge for the project ${project}`);
+    expect(output()).toMatch(
+      /Claude Code\n {2}1\. Register the server\n {7}\+ register the server\n {2}2\. Edit the settings\n {7}\+ edit the settings\nCodex\n {2}3\. Register with Codex/
+    );
+    expect(ctx.asked).toEqual(['Make these 3 changes?']);
+    expect(calls).toEqual(['Register the server', 'Edit the settings', 'Register with Codex']);
+    expect(claude.install).toHaveBeenCalledWith({
+      project,
+      scope: 'project',
+      notes: true,
+      takeJobs: true,
+      allowTools: true,
+    });
+    expect(output()).toContain('Done: 3 changes');
+    expect(output()).toContain('No dispatcher runs yet');
+    expect(output()).toContain('cogitator bridge doctor');
+  });
+
+  it('changes nothing after a no, with --dry-run, or when nobody can answer', async () => {
+    const setups = { claude: setup([step('Register the server')]) };
+
+    expect(await runBridgeInstall('claude', {}, context(setups, false))).toBe(0);
+    expect(output()).toContain('Nothing was changed');
+
+    const dry = context(setups, true);
+    expect(await runBridgeInstall('claude', { dryRun: true }, dry)).toBe(0);
+    expect(dry.asked).toEqual([]);
+
+    expect(await runBridgeInstall('claude', {}, context(setups))).toBe(1);
+    expect(failed()).toContain('Nothing was changed: nobody is here to confirm');
+    expect(failed()).toContain('--yes');
+    expect(calls).toEqual([]);
+  });
+
+  it('makes the changes without asking with --yes, and passes the choices on', async () => {
+    const claude = setup([step('Register the server')]);
+    const ctx = context({ claude });
+
+    expect(
+      await runBridgeInstall(
+        'claude',
+        { yes: true, user: true, notes: false, allow: false, cwd: 'packages/api' },
+        ctx
+      )
+    ).toBe(0);
+
+    expect(ctx.asked).toEqual([]);
+    expect(calls).toEqual(['Register the server']);
+    expect(claude.install).toHaveBeenCalledWith({
+      project: join(project, 'packages', 'api'),
+      scope: 'user',
+      notes: false,
+      takeJobs: false,
+      allowTools: false,
+    });
+    expect(output()).toContain('Setting up the agent bridge for every project of yours');
+  });
+
+  it('says so when everything is in place, and asks nothing', async () => {
+    const ctx = context({ claude: setup([]), codex: setup([]) }, true);
+
+    expect(await runBridgeInstall('all', {}, ctx)).toBe(0);
+
+    expect(ctx.asked).toEqual([]);
+    expect(output()).toContain('nothing to change');
+    expect(output()).toContain('Everything is in place already');
+  });
+
+  it('leaves out a harness that is not installed, and fails when it was the one asked for', async () => {
+    const absent: AdapterSetup = {
+      install: async () => {
+        throw new CommandMissingError('codex');
+      },
+      uninstall: async () => [],
+    };
+    const setups = { claude: setup([step('Register the server')]), codex: absent };
+
+    expect(await runBridgeInstall(undefined, { yes: true }, context(setups))).toBe(0);
+    expect(output()).toContain('Codex\n  not installed on this machine, left out');
+    expect(calls).toEqual(['Register the server']);
+
+    expect(await runBridgeInstall('codex', { yes: true }, context(setups))).toBe(1);
+    expect(failed()).toContain('Codex is not installed: codex is not installed, or not on PATH');
+
+    expect(await runBridgeInstall(undefined, { yes: true }, context({ codex: absent }))).toBe(1);
+    expect(failed()).toContain('Neither Claude Code nor Codex is installed');
+  });
+
+  it('names the change that failed and how far it got', async () => {
+    const setups = {
+      claude: setup([
+        step('Register the server'),
+        step('Edit the settings', 'the file is read-only'),
+        step('Add the notes'),
+      ]),
+    };
+
+    expect(await runBridgeInstall('claude', { yes: true }, context(setups))).toBe(1);
+
+    expect(calls).toEqual(['Register the server']);
+    expect(failed()).toContain('"Edit the settings" failed: the file is read-only');
+    expect(failed()).toContain('The 1 change before it was made');
+  });
+
+  it('prints the changes as JSON, and asks nothing then', async () => {
+    const setups = { claude: setup([step('Register the server')]) };
+
+    expect(await runBridgeInstall('claude', { json: true, dryRun: true }, context(setups))).toBe(0);
+    expect(JSON.parse(lines.join(''))).toEqual({
+      applied: false,
+      changes: [
+        { harness: 'claude', title: 'Register the server', lines: ['+ register the server'] },
+      ],
+      missing: [],
+    });
+
+    lines = [];
+    expect(await runBridgeInstall('claude', { json: true, yes: true }, context(setups))).toBe(0);
+    expect(JSON.parse(lines.join(''))).toMatchObject({ applied: true });
+
+    lines = [];
+    expect(await runBridgeInstall('claude', { json: true }, context(setups))).toBe(2);
+    expect(JSON.parse(lines.join(''))).toMatchObject({ ok: false });
+  });
+
+  it('refuses a harness it does not know', async () => {
+    expect(await runBridgeInstall('cursor', {}, context({}))).toBe(2);
+    expect(failed()).toContain('"cursor" is not a harness the bridge sets up');
+  });
+
+  it('takes the bridge out again, and says what Codex keeps for other projects', async () => {
+    const claude = setup([], [step('Remove the server')]);
+    const codex = setup([], [step('Remove the notes')]);
+    const ctx = context({ claude, codex }, true);
+
+    expect(await runBridgeUninstall(undefined, {}, ctx)).toBe(0);
+
+    expect(output()).toContain(`Taking the agent bridge out of the project ${project}`);
+    expect(calls).toEqual(['Remove the server', 'Remove the notes']);
+    expect(claude.uninstall).toHaveBeenCalledWith({ project, scope: 'project' });
+    expect(output()).toContain('cogitator bridge uninstall codex --user');
+
+    lines = [];
+    expect(await runBridgeUninstall('claude', { user: true }, context({ claude: setup([]) }))).toBe(
+      0
+    );
+    expect(output()).toContain('Nothing of the bridge is set up here');
+    expect(output()).not.toContain('uninstall codex --user');
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('bridge install on the harnesses', () => {
+  let fakes: FakeHarnesses;
+
+  beforeEach(() => {
+    fakes = installFakeHarnesses();
+  });
+
+  afterEach(async () => {
+    await fakes.cleanup();
+  });
+
+  it('sets both harnesses up with the server and the hooks this command line would run', async () => {
+    const env = fakes.env({
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      COGITATOR_BRIDGE_HOME: bridgeDir,
+      COGITATOR_BRIDGE_COMMAND: 'my-cogitator bridge',
+    });
+    const io = { print: (line: string) => lines.push(line), confirm: async () => true };
+
+    expect(await runBridgeInstall(undefined, {}, { io, env, cwd: project })).toBe(0);
+
+    expect(output()).toContain('exec my-cogitator bridge mcp --home');
+    const local = JSON.parse(
+      readFileSync(join(fakes.home, 'claude-config', '.claude.json'), 'utf8')
+    ) as { projects: Record<string, { mcpServers: Record<string, { command: string }> }> };
+    expect(Object.values(local.projects)[0].mcpServers.bridge.command).toBe('sh');
+    const settings = readFileSync(join(project, '.claude', 'settings.local.json'), 'utf8');
+    expect(settings).toContain('my-cogitator bridge wait --hook claude-code');
+    expect(settings).toContain(`--home ${bridgeDir} --tools`);
+    expect(settings).toContain('my-cogitator bridge caller --hook claude-code');
+    expect(readFileSync(join(project, 'CLAUDE.md'), 'utf8')).toContain(BRIDGE_NOTES_START);
+    expect(readFileSync(join(project, 'AGENTS.md'), 'utf8')).toContain(BRIDGE_NOTES_START);
+    expect((await fakes.run('codex', ['mcp', 'get', 'bridge'])).code).toBe(0);
+
+    lines = [];
+    expect(await runBridgeInstall(undefined, {}, { io, env, cwd: project })).toBe(0);
+    expect(output()).toContain('Everything is in place already');
+
+    expect(await runBridgeUninstall(undefined, { yes: true }, { io, env, cwd: project })).toBe(0);
+    expect(existsSync(join(project, '.claude', 'settings.local.json'))).toBe(false);
+    expect(existsSync(join(project, 'CLAUDE.md'))).toBe(false);
+    expect(existsSync(join(project, 'AGENTS.md'))).toBe(false);
+    expect((await fakes.run('codex', ['mcp', 'get', 'bridge'])).code).toBe(0);
+  });
+
+  it('builds the setups and the adapters from the same command line', () => {
+    const env = {
+      COGITATOR_BRIDGE_COMMAND: 'my-cogitator bridge',
+      COGITATOR_BRIDGE_HOME: bridgeDir,
+    };
+
+    expect(Object.keys(bridgeSetups(env))).toEqual(['claude', 'codex']);
+    expect(bridgeAdapters(env).map((adapter) => adapter.harness)).toEqual(['claude-code', 'codex']);
+  });
+});
