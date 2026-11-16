@@ -9,6 +9,8 @@ export interface RawOptions {
   headers?: Record<string, string>;
   /** `params` fields besides `_meta` */
   params?: Record<string, unknown>;
+  /** Keys of `_meta` besides those of the protocol, as a client adds its own */
+  meta?: Record<string, unknown>;
 }
 
 export interface RawReply {
@@ -35,6 +37,7 @@ export async function rawRequest(
   const params = {
     ...options.params,
     _meta: {
+      ...options.meta,
       'io.modelcontextprotocol/protocolVersion': '2026-07-28',
       'io.modelcontextprotocol/clientInfo': { name: 'raw', version: '1.0.0' },
       'io.modelcontextprotocol/clientCapabilities': options.capabilities ?? {},
