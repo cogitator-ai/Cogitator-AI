@@ -132,20 +132,36 @@ export type {
 
 export {
   CLAUDE_DELIVERY,
+  CLAUDE_TOOLS_PERMISSION,
+  CLAUDE_TOOLS_PREFIX,
   DEFAULT_HOOK_TIMEOUT_S,
+  claudeCallerCommand,
   claudeCodeAdapter,
+  claudeToolCallHook,
+  claudeToolsHook,
+  claudeToolsScope,
   claudeTrust,
   claudeWaitCommand,
   claudeWaitHook,
+  hasClaudeToolsHook,
   hasClaudeWaitHook,
 } from './adapters/claude.js';
 export type {
   ClaudeCodeAdapterOptions,
   ClaudeHookSettings,
+  ClaudeToolsHookOptions,
+  ClaudeToolsHookSettings,
   ClaudeTrust,
   ClaudeWaitHookOptions,
 } from './adapters/claude.js';
-export { CODEX_NOT_RESUMED_NOTE, CODEX_DELIVERY, codexAdapter } from './adapters/codex.js';
+export {
+  CODEX_NOT_RESUMED_NOTE,
+  CODEX_DELIVERY,
+  codexAdapter,
+  codexToolsServerArgs,
+} from './adapters/codex.js';
+export { BRIDGE_TOOLS_SERVER } from './adapters/tools-server.js';
+export type { ToolsServerCommand } from './adapters/tools-server.js';
 export type { CodexAdapterOptions, CodexSandbox } from './adapters/codex.js';
 export {
   HOSTED_DELIVERY,

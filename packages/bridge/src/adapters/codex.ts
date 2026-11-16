@@ -23,6 +23,7 @@ import {
   sessionEnv,
   tooLongNotice,
 } from './exec.js';
+import { BRIDGE_TOOLS_SERVER, toolsServerEnv, type ToolsServerCommand } from './tools-server.js';
 
 /** How letters reach a Codex thread: the thread's own message queue. */
 export const CODEX_DELIVERY = 'queue';
@@ -50,6 +51,12 @@ export interface CodexAdapterOptions {
   threadStartedMs?: number;
   /** Hears what went wrong outside a call of the bridge: a report that could not be sent */
   onError?: (error: Error) => void;
+  /**
+   * How a thread starts the bridge's server of tools. With it the threads the adapter starts
+   * get the tools, whatever the configuration of Codex has. Codex runs such a server outside
+   * the sandbox of the thread, so the tools reach the bridge where the command line cannot
+   */
+  toolsServer?: ToolsServerCommand;
 }
 
 const DEFAULT_THREAD_STARTED_MS = 60_000;
@@ -108,14 +115,41 @@ export function codexThreadId(output: string): string | undefined {
 }
 
 /**
- * What a thread the bridge starts reads under its first letter. Such a thread often cannot reach
- * the bridge from its sandbox, so the bridge reports for it.
+ * What a thread the bridge starts reads under its first letter. A thread without the bridge's
+ * tools often cannot reach the bridge from its sandbox, so the bridge reports for it. One with
+ * the tools reports itself, and the bridge still does when its turn ends without a report.
  */
-export function codexReportNotice(job: number): string {
-  return (
-    `[agent bridge] Your final answer of this turn is taken as the report on job #${job}, unless you send a report yourself. ` +
-    'A bridge command that fails from your sandbox needs no second try: answer here.'
-  );
+export function codexReportNotice(job: number, tools = false): string {
+  return tools
+    ? `[agent bridge] Report on job #${job} with the report tool of the bridge. When the turn ends without a report, your final answer is taken as one.`
+    : `[agent bridge] Your final answer of this turn is taken as the report on job #${job}, unless you send a report yourself. ` +
+        'A bridge command that fails from your sandbox needs no second try: answer here.';
+}
+
+/** A string as TOML reads it: what `codex -c key=value` parses its values as. */
+function tomlString(value: string): string {
+  return JSON.stringify(value).replaceAll('\u007f', '\\u007f');
+}
+
+/**
+ * The arguments that give one `codex exec` the bridge's server of tools, over whatever the
+ * configuration of Codex says of a server of that name.
+ */
+export function codexToolsServerArgs(
+  server: ToolsServerCommand,
+  env: Readonly<Record<string, string>> = {}
+): string[] {
+  const key = `mcp_servers.${BRIDGE_TOOLS_SERVER}`;
+  const table = Object.entries(env)
+    .map(([name, value]) => `${name}=${tomlString(value)}`)
+    .join(',');
+  return [
+    '-c',
+    `${key}.command=${tomlString(server.command)}`,
+    '-c',
+    `${key}.args=[${server.args.map((arg) => tomlString(arg)).join(',')}]`,
+    ...(table ? ['-c', `${key}.env={${table}}`] : []),
+  ];
 }
 
 /**
@@ -175,6 +209,12 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
   const logDir = options.logDir ?? join(bridgePaths({ env }).home, 'sessions');
   const bridgeHome = env.COGITATOR_BRIDGE_HOME?.trim() || undefined;
   const onError = options.onError ?? (() => undefined);
+  const tools = options.toolsServer;
+  const notice = {
+    ...(options.bridgeCommand !== undefined && { bridgeCommand: options.bridgeCommand }),
+    ...(bridgeHome !== undefined && { bridgeHome }),
+    tools: !!tools,
+  };
   let bridge: BridgeCalls | undefined;
   let closed = false;
 
@@ -217,9 +257,7 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
         '--thread',
         agent.sessionId,
         '--message',
-        fitsArgument(letter.text)
-          ? letter.text
-          : tooLongNotice(letter, options.bridgeCommand, bridgeHome),
+        fitsArgument(letter.text) ? letter.text : tooLongNotice(letter, notice),
         '--resume',
         '--cd',
         agent.cwd,
@@ -252,6 +290,16 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
           request.cwd,
           '--sandbox',
           options.sandbox ?? 'workspace-write',
+          ...(tools
+            ? codexToolsServerArgs(
+                tools,
+                toolsServerEnv({
+                  harness: HARNESSES.codex,
+                  agentName: request.agentName,
+                  ...(request.sessionName && { sessionName: request.sessionName }),
+                })
+              )
+            : []),
           ...(options.sessionArgs ?? []),
           '-',
         ],
@@ -278,7 +326,9 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
         });
       });
       child.stdin?.on('error', () => undefined);
-      child.stdin?.end(`${request.firstLetter.text}\n\n${codexReportNotice(request.job.number)}`);
+      child.stdin?.end(
+        `${request.firstLetter.text}\n\n${codexReportNotice(request.job.number, !!tools)}`
+      );
       child.unref();
       pid = child.pid;
     } finally {
@@ -387,6 +437,20 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
         ? 'runs: threads open in no app wake for their mail too'
         : 'does not run: a thread open in the Codex app still wakes, one open nowhere (such as a thread the bridge started) reads its mail only when opened',
       ...(!runs && { fix: DAEMON_START }),
+    });
+
+    const server = await runCommand(command, ['mcp', 'get', BRIDGE_TOOLS_SERVER, '--json'], {
+      env,
+    });
+    const has = server.code === 0;
+    checks.push({
+      id: 'tools',
+      title: 'Bridge tools',
+      status: has ? 'ok' : 'warn',
+      detail: has
+        ? "threads have the bridge's tools, which work from any sandbox"
+        : 'threads a person opens have no bridge tools, they use its command line, which a sandbox keeps from the bridge. Threads the bridge starts get the tools themselves',
+      ...(!has && { fix: 'cogitator bridge install codex' }),
     });
     return checks;
   }

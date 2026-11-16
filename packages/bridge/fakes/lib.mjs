@@ -92,7 +92,7 @@ export function print(text) {
   return new Promise((done) => process.stdout.write(`${text}\n`, () => done()));
 }
 
-/** @typedef {{ key: string, takesValue: boolean }} Flag */
+/** @typedef {{ key: string, takesValue: boolean, repeats?: boolean }} Flag */
 
 /** @param {string} key @returns {Flag} */
 export const flag = (key) => ({ key, takesValue: false });
@@ -100,13 +100,16 @@ export const flag = (key) => ({ key, takesValue: false });
 /** @param {string} key @returns {Flag} */
 export const option = (key) => ({ key, takesValue: true });
 
+/** An option that may be given several times: its values come as an array. @param {string} key @returns {Flag} */
+export const repeated = (key) => ({ key, takesValue: true, repeats: true });
+
 /**
  * Splits arguments into option values and positionals. An option that takes a value consumes
  * the next argument whatever it looks like, `--name=value` works for long names, `--` ends the
  * options and a lone `-` is a positional. An unknown option is {@link Unsupported}.
  * @param {string[]} argv
  * @param {Record<string, Flag>} flags by the name on the command line, such as `--json` or `-C`
- * @returns {{ values: Record<string, string | true>, positionals: string[] }}
+ * @returns {{ values: Record<string, string | string[] | true>, positionals: string[] }}
  */
 export function parseArgs(argv, flags) {
   const values = {};
@@ -116,7 +119,11 @@ export function parseArgs(argv, flags) {
     const arg = rest.shift();
     if (arg === '--') positionals.push(...rest.splice(0));
     else if (arg === '-' || !arg.startsWith('-')) positionals.push(arg);
-    else Object.assign(values, readOption(arg, rest, flags));
+    else {
+      const { key, value, repeats } = readOption(arg, rest, flags);
+      if (repeats) (values[key] ??= []).push(value);
+      else values[key] = value;
+    }
   }
   return { values, positionals };
 }
@@ -126,14 +133,14 @@ function readOption(arg, rest, flags) {
   const name = cut === -1 ? arg : arg.slice(0, cut);
   const inline = cut === -1 ? undefined : arg.slice(cut + 1);
   if (!Object.hasOwn(flags, name)) throw new Unsupported();
-  const { key, takesValue } = flags[name];
+  const { key, takesValue, repeats } = flags[name];
   if (!takesValue) {
     if (inline !== undefined) throw new Unsupported();
-    return { [key]: true };
+    return { key, value: true };
   }
   const value = inline ?? rest.shift();
   if (value === undefined) throw new Unsupported();
-  return { [key]: value };
+  return { key, value, repeats };
 }
 
 /**
@@ -447,16 +454,24 @@ export function abandonWork() {
 
 /** @typedef {{ command: string, code: number | null, stdout: string, stderr: string }} CommandRun */
 
-/** @typedef {{ at: string, input: string, ran: CommandRun[], answer: string }} TurnOutcome */
+/**
+ * A tool call of a turn: `args` as the model wrote them, `sent` as they reached the server when
+ * a hook changed them
+ * @typedef {{ tool: string, args: Record<string, unknown>, sent?: Record<string, unknown>, text: string, isError: boolean }} ToolRun
+ */
+
+/** @typedef {{ at: string, input: string, ran: CommandRun[], tools: ToolRun[], answer: string }} TurnOutcome */
+
+/** @typedef {(server: string, tool: string, args: Record<string, unknown>) => Promise<{ text: string, isError: boolean, sent?: Record<string, unknown> }>} ToolCaller */
 
 /**
  * The directives of an input, in the order of its lines. A line counts after its leading
  * whitespace is trimmed, a quoted line (`> run: ...`) is not a directive.
- * @returns {{ kind: 'run' | 'sleep' | 'say', value: string }[]}
+ * @returns {{ kind: 'run' | 'sleep' | 'say' | 'tool', value: string }[]}
  */
 function directives(input) {
   return input.split(/\r?\n/).flatMap((line) => {
-    const match = /^(run|sleep|say): (.+)$/.exec(line.trimStart());
+    const match = /^(run|sleep|say|tool): (.+)$/.exec(line.trimStart());
     if (!match) return [];
     const [, kind, text] = match;
     const value = text.trim();
@@ -471,24 +486,72 @@ async function runCommand(command, cwd, env) {
 }
 
 /**
- * The scripted model: runs every `run: <command>` line with `sh -c` and waits out every
- * `sleep: <ms>` line, one after another, and answers with the last `say: <text>` line, or `ok`.
+ * A `tool:` directive: `<server>.<tool>` and then the arguments as one JSON object, or nothing.
+ * A line that does not read as one calls nothing and is recorded as a failed call.
+ * @param {string} value
+ * @param {ToolCaller | undefined} callTool
+ * @returns {Promise<ToolRun>}
+ */
+async function runTool(value, callTool) {
+  const match = /^([\w-]+)\.([\w-]+)(?:\s+(\{.*\}))?$/.exec(value);
+  const failed = (text) => ({ tool: value.split(/\s/, 1)[0], args: {}, text, isError: true });
+  if (!match) return failed('not a tool call: expected <server>.<tool> {json}');
+  const [, server, tool, json] = match;
+  let args;
+  try {
+    args = json === undefined ? {} : JSON.parse(json);
+  } catch {
+    return failed('the arguments of the tool call are not JSON');
+  }
+  if (!callTool) return { ...failed('this session has no MCP servers'), args };
+  try {
+    return { tool: `${server}.${tool}`, args, ...(await callTool(server, tool, args)) };
+  } catch (error) {
+    return { tool: `${server}.${tool}`, args, text: error.message, isError: true };
+  }
+}
+
+/**
+ * The scripted model: runs every `run: <command>` line with `sh -c`, calls the tool of every
+ * `tool: <server>.<tool> {json}` line and waits out every `sleep: <ms>` line, one after another,
+ * and answers with the last `say: <text>` line, or `ok`.
  * @param {object} turn
  * @param {string} turn.input
  * @param {string} turn.cwd where the commands run
  * @param {NodeJS.ProcessEnv} turn.env what the commands see
+ * @param {ToolCaller} [turn.callTool] how the session calls a tool of one of its MCP servers
  * @returns {Promise<TurnOutcome>}
  */
-export async function performTurn({ input, cwd, env }) {
+export async function performTurn({ input, cwd, env, callTool }) {
   const at = new Date().toISOString();
   const ran = [];
+  const tools = [];
   let answer = 'ok';
   for (const { kind, value } of directives(input)) {
     if (kind === 'run') ran.push(await runCommand(value, cwd, env));
+    else if (kind === 'tool') tools.push(await runTool(value, callTool));
     else if (kind === 'sleep') await sleep(Number(value));
     else answer = value;
   }
-  return { at, input, ran, answer };
+  return { at, input, ran, tools, answer };
+}
+
+/**
+ * The environment of the commands of a sandboxed session: the fake sandbox is loaded into every
+ * Node process among them. No sandbox, no change.
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string | undefined} mode `read-only`, `workspace-write` or `danger-full-access`
+ * @param {string} root the folder the session may write to
+ */
+export function sandboxedEnv(env, mode, root) {
+  if (mode === undefined || mode === 'danger-full-access') return env;
+  const preload = `--import ${new URL('./sandbox.mjs', import.meta.url).href}`;
+  return {
+    ...env,
+    NODE_OPTIONS: env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ${preload}` : preload,
+    FAKE_SANDBOX: mode,
+    FAKE_SANDBOX_ROOT: root,
+  };
 }
 
 function countLines(file) {
@@ -501,7 +564,7 @@ function countLines(file) {
  * @param {TurnOutcome} outcome
  * @param {'prompt' | 'user' | 'hook' | 'queue' | 'exec'} wokenBy what started the turn
  */
-export function recordTurn(transcript, { at, input, ran, answer }, wokenBy) {
-  const turn = { turn: countLines(transcript) + 1, at, input, ran, answer, wokenBy };
+export function recordTurn(transcript, { at, input, ran, tools, answer }, wokenBy) {
+  const turn = { turn: countLines(transcript) + 1, at, input, ran, tools, answer, wokenBy };
   appendFileSync(transcript, `${JSON.stringify(turn)}\n`);
 }

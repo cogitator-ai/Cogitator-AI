@@ -57,6 +57,7 @@
   },
   "devDependencies": {
     "@cogitator-ai/core": "workspace:*",
+    "@cogitator-ai/mcp": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.20.4",
     "better-sqlite3": "^13.0.3",

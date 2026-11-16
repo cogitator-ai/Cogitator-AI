@@ -1,11 +1,24 @@
-import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BridgeAdapter } from '../adapter';
-import { claudeCodeAdapter, claudeWaitHook, hasClaudeWaitHook } from '../adapters/claude';
+import {
+  CLAUDE_TOOLS_PERMISSION,
+  claudeCodeAdapter,
+  claudeToolsHook,
+  claudeWaitHook,
+} from '../adapters/claude';
 import { CODEX_NOT_RESUMED_NOTE, codexAdapter, codexReportNotice } from '../adapters/codex';
+import type { ToolsServerCommand } from '../adapters/tools-server';
 import { BridgeClient } from '../client';
 import { hostBridge, type BridgeHost } from '../host';
 import { bridgePaths } from '../paths';
@@ -18,6 +31,10 @@ const TSX = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
 const WAIT = fileURLToPath(new URL('./fixtures/wait.ts', import.meta.url));
 /** How the hook of a session reaches the bridge in these tests: the wait of the command line */
 const BRIDGE_COMMAND = `${process.execPath} --import ${TSX} ${WAIT} bridge`;
+const TOOLS_SERVER = fileURLToPath(new URL('./fixtures/tools-server.ts', import.meta.url));
+/** What a command of a session does to reach the bridge's socket, as its command line would */
+const CONNECT =
+  "require('node:net').connect(process.argv[1]).on('connect', () => { console.log('connected'); process.exit(0); }).on('error', (error) => { console.log(error.code); process.exit(3); })";
 
 const posix = process.platform !== 'win32';
 
@@ -54,6 +71,14 @@ function claudeAdapter(options: Parameters<typeof claudeCodeAdapter>[0] = {}): B
 function codex(options: Parameters<typeof codexAdapter>[0] = {}): BridgeAdapter {
   return codexAdapter({ env: env(), logDir: join(home, 'sessions'), ...options });
 }
+
+/** How a session starts the bridge's server of tools in these tests, for the bridge in `home` */
+function toolsServer(): ToolsServerCommand {
+  return { command: process.execPath, args: ['--import', TSX, TOOLS_SERVER, '--home', home] };
+}
+
+const connecting = (): string =>
+  `run: ${process.execPath} -e ${JSON.stringify(CONNECT)} ${JSON.stringify(bridgePaths({ home }).socket)}`;
 
 async function startHost(adapters: BridgeAdapter[]): Promise<BridgeHost> {
   const host = await hostBridge({
@@ -456,20 +481,124 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
       ['sessions', 'ok'],
       ['trust', 'ok'],
       ['hook', 'warn'],
+      ['tools', 'warn'],
     ]);
     expect(before?.[0].detail).toBe('2.1.292 (Claude Code)');
-    const fix = before?.[4].fix ?? '';
-    const snippet: unknown = JSON.parse(fix.slice(fix.indexOf('{')));
-    expect(hasClaudeWaitHook(snippet)).toBe(true);
+    expect(before?.[4].fix).toBe('cogitator bridge install claude');
+    expect(before?.[5].fix).toBe('cogitator bridge install claude');
 
     mkdirSync(join(project, '.claude'));
-    writeFileSync(join(project, '.claude', 'settings.json'), JSON.stringify(snippet));
+    writeFileSync(
+      join(project, '.claude', 'settings.json'),
+      JSON.stringify(claudeWaitHook({ bridgeCommand: BRIDGE_COMMAND }))
+    );
     const after = await adapter.health?.({ cwd: project });
     expect(after?.[4]).toMatchObject({
       status: 'ok',
       detail: expect.stringContaining('settings.json'),
     });
     expect(after?.[4].fix).toBeUndefined();
+  });
+
+  it('reports whether the sessions of a folder have the tools, and the hook that names them', async () => {
+    const adapter = claudeCodeAdapter({ env: env(), userSettingsPath: join(home, 'none.json') });
+    const tools = async () =>
+      (await adapter.health?.({ cwd: project }))?.filter((check) =>
+        ['tools', 'caller'].includes(check.id)
+      );
+    expect(await tools()).toMatchObject([{ id: 'tools', status: 'warn' }]);
+
+    const added = await fakes.run(
+      'claude',
+      ['mcp', 'add', '--scope', 'local', 'bridge', '--', 'node', '/x/cli.js', 'bridge', 'mcp'],
+      { cwd: project }
+    );
+    expect(added.code).toBe(0);
+    expect(await tools()).toMatchObject([
+      { id: 'tools', status: 'ok', detail: expect.stringContaining('local config') },
+      {
+        id: 'caller',
+        status: 'warn',
+        detail: expect.stringContaining('after /clear'),
+        fix: 'cogitator bridge install claude',
+      },
+    ]);
+
+    mkdirSync(join(project, '.claude'));
+    writeFileSync(
+      join(project, '.claude', 'settings.local.json'),
+      JSON.stringify(claudeToolsHook({ bridgeCommand: BRIDGE_COMMAND }))
+    );
+    expect(await tools()).toMatchObject([
+      { id: 'tools', status: 'ok' },
+      { id: 'caller', status: 'ok', detail: expect.stringContaining('settings.local.json') },
+    ]);
+
+    await fakes.run('claude', ['mcp', 'remove', 'bridge'], { cwd: project });
+    writeFileSync(
+      join(project, '.mcp.json'),
+      JSON.stringify({ mcpServers: { bridge: { command: 'node' } } })
+    );
+    expect((await tools())?.[0]).toMatchObject({
+      status: 'ok',
+      detail: expect.stringContaining('project config'),
+    });
+  });
+
+  it('gives a session it starts the tools, the hook that names it and the permission to call them', async () => {
+    fakes.trustFolder(project);
+    await startHost([claudeAdapter({ toolsServer: toolsServer() })]);
+    const conductor = await orchestrator();
+
+    await conductor.createJob({
+      to: 'claude',
+      body: 'Review the diff\ntool: bridge.report {"job":1,"result":"Two findings, both in limiter.ts"}\nsay: Reported',
+    });
+    const agent = await until(
+      async () => (await conductor.agents({ harness: 'claude-code', statuses: ['active'] }))[0],
+      'the session to start'
+    );
+    const turn = await fakes.waitForTurn('claude', agent.sessionId, () => true);
+
+    expect(turn.tools).toHaveLength(1);
+    expect(turn.tools[0]).toMatchObject({ tool: 'bridge.report', isError: false });
+    expect(turn.tools[0].text).toContain('Job #1 is completed');
+    expect(turn.tools[0].sent).toMatchObject({
+      job: 1,
+      _bridge: { harness: 'claude-code', session: agent.sessionId, cwd: realpathSync(project) },
+    });
+    const [report] = await until(async () => {
+      const inbox = await conductor.inbox();
+      return inbox.length > 0 ? inbox : undefined;
+    }, 'the report of the session');
+    expect(report).toMatchObject({
+      kind: 'report',
+      from: agent.name,
+      body: 'Two findings, both in limiter.ts',
+    });
+    expect(await conductor.agents({ harness: 'claude-code' })).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+
+  it('starts a session without the tools when it was given no server for them', async () => {
+    fakes.trustFolder(project);
+    await startHost([claudeAdapter()]);
+    const conductor = await orchestrator();
+
+    await conductor.createJob({ to: 'claude', body: 'Review the diff\ntool: bridge.jobs' });
+    const agent = await until(
+      async () => (await conductor.agents({ harness: 'claude-code', statuses: ['active'] }))[0],
+      'the session to start'
+    );
+    const turn = await fakes.waitForTurn('claude', agent.sessionId, () => true);
+
+    expect(turn.tools[0]).toMatchObject({ isError: true, text: 'No MCP server named "bridge"' });
+    const record = JSON.parse(
+      readFileSync(join(fakes.home, 'claude', 'sessions', `${agent.sessionId}.json`), 'utf8')
+    ) as { settings: string; mcpConfig?: string };
+    expect(record.mcpConfig).toBeUndefined();
+    expect(JSON.parse(record.settings)).not.toHaveProperty('permissions');
+    expect(record.settings).not.toContain(CLAUDE_TOOLS_PERMISSION);
   });
 
   it('looks for what Claude Code keeps where CLAUDE_CONFIG_DIR says', async () => {
@@ -506,6 +635,7 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
       ['sessions', 'fail'],
       ['trust', 'warn'],
       ['hook', 'warn'],
+      ['tools', 'warn'],
     ]);
     expect(checks?.[1].fix).toBe('Update Claude Code: claude update');
     expect(checks?.[3].detail).toContain('could not read whether Claude Code trusts');
@@ -850,12 +980,106 @@ describe.skipIf(!posix)('the Codex adapter', () => {
       ['queue', 'ok'],
       ['exec', 'ok'],
       ['daemon', 'warn'],
+      ['tools', 'warn'],
     ]);
     expect(without?.[0].detail).toBe('codex-cli 0.167.0-alpha.4.1');
     expect(without?.[3].fix).toBe('codex app-server daemon start');
+    expect(without?.[4].fix).toBe('cogitator bridge install codex');
 
     await fakes.startCodexDaemon();
-    expect((await adapter.health?.({ cwd: project }))?.[3]).toMatchObject({ status: 'ok' });
+    await fakes.run('codex', ['mcp', 'add', 'bridge', '--', 'node', '/x/cli.js', 'bridge', 'mcp']);
+    const set = await adapter.health?.({ cwd: project });
+    expect(set?.[3]).toMatchObject({ status: 'ok' });
+    expect(set?.[4]).toMatchObject({
+      status: 'ok',
+      detail: expect.stringContaining('any sandbox'),
+    });
+    expect(set?.[4].fix).toBeUndefined();
+  });
+
+  it('gives a thread it starts the tools, which reach the bridge from a sandbox its commands cannot leave', async () => {
+    await startHost([codex({ sandbox: 'workspace-write', toolsServer: toolsServer() })]);
+    const conductor = await orchestrator();
+    const outside = join(home, 'written-by-the-thread.txt');
+
+    const { job } = await conductor.createJob({
+      to: 'codex',
+      body: [
+        'Write the tests',
+        connecting(),
+        `run: ${process.execPath} -e "require('node:fs').writeFileSync(process.argv[1], 'x')" ${JSON.stringify(outside)}`,
+        'tool: bridge.report {"job":1,"result":"14 tests written, all pass"}',
+        'say: This is not the report',
+      ].join('\n'),
+    });
+    const agent = await until(
+      async () => (await conductor.agents({ harness: 'codex', statuses: ['active'] }))[0],
+      'the thread to start'
+    );
+    const turn = await fakes.waitForTurn('codex', agent.sessionId, () => true);
+
+    expect(turn.ran.map((run) => [run.code, run.stdout])).toEqual([
+      [3, 'EPERM\n'],
+      [1, ''],
+    ]);
+    expect(existsSync(outside)).toBe(false);
+    expect(turn.tools[0]).toMatchObject({ tool: 'bridge.report', isError: false });
+    expect(turn.input.split('\n').at(-1)).toBe(codexReportNotice(1, true));
+    const [report] = await until(async () => {
+      const inbox = await conductor.inbox();
+      return inbox.length > 0 ? inbox : undefined;
+    }, 'the report of the thread');
+    expect(report).toMatchObject({
+      kind: 'report',
+      from: job.to,
+      body: '14 tests written, all pass',
+      outcome: 'completed',
+    });
+    expect(agent.name).toBe(job.to);
+    const [log] = readdirSync(join(home, 'sessions'));
+    await until(
+      () =>
+        readFileSync(join(home, 'sessions', log), 'utf8').includes('"type":"turn.completed"') ||
+        undefined,
+      'the thread to finish its turn'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const reports = await conductor.letters({ job: 1, kinds: ['report'] });
+    expect(reports.map((letter) => letter.body)).toEqual(['14 tests written, all pass']);
+    expect(await conductor.agents({ harness: 'codex' })).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+
+  it('lets a thread ask with the tools, wake for the answer and report', async () => {
+    await fakes.startCodexDaemon();
+    await startHost([codex({ sandbox: 'read-only', toolsServer: toolsServer() })]);
+    const conductor = await orchestrator();
+
+    await conductor.createJob({
+      to: 'codex',
+      body: 'Write the tests\ntool: bridge.ask {"job":1,"question":"Mock Redis or run a real one?"}\nsay: Asked',
+    });
+    const [question] = await until(async () => {
+      const inbox = await conductor.inbox();
+      return inbox.length > 0 ? inbox : undefined;
+    }, 'the question of the thread');
+    expect(question).toMatchObject({ kind: 'question', body: 'Mock Redis or run a real one?' });
+    expect((await conductor.job(1)).state).toBe('input-required');
+
+    await conductor.send({
+      job: 1,
+      kind: 'answer',
+      body: 'Mock it\ntool: bridge.report {"job":1,"result":"Done with a mock"}',
+    });
+
+    const [report] = await until(async () => {
+      const inbox = await conductor.inbox();
+      return inbox.length > 0 ? inbox : undefined;
+    }, 'the report of the thread');
+    expect(report).toMatchObject({ kind: 'report', body: 'Done with a mock' });
+    expect((await conductor.job(1)).state).toBe('completed');
+    expect(await conductor.letters({ job: 1, kinds: ['report'] })).toHaveLength(1);
+    expect(errors).toEqual([]);
   });
 
   it('reports a version too old for the bridge, and a missing install', async () => {
@@ -867,6 +1091,7 @@ describe.skipIf(!posix)('the Codex adapter', () => {
       ['queue', 'fail'],
       ['exec', 'fail'],
       ['daemon', 'warn'],
+      ['tools', 'warn'],
     ]);
 
     const absent = codexAdapter({ env: { PATH: join(home, 'nothing') }, logDir: join(home, 's') });

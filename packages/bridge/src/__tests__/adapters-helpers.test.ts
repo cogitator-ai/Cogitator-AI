@@ -2,13 +2,27 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  CLAUDE_TOOLS_PERMISSION,
+  claudeCallerCommand,
   claudeCodeAdapter,
+  claudeToolCallHook,
+  claudeToolsHook,
+  claudeToolsScope,
   claudeTrust,
   claudeWaitCommand,
   claudeWaitHook,
+  hasClaudeToolsHook,
   hasClaudeWaitHook,
 } from '../adapters/claude';
-import { codexAdapter, codexThreadId, codexTurnReport } from '../adapters/codex';
+import {
+  codexAdapter,
+  codexReportNotice,
+  codexThreadId,
+  codexToolsServerArgs,
+  codexTurnReport,
+} from '../adapters/codex';
+import { toolsServerEnv } from '../adapters/tools-server';
+import { callerOfToolCall } from '../tools/caller';
 import {
   CommandMissingError,
   MAX_ARGUMENT_BYTES,
@@ -70,6 +84,7 @@ describe('the hook that wakes a Claude Code session', () => {
       "cogitator bridge wait --hook claude-code --timeout 43140 --home '/srv/my bridge'"
     );
     expect(claudeWaitCommand({ agentName: "it's@demo" })).toContain("--agent 'it'\\''s@demo'");
+    expect(claudeWaitCommand({ tools: true })).toMatch(/--timeout \d+ --tools$/);
   });
 
   it('is recognized in settings, whatever else they hold', () => {
@@ -97,6 +112,167 @@ describe('the hook that wakes a Claude Code session', () => {
     ).toBe(false);
     expect(hasClaudeWaitHook(undefined)).toBe(false);
     expect(hasClaudeWaitHook({ hooks: 'none' })).toBe(false);
+  });
+});
+
+describe('the hook that names the session of a bridge tool call', () => {
+  it('runs before the tools of the bridge and of nothing else', () => {
+    expect(claudeToolsHook()).toEqual({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'mcp__bridge__.*',
+            hooks: [
+              {
+                type: 'command',
+                command: 'cogitator bridge caller --hook claude-code',
+                timeout: 15,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(CLAUDE_TOOLS_PERMISSION).toBe('mcp__bridge');
+    expect(claudeCallerCommand({ bridgeCommand: '/usr/bin/node /opt/cli.js bridge' })).toBe(
+      '/usr/bin/node /opt/cli.js bridge caller --hook claude-code'
+    );
+  });
+
+  it('is found in settings that hold it, among other hooks', () => {
+    const { PreToolUse } = claudeToolsHook({ bridgeCommand: 'node /x/cli.js bridge' }).hooks;
+
+    expect(hasClaudeToolsHook({ hooks: { PreToolUse } })).toBe(true);
+    expect(
+      hasClaudeToolsHook({
+        hooks: {
+          PreToolUse: [
+            { matcher: 'Bash', hooks: [{ type: 'command', command: 'lint' }] },
+            ...PreToolUse,
+          ],
+        },
+      })
+    ).toBe(true);
+    expect(hasClaudeToolsHook(claudeWaitHook())).toBe(false);
+    expect(hasClaudeToolsHook({ hooks: { PreToolUse: [{ hooks: [{ command: 'lint' }] }] } })).toBe(
+      false
+    );
+    expect(hasClaudeToolsHook(undefined)).toBe(false);
+    expect(hasClaudeToolsHook('bridge caller')).toBe(false);
+  });
+
+  it('answers with the arguments of the call and the session that makes it', () => {
+    const answer = claudeToolCallHook(
+      JSON.stringify({
+        session_id: 'session-after-clear',
+        cwd: '/work/demo/api',
+        hook_event_name: 'PreToolUse',
+        tool_name: 'mcp__bridge__report',
+        tool_input: { job: 7, result: 'Done' },
+        tool_use_id: 'toolu_1',
+      })
+    );
+
+    const output = JSON.parse(answer ?? '') as {
+      hookSpecificOutput: { hookEventName: string; updatedInput: Record<string, unknown> };
+    };
+    expect(output.hookSpecificOutput.hookEventName).toBe('PreToolUse');
+    expect(output.hookSpecificOutput.updatedInput).toEqual({
+      job: 7,
+      result: 'Done',
+      _bridge: { harness: 'claude-code', session: 'session-after-clear', cwd: '/work/demo/api' },
+    });
+    expect(
+      callerOfToolCall(
+        { args: output.hookSpecificOutput.updatedInput },
+        { CLAUDE_CODE_SESSION_ID: 'session-before-clear' },
+        '/work/demo'
+      )
+    ).toMatchObject({ sessionId: 'session-after-clear', cwd: '/work/demo/api' });
+  });
+
+  it('answers nothing to an input that is not that of a tool call', () => {
+    expect(claudeToolCallHook('not json')).toBeUndefined();
+    expect(claudeToolCallHook(JSON.stringify({ session_id: 's-1' }))).toBeUndefined();
+    expect(claudeToolCallHook(JSON.stringify({ tool_input: { job: 1 } }))).toBeUndefined();
+    expect(
+      claudeToolCallHook(JSON.stringify({ session_id: 's-1', tool_input: 'text' }))
+    ).toBeUndefined();
+    expect(claudeCodeAdapter().toolCallHook?.({ env: {}, cwd: '/work' })).toBeUndefined();
+  });
+
+  it('is what the adapter answers a hook with', () => {
+    const hookInput = JSON.stringify({ session_id: 's-1', tool_input: {} });
+
+    expect(claudeCodeAdapter().toolCallHook?.({ env: {}, cwd: '/work', hookInput })).toBe(
+      claudeToolCallHook(hookInput)
+    );
+  });
+});
+
+describe('where Claude Code has the tools of the bridge', () => {
+  const server = { mcpServers: { bridge: { command: 'node' } } };
+
+  it('finds them for this person in the project, for the project, and for every project', () => {
+    const project = join(temp.dir, 'app');
+    const inner = join(project, 'packages', 'api');
+    mkdirSync(inner, { recursive: true });
+    const config = join(temp.dir, 'claude.json');
+    const write = (value: unknown) => writeFileSync(config, JSON.stringify(value));
+
+    write({ projects: { [project]: { hasTrustDialogAccepted: true } } });
+    expect(claudeToolsScope(inner, config)).toBeUndefined();
+
+    write({ mcpServers: server.mcpServers });
+    expect(claudeToolsScope(inner, config)).toBe('user');
+
+    writeFileSync(join(project, '.mcp.json'), JSON.stringify(server));
+    expect(claudeToolsScope(inner, config)).toBe('project');
+
+    write({ projects: { [project]: server }, mcpServers: server.mcpServers });
+    expect(claudeToolsScope(inner, config)).toBe('local');
+    expect(claudeToolsScope(temp.dir, config)).toBe('user');
+  });
+
+  it('finds none when the record cannot be read, or names other servers', () => {
+    const config = join(temp.dir, 'claude.json');
+
+    expect(claudeToolsScope(temp.dir, join(temp.dir, 'absent.json'))).toBeUndefined();
+    writeFileSync(config, '{broken');
+    expect(claudeToolsScope(temp.dir, config)).toBeUndefined();
+    writeFileSync(config, JSON.stringify({ mcpServers: { other: {} } }));
+    expect(claudeToolsScope(temp.dir, config)).toBeUndefined();
+  });
+});
+
+describe('the tools of a thread codex exec starts', () => {
+  it('are given as overrides of the configuration, in TOML', () => {
+    expect(
+      codexToolsServerArgs(
+        { command: '/usr/local/bin/node', args: ['/opt/my "cli"/index.js', 'bridge', 'mcp'] },
+        toolsServerEnv({ harness: 'codex', agentName: 'codex-2@demo', sessionName: 'reviewer' })
+      )
+    ).toEqual([
+      '-c',
+      'mcp_servers.bridge.command="/usr/local/bin/node"',
+      '-c',
+      'mcp_servers.bridge.args=["/opt/my \\"cli\\"/index.js","bridge","mcp"]',
+      '-c',
+      'mcp_servers.bridge.env={COGITATOR_BRIDGE_HARNESS="codex",COGITATOR_BRIDGE_AGENT="codex-2@demo",COGITATOR_BRIDGE_SESSION_NAME="reviewer"}',
+    ]);
+    expect(codexToolsServerArgs({ command: 'node', args: [] })).toEqual([
+      '-c',
+      'mcp_servers.bridge.command="node"',
+      '-c',
+      'mcp_servers.bridge.args=[]',
+    ]);
+  });
+
+  it('change what the thread is told about its report', () => {
+    expect(codexReportNotice(3)).toContain('Your final answer of this turn is taken as the report');
+    expect(codexReportNotice(3, true)).toBe(
+      '[agent bridge] Report on job #3 with the report tool of the bridge. When the turn ends without a report, your final answer is taken as one.'
+    );
   });
 });
 
@@ -404,8 +580,11 @@ describe('what a session the bridge starts is given', () => {
       '[agent bridge] job #7 "Port the parser" | task from claude@demo to codex@demo | letter ltr_1 | not typed by the user',
       'This letter is 120001 characters long, too long to hand over here. Read it from the bridge: cogitator bridge inbox --job 7',
     ]);
-    expect(tooLongNotice(long, '/usr/bin/node /opt/cli.js bridge')).toContain(
+    expect(tooLongNotice(long, { bridgeCommand: '/usr/bin/node /opt/cli.js bridge' })).toContain(
       'Read it from the bridge: /usr/bin/node /opt/cli.js bridge inbox --job 7'
+    );
+    expect(tooLongNotice(long, { tools: true, bridgeHome: '/srv/my bridge' })).toContain(
+      "Read it with the inbox tool of the bridge (job 7), or from a shell: cogitator bridge inbox --job 7 --home '/srv/my bridge'"
     );
   });
 });

@@ -22,11 +22,26 @@ export interface FakeCommandRun {
   stderr: string;
 }
 
+/** A call of a tool of an MCP server the session has. */
+export interface FakeToolRun {
+  /** `<server>.<tool>` */
+  tool: string;
+  /** The arguments as the scripted model wrote them */
+  args: Record<string, unknown>;
+  /** The arguments as they reached the server, when a hook of the harness changed them */
+  sent?: Record<string, unknown>;
+  /** What the tool answered, or why the harness did not call it */
+  text: string;
+  isError: boolean;
+}
+
 export interface FakeTurn {
   turn: number;
   at: string;
   input: string;
   ran: FakeCommandRun[];
+  /** The tool calls of the turn, in order */
+  tools: FakeToolRun[];
   answer: string;
   wokenBy: 'prompt' | 'user' | 'hook' | 'queue' | 'exec';
 }
@@ -83,14 +98,23 @@ export interface FakeHarnesses {
   openClaudeWindow(options: {
     cwd: string;
     settings?: unknown;
+    /** MCP servers of the session, as `--mcp-config` takes them: `{ mcpServers: { ... } }` */
+    mcpConfig?: unknown;
     name?: string;
     env?: NodeJS.ProcessEnv;
   }): Promise<string>;
   /** A person types into a Claude Code session */
   say(sessionId: string, text: string): Promise<void>;
   claudeSessions(options?: { all?: boolean }): Promise<FakeClaudeSession[]>;
-  /** A Codex thread sitting idle, owned by the stand-in of the desktop app unless `owner` is `none` */
-  openCodexThread(options: { cwd: string; owner?: 'app' | 'none' }): Promise<string>;
+  /**
+   * A Codex thread sitting idle, owned by the stand-in of the desktop app unless `owner` is
+   * `none`. With `sandbox` its commands are kept from sockets and from writing outside `cwd`
+   */
+  openCodexThread(options: {
+    cwd: string;
+    owner?: 'app' | 'none';
+    sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  }): Promise<string>;
   startCodexApp(): Promise<void>;
   stopCodexApp(): Promise<void>;
   startCodexDaemon(): Promise<void>;
@@ -200,10 +224,11 @@ export function installFakeHarnesses(options: FakeHarnessOptions = {}): FakeHarn
       const trusted = new Set([...stringsIn(readJson(file)), resolve(folder)]);
       writeJson(file, [...trusted]);
     },
-    async openClaudeWindow({ cwd, settings, name, env: extra }) {
+    async openClaudeWindow({ cwd, settings, mcpConfig, name, env: extra }) {
       const args = [
         '__open',
         ...(settings === undefined ? [] : ['--settings', settingsArgument(settings)]),
+        ...(mcpConfig === undefined ? [] : ['--mcp-config', settingsArgument(mcpConfig)]),
         ...(name === undefined ? [] : ['--name', name]),
       ];
       return succeed('claude', args, { cwd, env: extra });
@@ -215,8 +240,15 @@ export function installFakeHarnesses(options: FakeHarnessOptions = {}): FakeHarn
       const listing = await succeed('claude', ['agents', '--json', ...(all ? ['--all'] : [])]);
       return JSON.parse(listing) as FakeClaudeSession[];
     },
-    async openCodexThread({ cwd, owner = 'app' }) {
-      return succeed('codex', ['__open', '-C', cwd, '--owner', owner]);
+    async openCodexThread({ cwd, owner = 'app', sandbox }) {
+      return succeed('codex', [
+        '__open',
+        '-C',
+        cwd,
+        '--owner',
+        owner,
+        ...(sandbox === undefined ? [] : ['--sandbox', sandbox]),
+      ]);
     },
     async startCodexApp() {
       await succeed('codex', ['__app', 'start']);

@@ -1,9 +1,16 @@
 #!/usr/bin/env node
 /**
  * A stand-in for the Codex command line as far as the bridge adapters use it: `exec` with JSON
- * events, `queue`, the app-server daemon and `delete`. The commands `__open` and `__app` exist
- * only here and play the desktop app with its threads. The behaviour was measured on codex-cli
- * 0.167.0-alpha.4.1.
+ * events, `queue`, the app-server daemon, `mcp` and `delete`. The commands `__open` and `__app`
+ * exist only here and play the desktop app with its threads. The behaviour was measured on
+ * codex-cli 0.167.0-alpha.4.1.
+ *
+ * MCP servers: a thread has the servers of `mcp add` and of `-c mcp_servers.<name>.*`. A server
+ * is started outside the sandbox of the thread, with next to nothing of the environment and no
+ * thread id in it: Codex names the thread in `_meta` of every tool call. A thread of `exec`
+ * cannot ask anybody for an approval, so it calls only tools that say they destroy nothing and
+ * stay in a closed world. The commands of a sandboxed thread reach no socket and write nowhere
+ * outside their folder.
  */
 import { randomUUID } from 'node:crypto';
 import { rmSync, statSync } from 'node:fs';
@@ -34,7 +41,9 @@ import {
   readJson,
   recordTurn,
   renderHelp,
+  repeated,
   runCli,
+  sandboxedEnv,
   sleep,
   spawnDetached,
   stateRoot,
@@ -44,6 +53,7 @@ import {
   unlock,
   writeJson,
 } from './lib.mjs';
+import { envPairs, toolServers } from './mcp.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const VERSION = '0.167.0-alpha.4.1';
@@ -67,9 +77,14 @@ const EXEC_FLAGS = {
   '--skip-git-repo-check': flag('skipGitRepoCheck'),
   '-m': option('model'),
   '--model': option('model'),
-  '-c': option('config'),
-  '--config': option('config'),
+  '-c': repeated('config'),
+  '--config': repeated('config'),
 };
+const MCP_ADD_FLAGS = { '--env': repeated('env') };
+const MCP_JSON_FLAGS = { '--json': flag('json') };
+/** What a server of tools gets of the environment of Codex: Codex gives it next to nothing */
+const SERVER_ENV = ['PATH', 'HOME', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'LANG'];
+const NEEDS_APPROVAL = 'MCP tool call requires approval, but approval policy is never';
 const QUEUE_FLAGS = {
   ...HELP_FLAGS,
   ...FOLDER_FLAGS,
@@ -77,7 +92,11 @@ const QUEUE_FLAGS = {
   '--message': option('message'),
   '--resume': flag('resume'),
 };
-const OPEN_FLAGS = { ...FOLDER_FLAGS, '--owner': option('owner') };
+const OPEN_FLAGS = {
+  ...FOLDER_FLAGS,
+  '--owner': option('owner'),
+  '--sandbox': option('sandbox'),
+};
 const DELETE_FLAGS = { '--force': flag('force') };
 
 const HELP = [
@@ -90,6 +109,7 @@ const HELP = [
   '  exec        Run Codex non-interactively',
   ['queue', '  queue       Queue a message for a thread'],
   '  app-server  Run the app server or its daemon',
+  '  mcp         Manage external MCP servers for Codex',
   '  delete      Delete a thread',
   '',
   'Options:',
@@ -130,6 +150,7 @@ const missing = () => listedIn('FAKE_CODEX_MISSING');
 const version = () => process.env.FAKE_CODEX_VERSION || VERSION;
 const threadsDir = () => join(stateRoot('codex'), 'threads');
 const ownerFile = (kind) => join(stateRoot('codex'), `${kind}.json`);
+const configFile = () => join(stateRoot('codex'), 'config.json');
 
 function threadFiles(threadId) {
   const base = join(threadsDir(), threadId);
@@ -157,6 +178,8 @@ async function main(argv) {
       return queue(rest);
     case 'app-server':
       return appServer(rest);
+    case 'mcp':
+      return mcp(rest);
     case 'delete':
       return remove(rest);
     case '__open':
@@ -180,8 +203,48 @@ async function exec(argv) {
   const { resumed, promptArgument } = execTarget(positionals);
   const cwd = resumed ? undefined : workFolder(values.cd);
   const prompt = await promptText(promptArgument);
-  const thread = resumed ?? createThread({ cwd, sandbox: values.sandbox, owner: 'none' });
+  const thread =
+    resumed ??
+    createThread({
+      cwd,
+      sandbox: values.sandbox ?? 'read-only',
+      owner: 'none',
+      servers: { ...configuredServers(), ...overriddenServers(values.config ?? []) },
+    });
   await foregroundTurn(thread, prompt, values.json === true);
+}
+
+/** The MCP servers of the configuration, as `mcp add` left them */
+function configuredServers() {
+  return readJson(configFile(), {}).mcp_servers ?? {};
+}
+
+/**
+ * The MCP servers `-c mcp_servers.<name>.<field>=<value>` describes. The values are TOML: a
+ * string, an array of strings, or for `env` an inline table of strings.
+ * @param {string[]} overrides
+ */
+function overriddenServers(overrides) {
+  const servers = {};
+  for (const override of overrides) {
+    const match = /^mcp_servers\.([\w-]+)\.(command|args|env)=(.*)$/s.exec(override);
+    if (!match) continue;
+    const [, name, field, value] = match;
+    servers[name] = { ...servers[name], [field]: tomlValue(field, value) };
+  }
+  return Object.fromEntries(
+    Object.entries(servers).filter(([, server]) => typeof server.command === 'string')
+  );
+}
+
+function tomlValue(field, value) {
+  try {
+    if (field !== 'env') return JSON.parse(value);
+    const pairs = [...value.matchAll(/([\w-]+)\s*=\s*("(?:[^"\\]|\\.)*")/g)];
+    return Object.fromEntries(pairs.map(([, key, text]) => [key, JSON.parse(text)]));
+  } catch {
+    throw new CliError(`Error: invalid override value: ${value}`);
+  }
 }
 
 /** Tells `exec <prompt>` from `exec resume <threadId> <prompt>` */
@@ -211,8 +274,8 @@ async function promptText(argument) {
   return prompt;
 }
 
-function createThread({ cwd, sandbox, owner }) {
-  const thread = { threadId: randomUUID(), cwd, sandbox, owner, createdAt: Date.now() };
+function createThread({ cwd, sandbox, owner, servers }) {
+  const thread = { threadId: randomUUID(), cwd, sandbox, owner, servers, createdAt: Date.now() };
   writeJson(threadFiles(thread.threadId).record, thread);
   return thread;
 }
@@ -254,22 +317,140 @@ async function printEvents(...events) {
 
 /** One turn of a thread. The caller holds the lock of the thread */
 async function threadTurn(thread, input, wokenBy) {
-  const env = {
-    ...process.env,
-    CODEX_THREAD_ID: thread.threadId,
-    ...(thread.sandbox !== undefined && { FAKE_CODEX_SANDBOX: thread.sandbox }),
-  };
-  const outcome = await performTurn({ input, cwd: thread.cwd, env });
-  recordTurn(threadFiles(thread.threadId).transcript, outcome, wokenBy);
-  return outcome.answer;
+  const env = sandboxedEnv(
+    {
+      ...process.env,
+      CODEX_THREAD_ID: thread.threadId,
+      ...(thread.sandbox !== undefined && { FAKE_CODEX_SANDBOX: thread.sandbox }),
+    },
+    thread.sandbox,
+    thread.cwd
+  );
+  const servers = toolServers(thread.servers ?? {}, {
+    cwd: thread.cwd,
+    envOf: (config) => ({
+      ...Object.fromEntries(
+        SERVER_ENV.flatMap((name) =>
+          process.env[name] === undefined ? [] : [[name, process.env[name]]]
+        )
+      ),
+      ...config.env,
+    }),
+    clientInfo: { name: 'codex-mcp-client', title: 'Codex', version: version() },
+  });
+  const turnId = randomUUID();
+  try {
+    const outcome = await performTurn({
+      input,
+      cwd: thread.cwd,
+      env,
+      callTool: (server, tool, args) => callTool(thread, servers, turnId, server, tool, args),
+    });
+    recordTurn(threadFiles(thread.threadId).transcript, outcome, wokenBy);
+    return outcome.answer;
+  } finally {
+    servers.close();
+  }
+}
+
+/** Whether a tool says it changes nothing, or destroys nothing and stays in a closed world */
+function isHarmless(annotations) {
+  return (
+    annotations?.readOnlyHint === true ||
+    (annotations?.destructiveHint === false && annotations?.openWorldHint === false)
+  );
+}
+
+/**
+ * One tool call of a thread. A thread nobody sits at (`exec`) is refused a tool it would have
+ * to ask about. The thread is named in `_meta`, the only place a server learns it from.
+ */
+async function callTool(thread, servers, turnId, serverName, toolName, args) {
+  const found = await servers.get(serverName);
+  if (!found) return { text: `unknown MCP server '${serverName}'`, isError: true };
+  const tool = found.tools.find(({ name }) => name === toolName);
+  if (!tool) return { text: `unknown tool '${toolName}' of '${serverName}'`, isError: true };
+  if (thread.owner === 'none' && !isHarmless(tool.annotations)) {
+    return { text: NEEDS_APPROVAL, isError: true };
+  }
+  const { threadId } = thread;
+  return found.server.call(toolName, args, {
+    callId: `exec-${randomUUID()}`,
+    'x-codex-turn-metadata': {
+      session_id: threadId,
+      thread_id: threadId,
+      turn_id: turnId,
+      sandbox_mode: thread.sandbox ?? 'danger-full-access',
+      codex_version: version(),
+    },
+    threadId,
+    sessionId: threadId,
+    progressToken: 1,
+  });
 }
 
 async function open(argv) {
   const { values, positionals } = parseArgs(argv, OPEN_FLAGS);
   const owner = values.owner ?? 'app';
   if (positionals.length > 0 || !THREAD_OWNERS.includes(owner)) throw new Unsupported();
-  const thread = createThread({ cwd: workFolder(values.cd), owner });
+  const thread = createThread({
+    cwd: workFolder(values.cd),
+    sandbox: values.sandbox,
+    owner,
+    servers: configuredServers(),
+  });
   await print(thread.threadId);
+}
+
+/** `mcp add`, `get`, `list` and `remove`: the servers every new thread gets */
+async function mcp(argv) {
+  const [action, ...rest] = argv;
+  const servers = configuredServers();
+  const save = () => writeJson(configFile(), { mcp_servers: servers });
+  const shown = (name) => ({
+    name,
+    enabled: true,
+    disabled_reason: null,
+    transport: {
+      type: 'stdio',
+      command: servers[name].command,
+      args: servers[name].args ?? [],
+      env: servers[name].env ?? null,
+      env_vars: [],
+      cwd: null,
+    },
+  });
+  if (action === 'add') {
+    const { values, positionals } = parseArgs(rest, MCP_ADD_FLAGS);
+    const [name, command, ...args] = positionals;
+    const env = envPairs(values.env ?? []);
+    if (name === undefined || command === undefined || env === undefined) throw new Unsupported();
+    servers[name] = { command, args, ...(Object.keys(env).length > 0 && { env }) };
+    save();
+    return print(`Added global MCP server '${name}'.`);
+  }
+  const { values, positionals } = parseArgs(rest, MCP_JSON_FLAGS);
+  const [name] = positionals;
+  if (action === 'list' && positionals.length === 0) {
+    const all = Object.keys(servers).map(shown);
+    return print(values.json ? JSON.stringify(all, null, 2) : all.map((s) => s.name).join('\n'));
+  }
+  if (positionals.length !== 1) throw new Unsupported();
+  const known = Object.hasOwn(servers, name);
+  if (action === 'get') {
+    if (!known) throw new CliError(`Error: No MCP server named '${name}' found.`);
+    const { transport } = shown(name);
+    return print(
+      values.json
+        ? JSON.stringify(shown(name), null, 2)
+        : `${name}\n  enabled: true\n  transport: stdio\n  command: ${transport.command}\n  args: ${transport.args.join(' ')}`
+    );
+  }
+  if (action !== 'remove') throw new Unsupported();
+  if (!known) return print(`No MCP server named '${name}' found.`);
+  delete servers[name];
+  save();
+  return print(`Removed global MCP server '${name}'.`);
 }
 
 async function queue(argv) {
@@ -296,7 +477,6 @@ function isOwnerAlive(kind) {
   const pid = readJson(ownerFile(kind))?.pid;
   return pid !== undefined && isAlive(pid);
 }
-
 
 async function appServer(argv) {
   const [group, ...rest] = argv;

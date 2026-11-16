@@ -1,14 +1,22 @@
-import { claudeCodeAdapter } from '../../adapters/claude';
+import { claudeCodeAdapter, claudeToolCallHook } from '../../adapters/claude';
 import { bridgePaths } from '../../paths';
 import { mailText, waitForMail } from '../../waiter';
 
 /**
  * What `cogitator bridge wait --hook claude-code` does, for the tests of this package, which
  * have no command line: wait for the mail of the session the hook belongs to, write it to
- * stderr and exit with code 2.
+ * stderr and exit with code 2. As `bridge caller` it answers the hook that runs before a call of
+ * a bridge tool.
  */
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
+  if (args[1] === 'caller') {
+    const input: Buffer[] = [];
+    for await (const chunk of process.stdin) input.push(chunk as Buffer);
+    const answer = claudeToolCallHook(Buffer.concat(input).toString('utf8'));
+    if (answer !== undefined) process.stdout.write(answer);
+    return 0;
+  }
   const flag = (name: string): string | undefined => {
     const at = args.indexOf(name);
     return at === -1 ? undefined : args[at + 1];
