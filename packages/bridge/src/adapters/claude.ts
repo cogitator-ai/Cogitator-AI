@@ -10,10 +10,13 @@ import type {
   IdentifyContext,
   LiveSession,
   SessionRequest,
+  PermissionHookCall,
 } from '../adapter.js';
+import { oneLine } from '../letters.js';
 import { canonicalPath, findProjectRoot } from '../paths.js';
+import { describeAsk } from '../permit.js';
 import { TOOL_CALL_HINT_KEY, type ToolCallHint } from '../tools/caller.js';
-import { HARNESSES, type CallerIdentity } from '../types.js';
+import { HARNESSES, type CallerIdentity, type PermissionAsk } from '../types.js';
 import {
   CommandMissingError,
   failureOf,
@@ -233,6 +236,140 @@ const HookInputSchema = z.object({
   cwd: z.string().min(1).optional(),
 });
 
+export interface ClaudePermitHookOptions {
+  /** How the bridge's command line is run, `cogitator bridge` by default */
+  bridgeCommand?: string;
+  /** The folder of the bridge's files, when it is not the default one */
+  bridgeHome?: string;
+  /** Seconds the hook may wait for the decision before Claude Code ends it, 12 hours by default */
+  timeoutS?: number;
+}
+
+export interface ClaudePermitHookSettings {
+  hooks: {
+    PermissionRequest: { hooks: { type: 'command'; command: string; timeout: number }[] }[];
+  };
+}
+
+/** The command a hook of a Claude Code session runs to ask leave for a call through the bridge. */
+export function claudePermitCommand(options: ClaudePermitHookOptions = {}): string {
+  const timeoutS = options.timeoutS ?? DEFAULT_HOOK_TIMEOUT_S;
+  return [
+    options.bridgeCommand ?? 'cogitator bridge',
+    'permit',
+    `--hook ${HARNESSES.claudeCode}`,
+    `--timeout ${Math.max(1, Math.floor(timeoutS - HOOK_MARGIN_S))}`,
+    ...(options.bridgeHome ? [`--home ${shellQuote(options.bridgeHome)}`] : []),
+  ].join(' ');
+}
+
+/**
+ * The settings that make a Claude Code session ask leave through the bridge: a
+ * `PermissionRequest` hook, which Claude Code runs for every call its mode and rules would
+ * show the permission dialog for. The hook takes the call to the bridge and answers with the
+ * verdict. They are for a session the bridge starts, where nobody sits to answer the dialog: a
+ * session without them waits on its first dialog until its job fails. A session a person opened
+ * does not get them, the dialog there is the person's.
+ */
+export function claudePermitHook(options: ClaudePermitHookOptions = {}): ClaudePermitHookSettings {
+  return {
+    hooks: {
+      PermissionRequest: [
+        {
+          hooks: [
+            {
+              type: 'command',
+              command: claudePermitCommand(options),
+              timeout: Math.ceil(options.timeoutS ?? DEFAULT_HOOK_TIMEOUT_S),
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+const PermissionHookInputSchema = z.object({
+  session_id: z.string().min(1),
+  cwd: z.string().min(1).optional(),
+  permission_mode: z.string().min(1).optional(),
+  hook_event_name: z.literal('PermissionRequest'),
+  tool_name: z.string().min(1),
+  tool_input: z.record(z.string(), z.unknown()).optional(),
+});
+
+const EDIT_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+const READ_TOOLS: ReadonlySet<string> = new Set(['Read', 'Glob', 'Grep', 'LS']);
+
+function textOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+/** What a call of one of Claude Code's own tools touches, read from its input. */
+function claudeAsk(tool: string, input: Record<string, unknown>, cwd: string): PermissionAsk {
+  const name = oneLine(tool).slice(0, 256) || 'tool';
+  const path = textOf(input.file_path) ?? textOf(input.notebook_path) ?? textOf(input.path);
+  if (tool === 'Bash') {
+    const command = textOf(input.command);
+    if (command) return { tool: name, access: 'command', command, cwd };
+  }
+  if (EDIT_TOOLS.has(tool) && path) {
+    return { tool: name, access: 'edit', paths: [resolve(cwd, path)] };
+  }
+  if (READ_TOOLS.has(tool)) {
+    return { tool: name, access: 'read', paths: [resolve(cwd, path ?? '.')] };
+  }
+  if (tool === 'WebFetch') {
+    const url = textOf(input.url);
+    if (url) return { tool: name, access: 'fetch', url };
+  }
+  return { tool: name, access: 'other' };
+}
+
+/**
+ * What Claude Code wrote to a `PermissionRequest` hook, as a call to ask leave for: the session,
+ * the call, and how to answer Claude Code. Undefined for any other input.
+ *
+ * @param hookInput what Claude Code wrote to the hook's stdin
+ */
+export function claudePermissionCall(hookInput: string): PermissionHookCall | undefined {
+  let input: unknown;
+  try {
+    input = JSON.parse(hookInput);
+  } catch {
+    return undefined;
+  }
+  const parsed = PermissionHookInputSchema.safeParse(input);
+  if (!parsed.success) return undefined;
+  const { session_id: sessionId, tool_name: tool, permission_mode: mode } = parsed.data;
+  const cwd = resolve(parsed.data.cwd ?? process.cwd());
+  const args = parsed.data.tool_input ?? {};
+  const ask = claudeAsk(tool, args, cwd);
+  const said = textOf(args.description);
+  return {
+    caller: {
+      harness: HARNESSES.claudeCode,
+      sessionId,
+      cwd,
+      project: findProjectRoot(cwd),
+      ...(mode && { permissionMode: oneLine(mode).slice(0, 256) }),
+    },
+    ask,
+    body:
+      ask.access === 'other'
+        ? `${said ? `${said}\n` : ''}Call ${ask.tool} with ${JSON.stringify(args).slice(0, 2_000)}`
+        : describeAsk(ask, said),
+    answer: (verdict, reason) =>
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision:
+            verdict === 'allow' ? { behavior: 'allow' } : { behavior: 'deny', message: reason },
+        },
+      }),
+  };
+}
+
 const ListedSessionSchema = z.object({
   id: z.string().optional(),
   sessionId: z.string().optional(),
@@ -446,12 +583,13 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     const whole = fitsArgument(request.firstLetter.text);
     const tools = options.toolsServer;
     const waits = claudeWaitHook({ ...hook, agentName: request.agentName, tools: !!tools });
+    const permit = claudePermitHook(hook);
     const settings = tools
       ? {
-          hooks: { ...waits.hooks, ...claudeToolsHook(hook).hooks },
+          hooks: { ...waits.hooks, ...claudeToolsHook(hook).hooks, ...permit.hooks },
           permissions: { allow: [CLAUDE_TOOLS_PERMISSION] },
         }
-      : waits;
+      : { hooks: { ...waits.hooks, ...permit.hooks } };
     const servers = tools && {
       mcpServers: {
         [BRIDGE_TOOLS_SERVER]: {
@@ -685,6 +823,8 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     liveSessions,
     identify,
     toolCallHook,
+    permissionHook: (context) =>
+      context.hookInput === undefined ? undefined : claudePermissionCall(context.hookInput),
     health,
   };
 }

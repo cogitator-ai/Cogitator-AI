@@ -1,12 +1,13 @@
-import { claudeCodeAdapter, claudeToolCallHook } from '../../adapters/claude';
+import { claudeCodeAdapter, claudePermissionCall, claudeToolCallHook } from '../../adapters/claude';
 import { bridgePaths } from '../../paths';
+import { answerPermissionHook } from '../../permit';
 import { mailText, waitForMail } from '../../waiter';
 
 /**
  * What `cogitator bridge wait --hook claude-code` does, for the tests of this package, which
  * have no command line: wait for the mail of the session the hook belongs to, write it to
  * stderr and exit with code 2. As `bridge caller` it answers the hook that runs before a call of
- * a bridge tool.
+ * a bridge tool, as `bridge permit` the hook that runs when a session needs leave for a call.
  */
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
@@ -21,6 +22,19 @@ async function main(): Promise<number> {
     const at = args.indexOf(name);
     return at === -1 ? undefined : args[at + 1];
   };
+  if (args[1] === 'permit') {
+    const input: Buffer[] = [];
+    for await (const chunk of process.stdin) input.push(chunk as Buffer);
+    const call = claudePermissionCall(Buffer.concat(input).toString('utf8'));
+    if (!call) return 0;
+    const answer = await answerPermissionHook({
+      socketPath: bridgePaths({ home: flag('--home'), env: process.env }).socket,
+      call,
+      timeoutMs: Number(flag('--timeout') ?? '600') * 1000,
+    });
+    if (answer !== undefined) process.stdout.write(answer);
+    return 0;
+  }
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   const caller = claudeCodeAdapter().identify?.({
