@@ -92,7 +92,7 @@ export function print(text) {
   return new Promise((done) => process.stdout.write(`${text}\n`, () => done()));
 }
 
-/** @typedef {{ key: string, takesValue: boolean, repeats?: boolean }} Flag */
+/** @typedef {{ key: string, takesValue: boolean, repeats?: boolean, greedy?: boolean }} Flag */
 
 /** @param {string} key @returns {Flag} */
 export const flag = (key) => ({ key, takesValue: false });
@@ -104,9 +104,20 @@ export const option = (key) => ({ key, takesValue: true });
 export const repeated = (key) => ({ key, takesValue: true, repeats: true });
 
 /**
+ * An option that takes every argument after it up to the next option, such as
+ * `--mcp-config <configs...>` of Claude Code: its values come as an array. A positional that
+ * follows it is one of its values, not a positional.
+ * @param {string} key
+ * @returns {Flag}
+ */
+export const several = (key) => ({ key, takesValue: true, repeats: true, greedy: true });
+
+/**
  * Splits arguments into option values and positionals. An option that takes a value consumes
  * the next argument whatever it looks like, `--name=value` works for long names, `--` ends the
- * options and a lone `-` is a positional. An unknown option is {@link Unsupported}.
+ * options and a lone `-` is a positional. An option made with {@link several} goes on to take
+ * the arguments after its first value until one starts with `-`. An unknown option is
+ * {@link Unsupported}.
  * @param {string[]} argv
  * @param {Record<string, Flag>} flags by the name on the command line, such as `--json` or `-C`
  * @returns {{ values: Record<string, string | string[] | true>, positionals: string[] }}
@@ -120,9 +131,13 @@ export function parseArgs(argv, flags) {
     if (arg === '--') positionals.push(...rest.splice(0));
     else if (arg === '-' || !arg.startsWith('-')) positionals.push(arg);
     else {
-      const { key, value, repeats } = readOption(arg, rest, flags);
-      if (repeats) (values[key] ??= []).push(value);
-      else values[key] = value;
+      const { key, value, repeats, greedy } = readOption(arg, rest, flags);
+      if (!repeats) values[key] = value;
+      else {
+        const list = (values[key] ??= []);
+        list.push(value);
+        while (greedy && rest.length > 0 && !rest[0].startsWith('-')) list.push(rest.shift());
+      }
     }
   }
   return { values, positionals };
@@ -133,14 +148,14 @@ function readOption(arg, rest, flags) {
   const name = cut === -1 ? arg : arg.slice(0, cut);
   const inline = cut === -1 ? undefined : arg.slice(cut + 1);
   if (!Object.hasOwn(flags, name)) throw new Unsupported();
-  const { key, takesValue, repeats } = flags[name];
+  const { key, takesValue, repeats, greedy } = flags[name];
   if (!takesValue) {
     if (inline !== undefined) throw new Unsupported();
     return { key, value: true };
   }
   const value = inline ?? rest.shift();
   if (value === undefined) throw new Unsupported();
-  return { key, value, repeats };
+  return { key, value, repeats, greedy };
 }
 
 /**

@@ -240,6 +240,7 @@ const ListedSessionSchema = z.object({
   name: z.string().optional(),
   pid: z.number().optional(),
   status: z.string().optional(),
+  state: z.string().optional(),
 });
 
 const ServersSchema = z.record(z.string(), z.unknown()).optional();
@@ -365,6 +366,8 @@ const INSTALL = 'cogitator bridge install claude';
 
 const DEFAULT_SESSION_LISTED_MS = 30_000;
 const LISTING_INTERVAL_MS = 300;
+/** How `claude agents --json` marks a background session that died before it began */
+const FAILED_STATE = 'failed';
 const SHORT_ID = /backgrounded\s*[·:-]?\s*([0-9a-f]{6,})\b/i;
 
 function untrusted(folder: string): Error {
@@ -417,6 +420,11 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     const deadline = Date.now() + (options.sessionListedMs ?? DEFAULT_SESSION_LISTED_MS);
     for (;;) {
       const session = (await listed()).find((candidate) => candidate.id === shortId);
+      if (session?.state === FAILED_STATE) {
+        throw new Error(
+          `Claude Code started the background session ${shortId}, and it failed before its first turn`
+        );
+      }
       if (session?.sessionId) {
         return { sessionId: session.sessionId };
       }
@@ -429,6 +437,10 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     }
   }
 
+  /**
+   * `--mcp-config` takes every argument up to the next option, so it stands before `--settings`
+   * and never right before the first letter, which it would read as one more file of servers.
+   */
   async function createSession(request: SessionRequest): Promise<CreatedSession> {
     if (claudeTrust(request.cwd, configPath) === 'untrusted') throw untrusted(request.cwd);
     const whole = fitsArgument(request.firstLetter.text);
@@ -457,9 +469,9 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
       command,
       [
         '--bg',
+        ...(servers ? ['--mcp-config', JSON.stringify(servers)] : []),
         '--settings',
         JSON.stringify(settings),
-        ...(servers ? ['--mcp-config', JSON.stringify(servers)] : []),
         ...(request.sessionName ? ['--name', request.sessionName] : []),
         ...(options.permissionMode ? ['--permission-mode', options.permissionMode] : []),
         ...(options.sessionArgs ?? []),
