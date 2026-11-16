@@ -221,6 +221,9 @@ class Connection {
       }
       return dispatcher.personAnswer(value as Parameters<BridgeDispatcher['personAnswer']>[0]);
     });
+    on(BRIDGE_METHODS.stuck, (value) =>
+      dispatcher.stuck(this.caller(), value as Parameters<BridgeDispatcher['stuck']>[1])
+    );
     on(BRIDGE_METHODS.listAgents, (value) =>
       dispatcher.agents((value ?? {}) as Parameters<BridgeDispatcher['agents']>[0])
     );

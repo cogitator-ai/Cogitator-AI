@@ -434,6 +434,11 @@ export interface BridgeLimits {
    * `replyTimeoutMs`
    */
   personReplyTimeoutMs: number;
+  /**
+   * How long the agent that handed a job over is not told again that the one carrying it out
+   * waits for a person at its own window, in ms
+   */
+  windowNoticeMs: number;
 }
 
 export const BridgeLimitsSchema = z.strictObject({
@@ -460,6 +465,7 @@ export const BridgeLimitsSchema = z.strictObject({
     .int()
     .positive()
     .max(7 * 86_400_000),
+  windowNoticeMs: z.number().int().min(0).max(86_400_000),
 });
 
 export const DEFAULT_LIMITS: BridgeLimits = {
@@ -478,4 +484,5 @@ export const DEFAULT_LIMITS: BridgeLimits = {
   maxStartingSessions: 2,
   presenceCheckMs: 60_000,
   personReplyTimeoutMs: 4 * 3_600_000,
+  windowNoticeMs: 10 * 60_000,
 };

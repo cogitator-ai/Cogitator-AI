@@ -172,6 +172,12 @@ export function channelRoute(options: ChannelRouteOptions): ChannelPersonRoute {
     },
     ask,
     settle,
+    async tell({ jobs, text }) {
+      const about = jobs.map((job) => `#${job.number} "${job.title}"`).join(', ');
+      await channel.sendText(chatId, `${text}\nIt stands still: job ${about}.`, {
+        format: 'plain',
+      });
+    },
     async start() {
       if (started) return;
       started = true;

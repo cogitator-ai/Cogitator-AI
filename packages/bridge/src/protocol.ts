@@ -26,6 +26,7 @@ export const BRIDGE_METHODS = {
   forPerson: 'person/letters',
   personAnswer: 'person/answer',
   listAgents: 'agents/list',
+  stuck: 'agents/stuck',
   readJournal: 'journal/read',
   subscribeJournal: 'journal/subscribe',
   unsubscribeJournal: 'journal/unsubscribe',

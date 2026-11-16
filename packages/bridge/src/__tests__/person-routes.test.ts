@@ -343,6 +343,33 @@ describe('a chat as a route to the person', () => {
   });
 });
 
+describe('a notice for the person', () => {
+  it('lands in the inbox and in the chat, and takes no answer there', async () => {
+    const chat = fakeChannel();
+    const inbox = new experimental_Inbox();
+    const route = channelRoute({ channel: chat.channel, chatId: 'chat-1' });
+    const { bridge, codex } = await bridged(personRoutes([inboxRoute(inbox), route]));
+    await route.start();
+
+    await bridge.stuck(codex.name, { what: 'Codex wants to run git push' });
+    await bridge.idle();
+
+    expect(await inbox.list()).toMatchObject([
+      {
+        kind: 'result',
+        title: 'codex@demo waits for you at its own window',
+        summary: 'codex@demo waits for you at its own window: Codex wants to run git push',
+        metadata: { bridge: { agent: 'codex@demo', jobs: [1] } },
+      },
+    ]);
+    expect(chat.sent.map((message) => message.text)).toEqual([
+      'codex@demo waits for you at its own window: Codex wants to run git push\nIt stands still: job #1 "Ship the fix".',
+    ]);
+    expect(chat.sent[0].buttons).toBeUndefined();
+    expect(kit.errors).toEqual([]);
+  });
+});
+
 describe('several routes to the person', () => {
   it('tell the person on each, and a route that fails does not silence the others', async () => {
     const chat = fakeChannel();

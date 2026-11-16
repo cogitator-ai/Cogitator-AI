@@ -27,6 +27,7 @@ import {
   LettersFilterSchema,
   PersonAnswerInputSchema,
   SendLetterInputSchema,
+  StuckInputSchema,
   VerdictInputSchema,
   VerificationInputSchema,
   WaitInputSchema,
@@ -37,6 +38,7 @@ import {
   type PersonAnswerInput,
   type SendLetterInput,
   type SendLetterResult,
+  type StuckInput,
   type VerdictInput,
   type VerdictResult,
   type WaitEnd,
@@ -89,7 +91,13 @@ import {
   type Rights,
 } from './types.js';
 import type { BridgeAdapter, BridgeCalls, CreatedSession } from './adapter.js';
-import type { PersonCalls, PersonLetter, PersonRoute, RightsJudge } from './person.js';
+import type {
+  PersonCalls,
+  PersonLetter,
+  PersonNotice,
+  PersonRoute,
+  RightsJudge,
+} from './person.js';
 
 export interface BridgeDispatcherOptions {
   store: BridgeStore;
@@ -235,6 +243,8 @@ interface Transaction {
   settled: string[];
   /** Permission requests that got their verdict */
   decided: Set<string>;
+  /** What the person is to know that takes no answer */
+  notices: PersonNotice[];
 }
 
 /** A call the bridge refuses after writing down why: what it wrote stays, the caller gets the error. */
@@ -314,6 +324,8 @@ export class BridgeDispatcher
   private readonly assertWritable: (() => void) | undefined;
   private readonly rights: RightsJudge | undefined;
   private readonly person: PersonRoute | undefined;
+  /** When each agent's other parties were last told it waits at its window, see `stuck` */
+  private readonly stuckTold = new Map<string, number>();
   /** Those waiting for the verdict of a permission request, by its id, see `verdict` */
   private readonly verdictWaiters = new Map<string, Set<() => void>>();
   /** What the person route is told, one thing after another */
@@ -977,6 +989,46 @@ export class BridgeDispatcher
       await this.resumeIfAnswered(tx, job, forHistory(body, letter.id));
       return { letter: sent, job: this.requireJob(job.number).job, duplicate: false };
     });
+  }
+
+  /**
+   * Says the caller's session waits for a person at its own window, such as for the answer to
+   * its harness's permission dialog: something only a person there can give. Whoever handed it
+   * a job that still runs is told in a note, and the person through their route, so nobody
+   * waits for an agent that itself waits. Told once in `limits.windowNoticeMs` for an agent,
+   * however often its harness says so. Resolves with the jobs whose other party was told.
+   */
+  async stuck(caller: string, input: StuckInput): Promise<number[]> {
+    const request = parse(StuckInputSchema, input, 'Cannot note that the session waits');
+    return this.asCaller(caller, async (tx) =>
+      this.noteStuck(tx, this.requireCaller(caller), request.what)
+    );
+  }
+
+  private noteStuck(tx: Transaction, agent: AgentRecord, what: string): number[] {
+    const now = this.now();
+    const told = this.stuckTold.get(agent.name);
+    if (told !== undefined && now - told < this.limits.windowNoticeMs) return [];
+    const jobs = this.store
+      .jobTasks({ to: agent.name, states: ACTIVE_JOB_STATES })
+      .flatMap((task) => jobOf(task) ?? [])
+      .sort((a, b) => a.number - b.number);
+    if (jobs.length === 0) return [];
+    this.stuckTold.set(agent.name, now);
+    for (const job of jobs) {
+      this.systemNote(
+        tx,
+        job,
+        job.from,
+        `${agent.name} waits for a person at its own window, and job #${job.number} stands still until they answer there. It shows:\n${quoted(what)}\nNobody can answer that from here. If the user is with you, tell them in one line.`
+      );
+    }
+    tx.notices.push({
+      agent: agent.name,
+      jobs,
+      text: `${agent.name} waits for you at its own window: ${oneLine(what)}`,
+    });
+    return jobs.map((job) => job.number);
   }
 
   /** The letters that wait for the person, oldest first, each with its job and the text to show. */
@@ -1679,15 +1731,21 @@ export class BridgeDispatcher
           `Listing the ${harness} sessions`
         )
           .then((sessions) =>
-            this.mutate((tx) =>
-              this.applyPresence(
+            this.mutate(async (tx) => {
+              await this.applyPresence(
                 tx,
                 harness,
                 new Set(sessions.map((session) => session.sessionId)),
                 adapter.ownsSessions === true,
                 asked
-              )
-            )
+              );
+              for (const session of sessions) {
+                if (!session.waitingFor) continue;
+                const agent = this.store.agentOfSession(harness, session.sessionId);
+                if (agent?.status !== 'active') continue;
+                this.noteStuck(tx, agent, `It waits for: ${session.waitingFor}`);
+              }
+            })
           )
           .finally(() => this.listing.delete(harness))
       );
@@ -1846,6 +1904,7 @@ export class BridgeDispatcher
       asked: [],
       settled: [],
       decided: new Set(),
+      notices: [],
     };
     const result = await this.store.transaction(() => {
       this.assertWritable?.();
@@ -1880,9 +1939,10 @@ export class BridgeDispatcher
    * order it happened. A route that throws, or takes longer than a delivery may, stops nothing:
    * the letter still waits in the bridge, and what comes after it is still told.
    */
-  private tellPerson(tx: Pick<Transaction, 'asked' | 'settled'>): void {
+  private tellPerson(tx: Pick<Transaction, 'asked' | 'settled' | 'notices'>): void {
     const route = this.person;
-    if (!route || this.closing || tx.asked.length + tx.settled.length === 0) return;
+    if (!route || this.closing) return;
+    if (tx.asked.length + tx.settled.length + tx.notices.length === 0) return;
     const rendered = (id: string) => {
       const letter = this.store.getLetter(id);
       if (!letter) return undefined;
@@ -1900,6 +1960,7 @@ export class BridgeDispatcher
       const found = rendered(id);
       if (found) news.push(() => route.settle(found));
     }
+    for (const notice of tx.notices) news.push(() => route.tell?.(notice));
     for (const tell of news) {
       this.personNews = this.personNews
         .then(() =>

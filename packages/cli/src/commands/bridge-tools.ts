@@ -4,7 +4,13 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { answerPermissionHook, bridgePaths, type BridgeAdapter } from '@cogitator-ai/bridge';
+import {
+  BridgeClient,
+  answerPermissionHook,
+  bridgePaths,
+  isBridgeError,
+  type BridgeAdapter,
+} from '@cogitator-ai/bridge';
 import { BRIDGE_INSTRUCTIONS, bridgeTools } from '@cogitator-ai/bridge/tools';
 import { MCPServer } from '@cogitator-ai/mcp';
 import { bridgeAdapters } from '../utils/bridge-adapters.js';
@@ -98,6 +104,61 @@ const defaultCallerContext = (): BridgeCallerContext => ({
   cwd: process.cwd(),
   stdin: pipedInput,
 });
+
+export interface BridgeStuckFlags {
+  hook: string;
+  home?: string;
+}
+
+/**
+ * cogitator bridge stuck --hook <harness>: the hook a harness runs when a session begins to
+ * wait for a person at its own window, such as with its permission dialog open. It tells the
+ * bridge, which lets whoever handed the session a job know that the job stands still. It says
+ * nothing to the harness and never exits with 2: the dialog is the person's either way. Without
+ * a dispatcher there is nobody to tell, which is fine.
+ */
+export async function runBridgeStuck(
+  flags: BridgeStuckFlags,
+  context: BridgeCallerContext = defaultCallerContext()
+): Promise<number> {
+  try {
+    const harness = flags.hook.trim().toLowerCase();
+    const adapters =
+      context.adapters ?? bridgeAdapters(context.env, { ...(flags.home && { home: flags.home }) });
+    const adapter = adapters.find((candidate) => candidate.harness === harness);
+    if (!adapter?.stuckHook) {
+      throw new CommandError(
+        `No adapter knows when a session of "${flags.hook}" waits for a person`
+      );
+    }
+    const hookInput = await context.stdin();
+    const stuck =
+      hookInput === undefined
+        ? undefined
+        : adapter.stuckHook({ env: context.env, cwd: context.cwd, hookInput });
+    if (!stuck) return 0;
+    let client: BridgeClient;
+    try {
+      client = await BridgeClient.connect({
+        socketPath: bridgePaths({ ...(flags.home && { home: flags.home }), env: context.env })
+          .socket,
+        caller: stuck.caller,
+      });
+    } catch (error) {
+      if (isBridgeError(error) && error.code === 'not_running') return 0;
+      throw error;
+    }
+    try {
+      await client.stuck({ what: stuck.what });
+    } finally {
+      await client.close();
+    }
+    return 0;
+  } catch (error) {
+    reportFailure(error, { json: false });
+    return EXIT.failed;
+  }
+}
 
 export interface BridgePermitFlags {
   hook: string;

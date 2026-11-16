@@ -15,6 +15,7 @@ import {
   CLAUDE_TOOLS_PERMISSION,
   claudeCodeAdapter,
   claudePermitHook,
+  claudeStuckHook,
   claudeToolsHook,
   claudeWaitHook,
 } from '../adapters/claude';
@@ -667,6 +668,47 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
       code: 0,
       stdout: 'mine\n',
     });
+    expect(errors).toEqual([]);
+  });
+
+  it('tells whoever handed a job to a window a person opened that it waits for them at its dialog', async () => {
+    await startHost([claudeAdapter()]);
+    mkdirSync(join(project, '.claude'), { recursive: true });
+    writeFileSync(
+      join(project, '.claude', 'settings.local.json'),
+      JSON.stringify({
+        hooks: {
+          ...claudeWaitHook({ bridgeCommand: BRIDGE_COMMAND, bridgeHome: home }).hooks,
+          ...claudeStuckHook({ bridgeCommand: BRIDGE_COMMAND, bridgeHome: home }).hooks,
+        },
+      })
+    );
+    const sessionId = await fakes.openClaudeWindow({ cwd: project, env: env() });
+    await fakes.say(sessionId, 'say: here');
+    await fakes.waitForTurn('claude', sessionId, () => true);
+    const conductor = await orchestrator();
+    const window = await until(
+      async () => (await conductor.agents({ harness: 'claude-code', statuses: ['active'] }))[0],
+      'the window to be known'
+    );
+
+    await conductor.createJob({
+      to: window.name,
+      body: 'Ship the fix\nbash: echo pushed\nsay: Shipped',
+    });
+    const note = await until(async () => {
+      const mail = await conductor.inbox();
+      return mail.find((letter) => letter.kind === 'note');
+    }, 'the note that the window waits');
+
+    expect(note.body.split('\n')).toEqual([
+      `${window.name} waits for a person at its own window, and job #1 stands still until they answer there. It shows:`,
+      '> Claude needs your permission to use Bash',
+      'Nobody can answer that from here. If the user is with you, tell them in one line.',
+    ]);
+    await fakes.answerPermission(sessionId, 'allow');
+    const turn = await fakes.waitForTurn('claude', sessionId, (done) => done.answer === 'Shipped');
+    expect(turn.ran[0]).toMatchObject({ code: 0, stdout: 'pushed\n' });
     expect(errors).toEqual([]);
   });
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type {
   PersonLetter,
+  PersonNotice,
   PersonRequest,
   PersonRoute,
   RightsJudge,
@@ -14,7 +15,7 @@ import {
   type RenderedLetter,
   type Rights,
 } from '../types';
-import { makeKit, type Kit } from './bridge-kit';
+import { FakeAdapter, makeKit, type Kit } from './bridge-kit';
 
 let kit: Kit;
 
@@ -655,5 +656,102 @@ describe('a letter passed on to the person', () => {
 
     expect(kit.errors.map((error) => error.message)).toEqual(['the chat is down']);
     expect((await bridge.forPerson()).map((waiting) => waiting.letter.id)).toEqual([letter.id]);
+  });
+});
+
+describe('an agent that waits for a person at its own window', () => {
+  /** A route that also takes notices. */
+  class NoticedRoute extends FakeRoute {
+    readonly told: PersonNotice[] = [];
+    tell(notice: PersonNotice): void {
+      this.told.push(notice);
+    }
+  }
+
+  it('is said so to whoever handed it a job, and to the person, once in a while', async () => {
+    const person = new NoticedRoute();
+    kit = await makeKit({ person });
+    const { bridge, claude, codex } = kit;
+    const { job } = await bridge.createJob(claude.name, { to: 'codex', body: 'Ship the fix' });
+    await bridge.inbox(codex.name);
+    await bridge.inbox(claude.name);
+
+    const told = await bridge.stuck(codex.name, { what: 'Codex wants to run git push' });
+    const again = await bridge.stuck(codex.name, { what: 'Codex wants to run git push' });
+    await bridge.idle();
+
+    expect(told).toEqual([job.number]);
+    expect(again).toEqual([]);
+    const notes = await bridge.inbox(claude.name);
+    expect(notes.map((note) => [note.kind, note.from])).toEqual([['note', BRIDGE_SENDER]]);
+    expect(notes[0].body.split('\n')).toEqual([
+      `${codex.name} waits for a person at its own window, and job #1 stands still until they answer there. It shows:`,
+      '> Codex wants to run git push',
+      'Nobody can answer that from here. If the user is with you, tell them in one line.',
+    ]);
+    expect(person.told).toEqual([
+      {
+        agent: codex.name,
+        jobs: [expect.objectContaining({ number: job.number })],
+        text: `${codex.name} waits for you at its own window: Codex wants to run git push`,
+      },
+    ]);
+    expect((await bridge.job(job.number)).state).toBe('working');
+
+    kit.clock.advance(DEFAULT_LIMITS.windowNoticeMs + 1);
+    expect(await bridge.stuck(codex.name, { what: 'Still there' })).toEqual([job.number]);
+  });
+
+  it("is nobody's news when it carries out no job", async () => {
+    const person = new NoticedRoute();
+    kit = await makeKit({ person });
+    const { bridge, claude, codex } = kit;
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Ship the fix' });
+
+    expect(await bridge.stuck(claude.name, { what: 'A dialog' })).toEqual([]);
+    await bridge.cancel(claude.name, 1);
+    expect(await bridge.stuck(codex.name, { what: 'A dialog' })).toEqual([]);
+    await bridge.idle();
+
+    expect(person.told).toEqual([]);
+    await expect(bridge.stuck(codex.name, { what: '   ' })).rejects.toThrow(code('invalid_input'));
+  });
+
+  it('is noticed in what its harness lists, without any hook', async () => {
+    const person = new NoticedRoute();
+    const waitingFor: { value?: string } = {};
+    kit = await makeKit({
+      person,
+      adapters: [
+        new FakeAdapter({
+          harness: 'codex',
+          liveSessions: async () => [
+            {
+              sessionId: 'thread-codex',
+              ...(waitingFor.value && { waitingFor: waitingFor.value }),
+            },
+          ],
+        }),
+      ],
+    });
+    const { bridge, claude, codex } = kit;
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Ship the fix' });
+    await bridge.inbox(codex.name);
+    await bridge.inbox(claude.name);
+
+    await bridge.sweep();
+    await bridge.idle();
+    expect(await bridge.inbox(claude.name)).toEqual([]);
+
+    waitingFor.value = 'permission prompt';
+    kit.clock.advance(DEFAULT_LIMITS.presenceCheckMs + 1);
+    await bridge.sweep();
+    await bridge.idle();
+
+    const [note] = await bridge.inbox(claude.name);
+    expect(note.body).toContain('> It waits for: permission prompt');
+    expect(person.told.map((notice) => notice.text)).toEqual([
+      `${codex.name} waits for you at its own window: It waits for: permission prompt`,
+    ]);
   });
 });
