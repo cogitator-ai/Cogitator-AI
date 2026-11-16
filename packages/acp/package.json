@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/acp",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Agent Client Protocol for Cogitator: serve Cogitator agents to editors, and run external ACP agents as session providers",
   "keywords": [
     "cogitator",
