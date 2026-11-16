@@ -156,6 +156,24 @@ cogitator app-server -m ollama/qwen3:8b --acp-agent claude --acp-agent mine="./m
 
 `resolveAcpAgent()` knows the presets `claude`, `codex` and `gemini` (launched with `npx`), `registry:<id>` for an agent of the [ACP registry](https://agentclientprotocol.com/registry), and any command line.
 
+### When the agent does not answer
+
+The provider launches the agent with the first turn and waits for its answer to `initialize`. An agent that stays silent for `handshakeTimeout` milliseconds (30 seconds by default, `0` for no limit) is stopped, and the turn fails with an error that names the command:
+
+```text
+The ACP agent "gemini --experimental-acp" did not answer initialize in 30000 ms. An agent that is not signed in often behaves this way: run it in a terminal and sign in. An agent that only starts slowly needs a larger handshakeTimeout
+```
+
+```typescript
+const gemini = new AcpAgentProvider({
+  agent: { command: 'gemini', args: ['--experimental-acp'] },
+  workspace,
+  handshakeTimeout: 60_000,
+});
+```
+
+An agent that exits before it answered fails the turn with its exit code, and the next turn launches it again. `authenticate` (sent when `authMethodId` names a method the agent offers) has no limit, as a sign-in may wait for a person. Interrupting the turn ends its wait at any point, and `close()` ends a start in progress and stops the agent it launched.
+
 ### How Cogitator decides for the agent
 
 Every `session/request_permission` of the agent goes through `resolvePermission`, in the thread's permission mode, with the rules in code, the settings files when asked to read them, and the rules people saved:

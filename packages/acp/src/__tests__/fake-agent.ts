@@ -22,7 +22,13 @@ export interface FakeAgentLog {
  * `wait`), then answers
  */
 export function fakeAcpAgent(
-  options: { sessionStarts?: Promise<void> | (() => Promise<void> | undefined) } = {}
+  options: {
+    sessionStarts?: Promise<void> | (() => Promise<void> | undefined);
+    /** What each `initialize` waits for before it is answered */
+    initializes?: () => Promise<void> | undefined;
+    /** What each `authenticate` waits for before it is answered */
+    authenticates?: () => Promise<void> | undefined;
+  } = {}
 ): {
   app: AgentApp;
   log: FakeAgentLog;
@@ -44,17 +50,23 @@ export function fakeAcpAgent(
     value: Parameters<AgentContext['notify']>[1]
   ) => client.notify('session/update', { sessionId, update: value } as never);
   const app = createAgentApp({ name: 'fake-agent' })
-    .onRequest('initialize', () => ({
-      protocolVersion: 1,
-      agentCapabilities: {
-        loadSession: true,
-        promptCapabilities: { image: true },
-        sessionCapabilities: { close: {} },
-      },
-      authMethods: [{ id: 'fake', name: 'Fake login' }],
-      agentInfo: { name: 'fake-agent', version: '1.0.0' },
-    }))
-    .onRequest('authenticate', () => ({}))
+    .onRequest('initialize', async () => {
+      await options.initializes?.();
+      return {
+        protocolVersion: 1,
+        agentCapabilities: {
+          loadSession: true,
+          promptCapabilities: { image: true },
+          sessionCapabilities: { close: {} },
+        },
+        authMethods: [{ id: 'fake', name: 'Fake login' }],
+        agentInfo: { name: 'fake-agent', version: '1.0.0' },
+      };
+    })
+    .onRequest('authenticate', async () => {
+      await options.authenticates?.();
+      return {};
+    })
     .onRequest('session/new', async () => {
       await (typeof options.sessionStarts === 'function'
         ? options.sessionStarts()
@@ -261,3 +273,12 @@ export function fakeAcpAgent(
     });
   return { app, log };
 }
+
+/**
+ * The arguments `node` runs an agent process with that reads what it is sent and never answers,
+ * writing its pid to stderr. It stays when its input ends, until it is killed (or a minute passed)
+ */
+export const SILENT_AGENT_ARGS: readonly string[] = [
+  '-e',
+  'process.stderr.write(String(process.pid)); process.stdin.resume(); setTimeout(() => process.exit(), 60000);',
+];
