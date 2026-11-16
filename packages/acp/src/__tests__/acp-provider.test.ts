@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +14,11 @@ import type { StreamEvent } from '@cogitator-ai/server-shared';
 import { AcpAgentProvider, type AcpAgentProviderOptions } from '../client/provider';
 import { SILENT_AGENT_ARGS, fakeAcpAgent } from './fake-agent';
 import { waitUntil } from './helpers';
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
 let dir: string;
 let workspace: LocalWorkspace;
@@ -347,8 +353,12 @@ function alive(pid: number): boolean {
   }
 }
 
-/** A provider of a silent agent process, and the pid the process reports once it runs */
+/**
+ * A provider of a silent agent process, the pid the process was launched with, known as soon as
+ * the provider launched it, and a wait for the process to run and report that pid itself
+ */
 function silentProcess(options: Partial<AcpAgentProviderOptions> = {}) {
+  const launchesBefore = vi.mocked(spawn).mock.results.length;
   let stderr = '';
   const provider = new AcpAgentProvider({
     agent: { command: process.execPath, args: SILENT_AGENT_ARGS },
@@ -358,11 +368,14 @@ function silentProcess(options: Partial<AcpAgentProviderOptions> = {}) {
     },
     ...options,
   });
-  const pid = async (): Promise<number> => {
-    await waitUntil(() => /^\d+$/.test(stderr));
-    return Number(stderr);
+  const pid = (): number => {
+    const launch = vi.mocked(spawn).mock.results[launchesBefore];
+    const launched = launch?.type === 'return' ? launch.value.pid : undefined;
+    if (launched === undefined) throw new Error('The agent process was not launched');
+    return launched;
   };
-  return { provider, pid };
+  const running = (): Promise<void> => waitUntil(() => stderr === String(pid()));
+  return { provider, pid, running };
 }
 
 /** `work`, or a rejection when it has not settled in `ms`: a hang shows as a failed test */
@@ -395,7 +408,7 @@ describe('AcpAgentProvider handshake', () => {
     expect(failure?.message).toContain(process.execPath);
     expect(failure?.message).toMatch(/did not answer initialize in 300 ms/);
     expect(failure?.message).toMatch(/not signed in/);
-    const child = await pid();
+    const child = pid();
     await waitUntil(() => !alive(child));
     await within(provider.close());
   });
@@ -425,12 +438,13 @@ describe('AcpAgentProvider handshake', () => {
   });
 
   it('ends a launch in progress when closed, and kills the agent', async () => {
-    const { provider, pid } = silentProcess();
+    const { provider, pid, running } = silentProcess();
     const failure = provider.connect().then(
       () => undefined,
       (error: Error) => error
     );
-    const child = await pid();
+    await running();
+    const child = pid();
     await within(provider.close());
     expect((await within(failure))?.message).toMatch(/closed/);
     await waitUntil(() => !alive(child));
