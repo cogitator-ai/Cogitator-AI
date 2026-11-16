@@ -142,7 +142,12 @@ const configFile = () =>
 function sessionFiles(sessionId) {
   if (!isStateName(sessionId)) throw new Unsupported();
   const base = join(sessionsDir(), sessionId);
-  return { record: `${base}.json`, transcript: `${base}.jsonl`, spool: `${base}.in` };
+  return {
+    record: `${base}.json`,
+    transcript: `${base}.jsonl`,
+    spool: `${base}.in`,
+    answer: `${base}.answer`,
+  };
 }
 
 async function main(argv) {
@@ -166,6 +171,8 @@ async function main(argv) {
       return open(rest);
     case '__say':
       return say(rest);
+    case '__answer':
+      return answerPrompt(rest);
     case '__session':
       return runSession(rest);
     default:
@@ -358,6 +365,7 @@ async function runSession(argv) {
       cwd: record.cwd,
       env,
       callTool: (server, tool, args) => callTool(session, servers, server, tool, args),
+      askLeave: ({ tool, input }) => leaveFor(session, tool, input),
     });
     setActivity(session, 'idle');
     recordTurn(files.transcript, outcome, message.wokenBy);
@@ -461,20 +469,126 @@ async function callTool(session, servers, serverName, toolName, args) {
   return input === args ? answer : { ...answer, sent: input };
 }
 
-/** The command hooks of the PreToolUse event, each with the matcher of its group */
-function toolHooks(record) {
+/**
+ * Whether a permission rule covers a call: the name of the tool alone, or the tool with a
+ * pattern for its command or file. `Bash(git push *)` and `Bash(git push:*)` cover what starts
+ * with the words, `Bash(git status)` that command only.
+ */
+function ruleCovers(rule, toolName, input) {
+  if (rule === toolName) return true;
+  const match = /^([\w-]+)\((.*)\)$/.exec(rule);
+  if (!match || match[1] !== toolName) return false;
+  const [, , pattern] = match;
+  const subject = String(input.command ?? input.file_path ?? '');
+  if (pattern.endsWith(':*')) return subject.startsWith(pattern.slice(0, -2));
+  if (pattern.endsWith(' *')) {
+    return subject === pattern.slice(0, -2) || subject.startsWith(pattern.slice(0, -1));
+  }
+  return subject === pattern;
+}
+
+/**
+ * Gets leave for a call of one of the session's own tools, the way Claude Code decides: the
+ * mode, the deny and allow rules, the `PermissionRequest` hooks that match the tool, and when
+ * none of them settles it, the dialog a person answers. While the dialog is open the session is
+ * listed as blocked on a permission prompt, its `Notification` hooks are told, and it waits for
+ * `__answer` as long as it takes.
+ */
+async function leaveFor(session, toolName, input) {
+  const { record, files } = session;
+  const mode = record.permissionMode ?? 'default';
+  const refused = (message) => ({ allowed: false, message });
+  const rules = (list) =>
+    settingsOf(record).flatMap((settings) => settings.permissions?.[list] ?? []);
+  const covered = (list) => rules(list).some((rule) => ruleCovers(rule, toolName, input));
+  if (covered('deny')) return refused(`Permission to use ${toolName} has been denied.`);
+  if (mode === 'bypassPermissions' || covered('allow')) return { allowed: true };
+
+  const payload = {
+    session_id: record.sessionId,
+    transcript_path: files.transcript,
+    cwd: record.cwd,
+    permission_mode: mode,
+    tool_name: toolName,
+    tool_input: input,
+  };
+  let allowedByHook = false;
+  for (const { matcher, hook } of eventHooks(record, 'PermissionRequest')) {
+    if (!new RegExp(`^(?:${matcher})$`).test(toolName)) continue;
+    const result = await runHook(
+      session,
+      hook,
+      JSON.stringify({ ...payload, hook_event_name: 'PermissionRequest' })
+    );
+    if (result.code !== 0) continue;
+    let decision;
+    try {
+      decision = JSON.parse(result.stdout).hookSpecificOutput?.decision;
+    } catch {
+      continue;
+    }
+    if (decision?.behavior === 'deny') {
+      return refused(String(decision.message ?? `Permission to use ${toolName} has been denied.`));
+    }
+    if (decision?.behavior === 'allow') allowedByHook = true;
+  }
+  if (allowedByHook) return { allowed: true };
+  if (mode === 'dontAsk') return refused(`Permission to use ${toolName} has been denied.`);
+
+  rmSync(files.answer, { force: true });
+  patchJson(files.record, {
+    status: 'waiting',
+    waitingFor: 'permission prompt',
+    ...(record.kind === 'background' && { state: 'blocked' }),
+  });
+  for (const { matcher, hook } of eventHooks(record, 'Notification')) {
+    if (matcher !== '.*' && !new RegExp(`^(?:${matcher})$`).test('permission_prompt')) continue;
+    void runHook(
+      session,
+      hook,
+      JSON.stringify({
+        session_id: record.sessionId,
+        transcript_path: files.transcript,
+        cwd: record.cwd,
+        hook_event_name: 'Notification',
+        message: `Claude needs your permission to use ${toolName}`,
+        title: 'Permission needed',
+        notification_type: 'permission_prompt',
+      })
+    );
+  }
+  let answer;
+  while ((answer = readJson(files.answer)) === undefined) await sleep(POLL_MS);
+  rmSync(files.answer, { force: true });
+  patchJson(files.record, {
+    status: 'busy',
+    waitingFor: undefined,
+    ...(record.kind === 'background' && { state: 'working' }),
+  });
+  return answer.allow === true
+    ? { allowed: true }
+    : refused(`The user doesn't want to proceed with this tool use.`);
+}
+
+/** The command hooks of an event, each with the matcher of its group */
+function eventHooks(record, event) {
   return settingsOf(record).flatMap((settings) => {
-    const groups = settings.hooks?.PreToolUse;
+    const groups = settings.hooks?.[event];
     if (!Array.isArray(groups)) return [];
     return groups.flatMap((group) =>
       (Array.isArray(group?.hooks) ? group.hooks : [])
         .filter((hook) => hook?.type === 'command' && typeof hook.command === 'string')
         .map((hook) => ({
-          matcher: typeof group.matcher === 'string' ? group.matcher : '.*',
+          matcher: typeof group.matcher === 'string' && group.matcher !== '' ? group.matcher : '.*',
           hook,
         }))
     );
   });
+}
+
+/** The command hooks of the PreToolUse event, each with the matcher of its group */
+function toolHooks(record) {
+  return eventHooks(record, 'PreToolUse');
 }
 
 /**
@@ -569,6 +683,7 @@ function endSession(recordFile) {
   patchJson(recordFile, {
     pid: undefined,
     status: undefined,
+    waitingFor: undefined,
     hookPids: undefined,
     state: 'stopped',
   });
@@ -648,7 +763,14 @@ function wake(files, text) {
 function current(record) {
   if (record.state === 'failed') return record;
   if (record.pid !== undefined && isAlive(record.pid)) return record;
-  return { ...record, pid: undefined, status: undefined, hookPids: undefined, state: 'stopped' };
+  return {
+    ...record,
+    pid: undefined,
+    status: undefined,
+    waitingFor: undefined,
+    hookPids: undefined,
+    state: 'stopped',
+  };
 }
 
 function listSessions() {
@@ -682,8 +804,8 @@ async function agents(argv) {
 }
 
 /** What `agents --json` shows of a session: `id` and `state` are there for background ones only */
-function listed({ id, sessionId, name, cwd, kind, startedAt, pid, status, state }) {
-  const shown = { id, sessionId, name, cwd, kind, startedAt, pid, status };
+function listed({ id, sessionId, name, cwd, kind, startedAt, pid, status, state, waitingFor }) {
+  const shown = { id, sessionId, name, cwd, kind, startedAt, pid, status, waitingFor };
   return kind === 'background' ? { ...shown, state } : shown;
 }
 
@@ -702,6 +824,18 @@ async function remove(argv) {
   rmSync(files.record, { force: true });
   rmSync(files.transcript, { force: true });
   rmSync(files.spool, { recursive: true, force: true });
+  rmSync(files.answer, { force: true });
+}
+
+/** `__answer <session> allow|deny`: a person answers the permission dialog a session shows */
+async function answerPrompt(argv) {
+  const [ref, word] = argv;
+  if (argv.length !== 2 || (word !== 'allow' && word !== 'deny')) throw new Unsupported();
+  const session = findSession([ref]);
+  if (session.waitingFor !== 'permission prompt') {
+    throw new CliError(`Session '${ref}' shows no permission dialog`);
+  }
+  writeJson(sessionFiles(session.sessionId).answer, { allow: word === 'allow' });
 }
 
 async function say(argv) {
