@@ -457,6 +457,7 @@ describe('the command line', () => {
       'install',
       'log',
       'mcp',
+      'permit',
       'reply',
       'send',
       'serve',

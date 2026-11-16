@@ -14,7 +14,9 @@ import type {
   BridgeJob,
   CallerIdentity,
   Letter,
+  PermissionAsk,
   RenderedLetter,
+  Verdict,
 } from './types.js';
 
 /** A letter on its way to a session, as an adapter gets it. */
@@ -48,6 +50,17 @@ export interface CreatedSession {
   sessionName?: string;
   /** Whether the session got `firstLetter` when it started, so the bridge does not deliver it again */
   deliveredFirstLetter?: boolean;
+}
+
+/** A call a session needs leave for, as its harness told a hook. */
+export interface PermissionHookCall {
+  /** The session that makes the call */
+  caller: CallerIdentity;
+  ask: PermissionAsk;
+  /** The words of the letter that asks leave */
+  body: string;
+  /** What the hook writes to tell the harness the decision */
+  answer(verdict: Verdict, reason: string): string;
 }
 
 /** A session of a harness that runs on this machine right now, as the harness lists it. */
@@ -141,6 +154,12 @@ export interface BridgeAdapter {
    * on as it was. For a harness whose server of tools outlives its sessions
    */
   toolCallHook?(context: IdentifyContext): string | undefined;
+  /**
+   * Reads what the harness wrote to a hook that runs when a session needs leave for a call: who
+   * asks, for what, and how to tell the harness the decision. Undefined when the input is not
+   * that of such a hook
+   */
+  permissionHook?(context: IdentifyContext): PermissionHookCall | undefined;
   /**
    * The sessions of the harness running on this machine, when the harness can list them. The
    * bridge keeps a listed session in its address book however long it is silent, and takes one
