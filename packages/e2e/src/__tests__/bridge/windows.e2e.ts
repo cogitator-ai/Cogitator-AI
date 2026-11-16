@@ -160,7 +160,10 @@ describe.skipIf(!posix)('a Claude Code session the bridge starts', () => {
       ['echo pushed', 0, 'pushed\n'],
     ]);
     expect(cli(['asks']).stdout).toContain('Nothing waits for you');
-    expect(readFileSync(join(bridgeDir, 'inbox.json'), 'utf8')).toContain('"archived"');
+    await until(
+      () => readFileSync(join(bridgeDir, 'inbox.json'), 'utf8').includes('"archived"'),
+      'the item of the request to be put away'
+    );
   });
 
   it('is answered by the agent that handed the job over when the rules of the project allow the call, and refused when they forbid it', async () => {
@@ -219,9 +222,13 @@ describe.skipIf(!posix)('a Claude Code window a person opened', () => {
 
     expect(note.body).toContain(`${window.name} waits for a person at its own window`);
     expect(note.body).toContain('> Claude needs your permission to use Bash');
-    expect(readFileSync(join(bridgeDir, 'inbox.json'), 'utf8')).toContain(
-      `${window.name} waits for you at its own window`
-    );
+    await until(() => {
+      const inbox = join(bridgeDir, 'inbox.json');
+      return (
+        existsSync(inbox) &&
+        readFileSync(inbox, 'utf8').includes(`${window.name} waits for you at its own window`)
+      );
+    }, 'the notice in the inbox of the bridge');
     await fakes.answerPermission(sessionId, 'allow');
     const turn = await fakes.waitForTurn('claude', sessionId, (done) => done.answer === 'Shipped');
     expect(turn.ran[0]).toMatchObject({ code: 0, stdout: 'pushed\n' });
