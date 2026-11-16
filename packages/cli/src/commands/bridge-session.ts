@@ -18,6 +18,8 @@ import {
   type CallerIdentity,
   type HealthCheck,
   type LetterKind,
+  type PersonLetter,
+  type Verdict,
 } from '@cogitator-ai/bridge';
 import { CommandError, EXIT, printJson, reportFailure } from '../utils/cli.js';
 import { bridgeAdapters, bridgeCommandOf } from '../utils/bridge-adapters.js';
@@ -75,10 +77,13 @@ const NO_SESSION = new CommandError('This command runs inside a session of an ag
 async function connect(
   flags: HomeFlags,
   context: BridgeSessionContext,
-  caller: CallerIdentity
+  caller?: CallerIdentity
 ): Promise<BridgeClient> {
   try {
-    return await BridgeClient.connect({ socketPath: pathsOf(flags, context).socket, caller });
+    return await BridgeClient.connect({
+      socketPath: pathsOf(flags, context).socket,
+      ...(caller && { caller }),
+    });
   } catch (error) {
     if (isBridgeError(error) && error.code === 'not_running') {
       throw new CommandError('No bridge dispatcher is running', {
@@ -97,6 +102,35 @@ async function asSession<T>(
   const caller = callerFromEnv(context.env, context.cwd);
   if (!caller) throw NO_SESSION;
   const client = await connect(flags, context, caller);
+  try {
+    return await work(client);
+  } finally {
+    await client.close();
+  }
+}
+
+/**
+ * A call made as the person at the machine. A session of an agent is refused: the answers of
+ * the person must not come from the agents they are asked about.
+ */
+async function asPerson<T>(
+  flags: HomeFlags,
+  context: BridgeSessionContext,
+  work: (client: BridgeClient) => Promise<T>
+): Promise<T> {
+  const session = callerFromEnv(context.env, context.cwd);
+  if (session) {
+    throw new CommandError(
+      `This runs in a session of ${session.harness}, and an agent does not answer for the person`,
+      {
+        hints: [
+          'Run it in a terminal of your own',
+          'An agent refuses a request sent to it with: cogitator bridge send --kind answer --decision deny',
+        ],
+      }
+    );
+  }
+  const client = await connect(flags, context);
   try {
     return await work(client);
   } finally {
@@ -154,11 +188,15 @@ export async function runBridgeDelegate(
 
 export const SENDABLE_KINDS = ['question', 'answer', 'report', 'note', 'permission'] as const;
 
+export const DECISIONS = ['allow', 'deny', 'person'] as const;
+
 export interface BridgeSendFlags extends HomeFlags {
   job: number;
   kind: Exclude<LetterKind, 'task'>;
   failed?: boolean;
   replyTo?: string;
+  /** Of an answer: the decision of a permission request, or `person` to leave it to the user */
+  decision?: (typeof DECISIONS)[number];
   json?: boolean;
 }
 
@@ -172,12 +210,31 @@ export async function runBridgeSend(
     if (flags.failed && flags.kind !== 'report') {
       throw new CommandError('--failed goes with --kind report');
     }
-    const body = await bodyOf(words, context);
+    const decision = flags.decision;
+    if (decision && flags.kind !== 'answer') {
+      throw new CommandError('--decision goes with --kind answer');
+    }
+    if (decision === 'person') {
+      const passed = await asSession(flags, context, (client) =>
+        client.escalate(flags.replyTo ? { letter: flags.replyTo } : { job: flags.job })
+      );
+      if (flags.json) printJson(passed);
+      else {
+        context.print(
+          `Left the ${passed.kind} ${passed.id} to the person: their answer goes to ${passed.from}`
+        );
+      }
+      return 0;
+    }
+    const body = decision
+      ? words.join(' ').trim() || (decision === 'allow' ? 'Allowed' : 'Refused')
+      : await bodyOf(words, context);
     const sent = await asSession(flags, context, (client) =>
       client.send({
         job: flags.job,
         kind: flags.kind,
         body,
+        ...(decision && { verdict: decision }),
         ...(flags.replyTo && { inReplyTo: flags.replyTo }),
         ...(flags.failed && { outcome: 'failed' as const }),
       })
@@ -187,6 +244,145 @@ export async function runBridgeSend(
       context.print(
         `Sent the ${sent.letter.kind} ${sent.letter.id} to ${sent.letter.to}. Job #${sent.job.number} is ${sent.job.state}`
       );
+    }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+export interface BridgePersonFlags extends HomeFlags {
+  json?: boolean;
+}
+
+/** What a waiting letter is answered with, as the person types it. */
+function answerHint({ letter, job }: PersonLetter, several: boolean): string {
+  const target = several ? letter.id : String(job.number);
+  return letter.ask
+    ? `Allow: cogitator bridge allow ${target}   Refuse: cogitator bridge deny ${target}`
+    : `Answer: cogitator bridge reply ${target} "<your answer>"`;
+}
+
+/** cogitator bridge asks: what waits for the word of the person. */
+export async function runBridgeAsks(
+  flags: BridgePersonFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const waiting = await asPerson(flags, context, (client) => client.forPerson());
+    if (flags.json) {
+      printJson(waiting);
+      return 0;
+    }
+    if (waiting.length === 0) {
+      context.print('Nothing waits for you');
+      return 0;
+    }
+    const perJob = new Map<number, number>();
+    for (const { job } of waiting) perJob.set(job.number, (perJob.get(job.number) ?? 0) + 1);
+    for (const waited of waiting) {
+      const { letter, job } = waited;
+      context.print(
+        `${chalk.bold(`Job #${job.number}`)} "${job.title}" in ${job.project}  ${chalk.dim(letter.id)}`
+      );
+      context.print(`${letter.from} ${letter.ask ? 'asks leave' : 'asks'}:`);
+      for (const line of letter.body.split('\n')) context.print(`  ${line}`);
+      context.print(chalk.dim(answerHint(waited, (perJob.get(job.number) ?? 0) > 1)));
+      context.print('');
+    }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+/**
+ * The letter a word of the person names: a job number when one letter of that job waits for
+ * them, else the id of the letter or the start of it.
+ */
+function waitingLetter(waiting: readonly PersonLetter[], word: string): PersonLetter {
+  const named = word.trim().replace(/^#/, '');
+  const found = /^\d+$/.test(named)
+    ? waiting.filter(({ job }) => job.number === Number(named))
+    : waiting.filter(({ letter }) => letter.id === named || letter.id.startsWith(named));
+  if (found.length === 1) return found[0];
+  if (found.length === 0) {
+    throw new CommandError(`Nothing that waits for you is named ${word}`, {
+      hints: ['See what waits: cogitator bridge asks'],
+    });
+  }
+  throw new CommandError(`${found.length} letters that wait for you are named ${word}`, {
+    hints: [`Name one by its id: ${found.map(({ letter }) => letter.id).join(', ')}`],
+  });
+}
+
+/** cogitator bridge allow | deny <job or letter> [reason]: the person decides a permission request. */
+export async function runBridgeDecide(
+  verdict: Verdict,
+  target: string,
+  words: readonly string[],
+  flags: BridgePersonFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const reason = words.join(' ').trim();
+    const { sent, waited } = await asPerson(flags, context, async (client) => {
+      const found = waitingLetter(await client.forPerson(), target);
+      if (!found.letter.ask) {
+        throw new CommandError(
+          `The ${found.letter.kind} ${found.letter.id} takes an answer in words`,
+          {
+            hints: [`Answer it: cogitator bridge reply ${target} "<your answer>"`],
+          }
+        );
+      }
+      return {
+        waited: found,
+        sent: await client.personAnswer({
+          letter: found.letter.id,
+          verdict,
+          ...(reason && { body: reason }),
+        }),
+      };
+    });
+    if (flags.json) printJson(sent);
+    else {
+      context.print(
+        `${verdict === 'allow' ? 'Allowed' : 'Refused'}: ${waited.letter.from} is told. Job #${sent.job.number} is ${sent.job.state}`
+      );
+    }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+/** cogitator bridge reply <job or letter> <text>: the person answers a question. */
+export async function runBridgeReply(
+  target: string,
+  words: readonly string[],
+  flags: BridgePersonFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const body = await bodyOf(words, context);
+    const { sent, waited } = await asPerson(flags, context, async (client) => {
+      const found = waitingLetter(await client.forPerson(), target);
+      if (found.letter.ask) {
+        throw new CommandError(`The permission request ${found.letter.id} takes a decision`, {
+          hints: [
+            `Decide it: cogitator bridge allow ${target}, or cogitator bridge deny ${target}`,
+          ],
+        });
+      }
+      return {
+        waited: found,
+        sent: await client.personAnswer({ letter: found.letter.id, body }),
+      };
+    });
+    if (flags.json) printJson(sent);
+    else {
+      context.print(`Sent to ${waited.letter.from}. Job #${sent.job.number} is ${sent.job.state}`);
     }
     return 0;
   } catch (error) {
