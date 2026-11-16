@@ -121,7 +121,7 @@ export interface FakeHarnesses {
   stopCodexDaemon(): Promise<void>;
   /** The turns a session or thread ran, oldest first */
   transcript(harness: 'claude' | 'codex', id: string): FakeTurn[];
-  /** Resolves with the first turn of the session `matches` accepts, rejects after `timeoutMs` (default 10000) naming what it waited for and the turns seen */
+  /** Resolves with the first turn of the session `matches` accepts, rejects after `timeoutMs` (default 30000) naming what it waited for and the turns seen */
   waitForTurn(
     harness: 'claude' | 'codex',
     id: string,
@@ -172,7 +172,11 @@ const OWN_FOLDERS: Record<string, string> = {
 const TRANSCRIPT_FOLDERS: Record<Harness, string> = { claude: 'sessions', codex: 'threads' };
 const POLL_MS = 20;
 const STOP_GRACE_MS = 5_000;
-const DEFAULT_TURN_TIMEOUT_MS = 10_000;
+/**
+ * A turn may start a server of tools, a process that loads the whole runtime: on a busy CI runner
+ * that start alone took over ten seconds, so the wait leaves room for it
+ */
+const DEFAULT_TURN_TIMEOUT_MS = 30_000;
 
 /**
  * Installs executable stand-ins of `claude` and `codex` for tests of code that drives the real
