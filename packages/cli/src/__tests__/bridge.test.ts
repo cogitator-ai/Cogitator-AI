@@ -446,14 +446,18 @@ describe('the command line', () => {
     const daemon = program.commands.find((command) => command.name() === 'daemon');
 
     expect(bridge?.commands.map((command) => command.name()).sort()).toEqual([
+      'allow',
+      'asks',
       'caller',
       'cancel',
       'delegate',
+      'deny',
       'doctor',
       'inbox',
       'install',
       'log',
       'mcp',
+      'reply',
       'send',
       'serve',
       'status',

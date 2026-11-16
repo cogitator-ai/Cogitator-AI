@@ -22,6 +22,7 @@ import {
 } from '@cogitator-ai/bridge';
 import { CommandError, examplesHelp, printJson, reportFailure } from '../utils/cli.js';
 import { bridgeAdapters, CODEX_SANDBOXES } from '../utils/bridge-adapters.js';
+import { bridgePerson, type BridgePerson } from '../utils/bridge-person.js';
 import {
   INSTALL_CHOICES,
   runBridgeInstall,
@@ -31,17 +32,22 @@ import {
 } from './bridge-install.js';
 import { runBridgeCaller, runBridgeMcp } from './bridge-tools.js';
 import {
+  DECISIONS,
   SENDABLE_KINDS,
+  runBridgeAsks,
+  runBridgeDecide,
   runBridgeDelegate,
   runBridgeDoctor,
   runBridgeCancel,
   runBridgeInbox,
+  runBridgeReply,
   runBridgeSend,
   runBridgeWait,
   type BridgeDelegateFlags,
   type BridgeDoctorFlags,
   type BridgeCancelFlags,
   type BridgeInboxFlags,
+  type BridgePersonFlags,
   type BridgeSendFlags,
   type BridgeWaitFlags,
 } from './bridge-session.js';
@@ -62,6 +68,8 @@ export interface BridgeContext {
   pollMs?: number;
   /** The adapters `serve` reaches sessions through, those of Claude Code and Codex by default */
   adapters?: readonly BridgeAdapter[];
+  /** How `serve` reaches the person and reads rights, `bridgePerson` of the environment by default */
+  person?: BridgePerson;
 }
 
 const defaultContext = (): BridgeContext => ({
@@ -156,8 +164,11 @@ export function describeJournalEntry(raw: JournalEntry): string {
       return `job is ${text(data.to)} (was ${text(data.from)})`;
     case 'job.verified':
       return `checks ${data.verified ? 'confirmed the result' : 'did not confirm the result'}${data.summary ? `: ${preview(text(data.summary))}` : ''}`;
-    case 'letter.queued':
-      return `${text(data.kind)} from ${text(data.from)} to ${text(data.to)}: ${preview(text(data.body))}`;
+    case 'letter.queued': {
+      const verdict = data.verdict ? ` (${text(data.verdict)})` : '';
+      const forPerson = data.needsPerson ? ', waits for the person' : '';
+      return `${text(data.kind)}${verdict} from ${text(data.from)} to ${text(data.to)}${forPerson}: ${preview(text(data.body))}`;
+    }
     case 'letter.delivered':
       return `delivered to ${entry.agent} (${entry.letter})${data.note ? `. ${text(data.note)}` : ''}`;
     case 'letter.read':
@@ -170,6 +181,8 @@ export function describeJournalEntry(raw: JournalEntry): string {
       return `could not deliver ${entry.letter} to ${entry.agent} after ${String(data.attempts)} attempts: ${text(data.error)}`;
     case 'letter.reminded':
       return `reminded ${entry.agent} of ${entry.letter}`;
+    case 'letter.escalated':
+      return `${entry.agent} left ${entry.letter} to the person`;
   }
 }
 
@@ -363,9 +376,13 @@ export async function runBridgeServe(
   context: BridgeContext = defaultContext()
 ): Promise<number> {
   let host: BridgeHost;
+  let reach: BridgePerson;
   try {
     const onError = (error: Error): void =>
       context.io.warn(`${chalk.yellow('!')} ${error.message}`);
+    reach =
+      context.person ??
+      bridgePerson(context.env, { ...(flags.home && { home: flags.home }), onError });
     host = await hostBridge({
       ...(flags.home && { home: flags.home }),
       env: context.env,
@@ -376,7 +393,13 @@ export async function runBridgeServe(
           ...(flags.codexSandbox && { codexSandbox: flags.codexSandbox }),
           onError,
         }),
+      rights: reach.rights,
+      person: reach.person,
       onError,
+    });
+    await reach.start().catch(async (error: unknown) => {
+      await host.close();
+      throw error;
     });
   } catch (error) {
     if (isBridgeError(error) && error.code === 'already_running') {
@@ -391,12 +414,14 @@ export async function runBridgeServe(
   context.io.print(`${chalk.green('●')} Bridge dispatcher running (pid ${host.info.pid})`);
   context.io.print(chalk.dim(`  Socket:   ${host.paths.socket}`));
   context.io.print(chalk.dim(`  Database: ${host.paths.database}`));
+  context.io.print(chalk.dim(`  What needs you: ${reach.reachedBy.join(', ')}`));
   context.io.print(chalk.dim('  Follow the letters: cogitator bridge log --follow'));
   context.io.print(chalk.dim('  Press Ctrl+C to stop'));
 
   const { stopped, dispose } = stopRequested(context);
   try {
     const reason = await Promise.race([stopped.then(() => 'asked' as const), host.stopped]);
+    await reach.stop().catch(() => undefined);
     if (reason === 'asked') {
       await host.close();
       context.io.print('Bridge dispatcher stopped');
@@ -530,11 +555,55 @@ bridgeCommand
   )
   .option('--failed', 'with --kind report: the job could not be done')
   .option('--reply-to <letter>', 'the letter this one answers')
+  .addOption(
+    new Option(
+      '--decision <decision>',
+      'with --kind answer: allow or deny a permission request, or leave it to the person'
+    ).choices(DECISIONS)
+  )
   .option(...homeOption)
   .option('--json', 'print the letter and the job as JSON')
   .showHelpAfterError(DASH_HINT)
   .action(async (text: string[], flags: BridgeSendFlags) => {
     process.exitCode = await runBridgeSend(text, flags);
+  });
+
+bridgeCommand
+  .command('asks')
+  .description('What waits for your word: permission requests and questions agents left to you')
+  .option(...homeOption)
+  .option('--json', 'print the letters as JSON')
+  .action(async (flags: BridgePersonFlags) => {
+    process.exitCode = await runBridgeAsks(flags);
+  });
+
+for (const verdict of ['allow', 'deny'] as const) {
+  bridgeCommand
+    .command(verdict)
+    .description(
+      verdict === 'allow'
+        ? 'Allow a call an agent asks your leave for'
+        : 'Refuse a call an agent asks your leave for'
+    )
+    .argument('<job-or-letter>', 'the number of the job, or the id of the letter from `asks`')
+    .argument('[reason...]', 'what the agent should know about your decision')
+    .option(...homeOption)
+    .option('--json', 'print the answer and the job as JSON')
+    .action(async (target: string, reason: string[], flags: BridgePersonFlags) => {
+      process.exitCode = await runBridgeDecide(verdict, target, reason, flags);
+    });
+}
+
+bridgeCommand
+  .command('reply')
+  .description('Answer a question an agent left to you')
+  .argument('<job-or-letter>', 'the number of the job, or the id of the letter from `asks`')
+  .argument('[text...]', 'your answer, or pipe it in')
+  .option(...homeOption)
+  .option('--json', 'print the answer and the job as JSON')
+  .showHelpAfterError(DASH_HINT)
+  .action(async (target: string, text: string[], flags: BridgePersonFlags) => {
+    process.exitCode = await runBridgeReply(target, text, flags);
   });
 
 bridgeCommand

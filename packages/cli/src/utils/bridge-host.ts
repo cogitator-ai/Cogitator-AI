@@ -5,6 +5,7 @@ import {
   type BridgeHost,
 } from '@cogitator-ai/bridge';
 import { bridgeAdapters } from './bridge-adapters.js';
+import { bridgePerson } from './bridge-person.js';
 import { BRIDGE_HOST_ENV } from './daemon.js';
 import { log } from './logger.js';
 
@@ -34,13 +35,18 @@ export async function hostBridgeInDaemon(
   if (env[BRIDGE_HOST_ENV] !== '1') return undefined;
   try {
     const onError = (error: Error): void => report.warn(`Bridge: ${error.message}`);
+    const reach = bridgePerson(env, { onError });
     const host = await hostBridge({
       env,
       adapters: adapters ?? bridgeAdapters(env, { onError }),
+      rights: reach.rights,
+      person: reach.person,
       onError,
     });
     report.info(`Bridge dispatcher hosted here (socket ${host.paths.socket})`);
-    void host.stopped.then((reason) => {
+    await reach.start().catch(onError);
+    void host.stopped.then(async (reason) => {
+      await reach.stop().catch(() => undefined);
       if (reason === 'lost') report.warn('Bridge: another dispatcher took over, this one stopped');
       if (reason === 'failed') report.warn('Bridge: the dispatcher stopped, its store failed');
     });

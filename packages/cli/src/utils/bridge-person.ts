@@ -1,0 +1,98 @@
+import { join } from 'node:path';
+import {
+  bridgePaths,
+  channelRoute,
+  inboxRoute,
+  personRoutes,
+  type ChannelPersonRoute,
+  type PersonRoute,
+  type RightsJudge,
+} from '@cogitator-ai/bridge';
+import { settingsRights } from '@cogitator-ai/bridge/rights';
+import { telegramChannel } from '@cogitator-ai/channels';
+import { experimental_FileInboxStore, experimental_Inbox } from '@cogitator-ai/core';
+import type { Channel } from '@cogitator-ai/types';
+import { UsageError } from './cli.js';
+
+/** The token of the Telegram bot the bridge reaches the person with. */
+export const BRIDGE_TELEGRAM_TOKEN_ENV = 'COGITATOR_BRIDGE_TELEGRAM_TOKEN';
+/** The Telegram chat of the person: letters go there, and only it is listened to. */
+export const BRIDGE_TELEGRAM_CHAT_ENV = 'COGITATOR_BRIDGE_TELEGRAM_CHAT';
+/** Who in that chat may answer, as Telegram user ids separated by commas. Everybody in it by default. */
+export const BRIDGE_TELEGRAM_USERS_ENV = 'COGITATOR_BRIDGE_TELEGRAM_USERS';
+
+/** The file of the bridge's inbox, in the folder of the bridge. */
+export const BRIDGE_INBOX_FILE = 'inbox.json';
+
+export interface BridgePersonSettings {
+  /** The folder of the bridge, when a flag named one */
+  home?: string;
+  /** Hears what a route could not do */
+  onError?: (error: Error) => void;
+  /** Makes the Telegram channel of a token, `telegramChannel` by default */
+  telegram?: (token: string) => Channel;
+}
+
+/** How the dispatcher of the command line reaches the person, and whose word a call needs. */
+export interface BridgePerson {
+  rights: RightsJudge;
+  person: PersonRoute;
+  /** What the person is reached by, for the lines `serve` prints */
+  reachedBy: string[];
+  /** Starts what has to listen, once the dispatcher runs */
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+/**
+ * The routes to the person the command line sets up: always the inbox file in the folder of the
+ * bridge, and a Telegram chat when `COGITATOR_BRIDGE_TELEGRAM_TOKEN` and
+ * `COGITATOR_BRIDGE_TELEGRAM_CHAT` name one. Rights are read from the permission settings of
+ * each job's project.
+ *
+ * @throws UsageError when only one of the two Telegram variables is set
+ */
+export function bridgePerson(
+  env: NodeJS.ProcessEnv = process.env,
+  settings: BridgePersonSettings = {}
+): BridgePerson {
+  const paths = bridgePaths({ ...(settings.home && { home: settings.home }), env });
+  const inboxFile = join(paths.home, BRIDGE_INBOX_FILE);
+  const inbox = new experimental_Inbox({ store: new experimental_FileInboxStore(inboxFile) });
+  const routes: PersonRoute[] = [inboxRoute(inbox)];
+  const reachedBy = ['cogitator bridge asks'];
+
+  const token = env[BRIDGE_TELEGRAM_TOKEN_ENV]?.trim();
+  const chatId = env[BRIDGE_TELEGRAM_CHAT_ENV]?.trim();
+  let chat: ChannelPersonRoute | undefined;
+  if (token && chatId) {
+    const userIds = env[BRIDGE_TELEGRAM_USERS_ENV]?.split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+    chat = channelRoute({
+      channel: (settings.telegram ?? ((given) => telegramChannel({ token: given })))(token),
+      chatId,
+      ...(userIds && userIds.length > 0 && { userIds }),
+      ...(settings.onError && { onError: settings.onError }),
+    });
+    routes.push(chat);
+    reachedBy.push(`Telegram chat ${chatId}`);
+  } else if (token || chatId) {
+    throw new UsageError(
+      `Telegram needs both ${BRIDGE_TELEGRAM_TOKEN_ENV} and ${BRIDGE_TELEGRAM_CHAT_ENV}`,
+      [`Set the one that is missing, or unset the other to do without Telegram`]
+    );
+  }
+
+  return {
+    rights: settingsRights(),
+    person: personRoutes(routes),
+    reachedBy,
+    start: async () => {
+      await chat?.start();
+    },
+    stop: async () => {
+      await chat?.stop();
+    },
+  };
+}
