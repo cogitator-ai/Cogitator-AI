@@ -826,6 +826,179 @@ describe('fake claude Stop hooks', () => {
   });
 });
 
+describe('fake claude permission dialogs', () => {
+  const settings = (value: Record<string, unknown>, file = 'settings.json') => {
+    mkdirSync(join(work, '.claude'), { recursive: true });
+    writeFileSync(join(work, '.claude', file), JSON.stringify(value));
+  };
+  const first = async (sessionId: string) =>
+    (await fakes.waitForTurn('claude', sessionId, () => true)).ran;
+
+  it('runs a command of its shell tool that a rule allows, and none that a rule denies', async () => {
+    settings({ permissions: { allow: ['Bash(echo *)', 'Bash(pwd)'], deny: ['Bash(rm:*)'] } });
+    const sessionId = await fakes.openClaudeWindow({ cwd: work });
+
+    await fakes.say(sessionId, 'bash: echo hello\nbash: pwd\nbash: rm -rf build\nrun: echo free');
+
+    expect(await first(sessionId)).toEqual([
+      { command: 'echo hello', code: 0, stdout: 'hello\n', stderr: '' },
+      { command: 'pwd', code: 0, stdout: `${work}\n`, stderr: '' },
+      {
+        command: 'rm -rf build',
+        code: null,
+        stdout: '',
+        stderr: 'Permission to use Bash has been denied.',
+        denied: true,
+      },
+      { command: 'echo free', code: 0, stdout: 'free\n', stderr: '' },
+    ]);
+  });
+
+  it('shows a dialog for a command no rule settles, and goes by what the person answers', async () => {
+    const sessionId = await fakes.openClaudeWindow({ cwd: work });
+
+    await fakes.say(sessionId, 'bash: echo one\nbash: echo two');
+    await until(
+      async () => (await sessionOf(sessionId)).waitingFor === 'permission prompt',
+      'the dialog'
+    );
+    expect(await sessionOf(sessionId)).toMatchObject({ status: 'waiting' });
+    expect(fakes.transcript('claude', sessionId)).toEqual([]);
+
+    await fakes.answerPermission(sessionId, 'allow');
+    await until(
+      async () =>
+        existsSync(join(fakes.home, 'claude', 'sessions', `${sessionId}.answer`)) === false,
+      'the answer to be taken'
+    );
+    await until(
+      async () => (await sessionOf(sessionId)).waitingFor === 'permission prompt',
+      'the second dialog'
+    );
+    await fakes.answerPermission(sessionId, 'deny');
+
+    expect((await first(sessionId)).map((run) => [run.command, run.code, run.stderr])).toEqual([
+      ['echo one', 0, ''],
+      ['echo two', null, "The user doesn't want to proceed with this tool use."],
+    ]);
+    expect(await sessionOf(sessionId)).not.toHaveProperty('waitingFor');
+    await expect(fakes.answerPermission(sessionId, 'allow')).rejects.toThrow(
+      /shows no permission dialog/
+    );
+  });
+
+  it('lists a background session with an open dialog as blocked on a permission prompt', async () => {
+    fakes.trustFolder(work);
+    const id = await background('bash: echo hi\nsay: done');
+
+    await until(async () => (await sessionOf(id)).state === 'blocked', 'the dialog');
+    expect(await sessionOf(id)).toMatchObject({
+      state: 'blocked',
+      status: 'waiting',
+      waitingFor: 'permission prompt',
+    });
+    await fakes.answerPermission(id, 'allow');
+    const turn = await fakes.waitForTurn('claude', (await sessionOf(id)).sessionId, saying('done'));
+
+    expect(turn.ran[0]).toMatchObject({ code: 0, stdout: 'hi\n' });
+    expect(await sessionOf(id)).toMatchObject({ state: 'done', status: 'idle' });
+  });
+
+  it('follows the mode: bypassPermissions runs everything a rule does not deny, dontAsk refuses what would ask', async () => {
+    fakes.trustFolder(work);
+    settings({ permissions: { deny: ['Bash(rm *)'] } });
+    const bypass = await background('bash: echo hi\nbash: rm -rf build', {
+      args: ['--permission-mode', 'bypassPermissions'],
+    });
+    const strict = await background('bash: echo hi', { args: ['--permission-mode', 'dontAsk'] });
+
+    expect(
+      (await first((await sessionOf(bypass)).sessionId)).map((run) => run.denied ?? false)
+    ).toEqual([false, true]);
+    expect(await first((await sessionOf(strict)).sessionId)).toEqual([
+      {
+        command: 'echo hi',
+        code: null,
+        stdout: '',
+        stderr: 'Permission to use Bash has been denied.',
+        denied: true,
+      },
+    ]);
+  });
+
+  it('lets a PermissionRequest hook that matches the tool decide instead of the dialog', async () => {
+    const decide =
+      'input=$(cat); echo "$input" > asked.json; case "$input" in *"echo yes"*) echo \'{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}\';; *"echo no"*) echo \'{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Not this one"}}}\';; esac';
+    settings({
+      hooks: {
+        PermissionRequest: [
+          { matcher: 'Bash', hooks: [{ type: 'command', command: decide }] },
+          { matcher: 'Edit', hooks: [{ type: 'command', command: 'touch never' }] },
+        ],
+      },
+    });
+    const sessionId = await fakes.openClaudeWindow({ cwd: work });
+
+    await fakes.say(sessionId, 'bash: echo yes\nbash: echo no\nbash: echo maybe');
+    await until(
+      async () => (await sessionOf(sessionId)).waitingFor === 'permission prompt',
+      'the dialog for what the hook left open'
+    );
+    await fakes.answerPermission(sessionId, 'allow');
+
+    expect((await first(sessionId)).map((run) => [run.command, run.code, run.stderr])).toEqual([
+      ['echo yes', 0, ''],
+      ['echo no', null, 'Not this one'],
+      ['echo maybe', 0, ''],
+    ]);
+    expect(JSON.parse(readText('asked.json'))).toEqual({
+      session_id: sessionId,
+      transcript_path: expect.stringContaining(`${sessionId}.jsonl`),
+      cwd: work,
+      permission_mode: 'default',
+      tool_name: 'Bash',
+      tool_input: { command: 'echo maybe' },
+      hook_event_name: 'PermissionRequest',
+    });
+    expect(existsSync(join(work, 'never'))).toBe(false);
+  });
+
+  it('tells the Notification hooks for permission prompts that a dialog opened', async () => {
+    settings({
+      hooks: {
+        Notification: [
+          {
+            matcher: 'permission_prompt',
+            hooks: [{ type: 'command', command: 'cat > told.json' }],
+          },
+          { matcher: 'idle_prompt', hooks: [{ type: 'command', command: 'touch never' }] },
+          { hooks: [{ type: 'command', command: 'touch every' }] },
+        ],
+      },
+    });
+    const sessionId = await fakes.openClaudeWindow({ cwd: work });
+
+    await fakes.say(sessionId, 'bash: echo hi');
+    await until(
+      () => existsSync(join(work, 'told.json')) && existsSync(join(work, 'every')),
+      'the hooks'
+    );
+    await fakes.answerPermission(sessionId, 'deny');
+    await first(sessionId);
+
+    expect(JSON.parse(readText('told.json'))).toEqual({
+      session_id: sessionId,
+      transcript_path: expect.stringContaining(`${sessionId}.jsonl`),
+      cwd: work,
+      hook_event_name: 'Notification',
+      message: 'Claude needs your permission to use Bash',
+      title: 'Permission needed',
+      notification_type: 'permission_prompt',
+    });
+    expect(existsSync(join(work, 'never'))).toBe(false);
+  });
+});
+
 describe('fake codex', () => {
   it('prints the version of the Codex command line it stands in for', async () => {
     const result = await fakes.run('codex', ['--version']);
