@@ -103,6 +103,12 @@ interface Running {
 /** How long one look for the verdict of a permission request waits before it looks again. */
 const VERDICT_POLL_MS = 60_000;
 
+/**
+ * The pause before the next look when a look came back at once without a verdict, as from a
+ * dispatcher that is closing: the wait must not turn into a loop that never rests.
+ */
+const VERDICT_RETRY_MS = 250;
+
 /** How much of a call's arguments the letter that asks leave for it shows. */
 const ARGUMENTS_SHOWN = 2_000;
 
@@ -309,13 +315,17 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
       return { approved: false, reason: asError(error).message };
     }
     while (!closed && !running.done) {
+      const asked = Date.now();
       let decision;
       try {
         decision = await bridge.verdict(hosted.agentName, { letter, timeoutMs: VERDICT_POLL_MS });
       } catch (error) {
         return { approved: false, reason: asError(error).message };
       }
-      if (decision.state === 'waiting') continue;
+      if (decision.state === 'waiting') {
+        if (Date.now() - asked < VERDICT_RETRY_MS) await pause(VERDICT_RETRY_MS);
+        continue;
+      }
       return decision.verdict === 'allow'
         ? { approved: true }
         : { approved: false, reason: `Refused by ${decision.by}: ${decision.reason}` };
