@@ -47,6 +47,20 @@ export function bridgeNotes(options: BridgeNotesOptions = {}): string {
   ].join('\n');
 }
 
+/** A text without the line breaks it ends with. */
+function withoutTrailingBreaks(text: string): string {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '\n') end -= 1;
+  return text.slice(0, end);
+}
+
+/** A text without the line breaks it starts with. */
+function withoutLeadingBreaks(text: string): string {
+  let start = 0;
+  while (start < text.length && text[start] === '\n') start += 1;
+  return text.slice(start);
+}
+
 function notesSpan(text: string): { start: number; end: number } | undefined {
   const start = text.indexOf(BRIDGE_NOTES_START);
   if (start === -1) return undefined;
@@ -68,7 +82,7 @@ export function withBridgeNotes(text: string, notes: string): string {
   const span = notesSpan(text);
   if (span) return `${text.slice(0, span.start)}${notes}${text.slice(span.end)}`;
   if (text.trim() === '') return `${notes}\n`;
-  return `${text.replace(/\n*$/, '')}\n\n${notes}\n`;
+  return `${withoutTrailingBreaks(text)}\n\n${notes}\n`;
 }
 
 /**
@@ -78,8 +92,8 @@ export function withBridgeNotes(text: string, notes: string): string {
 export function withoutBridgeNotes(text: string): string | undefined {
   const span = notesSpan(text);
   if (!span) return undefined;
-  const before = text.slice(0, span.start).replace(/\n*$/, '');
-  const after = text.slice(span.end).replace(/^\n*/, '');
+  const before = withoutTrailingBreaks(text.slice(0, span.start));
+  const after = withoutLeadingBreaks(text.slice(span.end));
   if (before === '') return after;
   return after === '' ? `${before}\n` : `${before}\n\n${after}`;
 }
