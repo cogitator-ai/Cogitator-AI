@@ -208,6 +208,8 @@ So an agent never gets leave from another agent that the other one does not have
 
 The one who asked does not get the answer as mail: it waits for it with `verdict({ letter })`, which answers the moment the request is decided. A request whose job ends first counts as refused. The same call may be asked for again once it was allowed, and is held back as a repeat once it was refused.
 
+A Claude Code session the bridge starts asks the same way. It gets a `PermissionRequest` hook (`cogitator bridge permit`), so a call its mode and rules would show the permission dialog for becomes a request on its job, and the session goes on with the verdict. A session you opened keeps its dialog, which is yours to answer. When it opens one while it carries out a job, a `Notification` hook that `cogitator bridge install` adds (`cogitator bridge stuck`) tells the bridge: the agent that handed the job over gets a note that the job stands still, and you a notice in the inbox and the chat. A background session is noticed the same way in what `claude agents --json` lists. Codex gives no such signal yet, so a thread that waits at its own approval prompt is noticed by the reply timeout.
+
 An agent can also leave a letter to the person itself: `answer` with the decision `person` (`escalate` in code) passes a question or a request on, and the person's answer goes straight to the one who asked.
 
 What waits for the person is theirs to answer from a terminal:
@@ -260,19 +262,20 @@ Folders are compared by their real path, so a project reached through a symlink 
 
 Each number is a default that `hostBridge({ limits })` changes.
 
-| Limit             | Default    | What happens                                                                                         |
-| ----------------- | ---------- | ---------------------------------------------------------------------------------------------------- |
-| Depth             | 3          | A job handed over from inside a job from inside a job is the deepest. One more is refused            |
-| Letters per job   | 60         | The job fails, both sides are told. The report that ends the job always goes through                 |
-| Time per job      | 4 hours    | The job fails, both sides are told                                                                   |
-| Reply timeout     | 30 minutes | The one who owes an answer, or did not pick a job up, is reminded. After as long again the job fails |
-| Jobs out          | 20         | An agent with that many jobs still in progress cannot hand over another                              |
-| Jobs per hour     | 60         | Handing over faster is refused as a loop                                                             |
-| Sessions starting | 2          | No more sessions are started at once                                                                 |
-| Silence           | 12 hours   | A session with no job in progress is taken for gone, unless its harness lists it or its hook waits   |
-| Session check     | 1 minute   | How often a harness that can list its sessions is asked which of them still run                      |
-| Person's answer   | 4 hours    | The person is reminded of a letter that waits for them. After as long again the job fails            |
-| Delivery          | 5 attempts | Retried with a growing wait, then left for the inbox                                                 |
+| Limit             | Default    | What happens                                                                                                             |
+| ----------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Depth             | 3          | A job handed over from inside a job from inside a job is the deepest. One more is refused                                |
+| Letters per job   | 60         | The job fails, both sides are told. The report that ends the job always goes through                                     |
+| Time per job      | 4 hours    | The job fails, both sides are told                                                                                       |
+| Reply timeout     | 30 minutes | The one who owes an answer, or did not pick a job up, is reminded. After as long again the job fails                     |
+| Jobs out          | 20         | An agent with that many jobs still in progress cannot hand over another                                                  |
+| Jobs per hour     | 60         | Handing over faster is refused as a loop                                                                                 |
+| Sessions starting | 2          | No more sessions are started at once                                                                                     |
+| Silence           | 12 hours   | A session with no job in progress is taken for gone, unless its harness lists it or its hook waits                       |
+| Session check     | 1 minute   | How often a harness that can list its sessions is asked which of them still run                                          |
+| Window notice     | 10 minutes | An agent that waits for a person at its own window is said so to whoever handed it a job, and not again within this time |
+| Person's answer   | 4 hours    | The person is reminded of a letter that waits for them. After as long again the job fails                                |
+| Delivery          | 5 attempts | Retried with a growing wait, then left for the inbox                                                                     |
 
 Two more rules have no number. A letter that says what the previous one in the same direction said is not delivered, and neither is a job the same agent already has from the caller and has not finished.
 
@@ -452,7 +455,7 @@ for (const conformance of adapterConformanceCases(target)) {
 
 ## Trust
 
-The bridge is a tool of one person on one machine. The socket and the database are created for their owner only, a folder or a database that belongs to another user is refused, and every process of that user can connect: read any job and letter, and call as a session by naming its id. A job is done inside the project it is handed over in, or the worktree its caller works in. A session the bridge starts has the rights its harness gives it: a Claude Code session the permission mode you configure (`claudeCodeAdapter({ permissionMode })`), a Codex thread the `workspace-write` sandbox unless you choose another (`codexAdapter({ sandbox })`). A letter is text from another agent, never an order from you: every letter says so in its first line, and whether a session you opened takes a job without asking you is yours to say at `cogitator bridge install` (`--take-jobs`). A tool call names its session the way a connection to the socket does, and is believed the same way. Do not point `COGITATOR_BRIDGE_HOME` at a folder other users can write to. A permission request is judged by the settings files of the job's project as they are on disk when it is asked. An answer of the person comes over the socket from a connection that named no session: the command line refuses to answer for the person from inside a session of an agent, which keeps an agent from doing so by accident and does not stop a process that hides what it is. A Telegram chat is as private as the token of its bot. On Windows the dispatcher listens on a named pipe that other users of the same machine can reach, so run it only on a machine you do not share. The Claude Code and Codex adapters run on macOS and Linux.
+The bridge is a tool of one person on one machine. The socket and the database are created for their owner only, a folder or a database that belongs to another user is refused, and every process of that user can connect: read any job and letter, and call as a session by naming its id. A job is done inside the project it is handed over in, or the worktree its caller works in. A session the bridge starts reads the whole project and changes files only in the folder of its job: a Claude Code session runs in `acceptEdits` mode unless you choose another (`claudeCodeAdapter({ permissionMode })`, `bridge serve --claude-mode`), a Codex thread in the `workspace-write` sandbox unless you choose another (`codexAdapter({ sandbox })`, `--codex-sandbox`), an agent behind a session provider in `acceptEdits`. What goes beyond that, a command, an address, a file elsewhere, is decided by the rules of the project and, where they are silent, asked through the bridge. An agent of the runtime has the permissions its own code gives it. A letter is text from another agent, never an order from you: every letter says so in its first line, and whether a session you opened takes a job without asking you is yours to say at `cogitator bridge install` (`--take-jobs`). A tool call names its session the way a connection to the socket does, and is believed the same way. Do not point `COGITATOR_BRIDGE_HOME` at a folder other users can write to. A permission request is judged by the settings files of the job's project as they are on disk when it is asked. An answer of the person comes over the socket from a connection that named no session: the command line refuses to answer for the person from inside a session of an agent, which keeps an agent from doing so by accident and does not stop a process that hides what it is. A Telegram chat is as private as the token of its bot. On Windows the dispatcher listens on a named pipe that other users of the same machine can reach, so run it only on a machine you do not share. The Claude Code and Codex adapters run on macOS and Linux.
 
 ## Errors
 

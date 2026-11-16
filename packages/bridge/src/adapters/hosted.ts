@@ -613,8 +613,9 @@ export interface ProviderSessionsOptions {
    */
   root?: string;
   /**
-   * The permission mode of every turn, `default` when absent: what the provider's rules do not
-   * settle is taken to the bridge, which asks the agent that handed the job over or the person
+   * The permission mode of every turn, `acceptEdits` when absent: the agent changes files in
+   * the folder it works in without asking, and what the provider's rules do not settle of the
+   * rest is taken to the bridge, which asks the agent that handed the job over or the person
    */
   permissionMode?: ProviderPermissionMode;
 }
@@ -662,7 +663,7 @@ export function providerSessions(options: ProviderSessionsOptions): OpenHostedSe
     ) => TurnProvider | Promise<TurnProvider>;
     const provider = shared ?? (await make(context));
     let metadata: Record<string, unknown> = {};
-    let mode = options.permissionMode ?? 'default';
+    let mode = options.permissionMode ?? 'acceptEdits';
     return {
       ...(!shared && provider.close && { close: () => provider.close?.() ?? Promise.resolve() }),
       turn(text, about) {
