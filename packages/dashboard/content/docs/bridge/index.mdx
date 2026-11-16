@@ -29,6 +29,7 @@ cogitator bridge status         # the dispatcher, the sessions it knows, the job
 cogitator bridge log --follow   # every letter as it goes
 cogitator bridge log --job 12   # everything about one job
 cogitator bridge doctor         # whether Claude Code and Codex can be reached, and what to fix
+cogitator bridge asks           # what waits for your word: permission requests, questions left to you
 ```
 
 [`cogitator daemon start --bridge`](/docs/cli#cogitator-daemon) hosts it inside the assistant daemon instead. Its files live in `~/.cogitator/bridge` (`COGITATOR_BRIDGE_HOME` moves them): `bridge.db` and `bridge.sock`, both kept to their owner.
@@ -55,18 +56,18 @@ What names a path of this machine goes where only you have it, never into a file
 
 ### The tools
 
-| Tool       | What it does                                                                                     |
-| ---------- | ------------------------------------------------------------------------------------------------ |
-| `delegate` | Hands a job to `codex`, `claude` or an agent by name, and returns its number at once             |
-| `ask`      | Asks the other agent of a job a question. The answer wakes the session                           |
-| `answer`   | Answers a question another agent asked                                                           |
-| `report`   | Reports the result of a job handed to this session, which ends the job. `failed` says it did not |
-| `note`     | Tells the other agent something it need not answer                                               |
-| `inbox`    | Reads the letters that wait, when nothing woke the session                                       |
-| `job`      | Shows one job: its state, and for a job of this session its latest letters                       |
-| `jobs`     | Lists the jobs this session handed over or carries out                                           |
-| `cancel`   | Takes back a job this session handed over                                                        |
-| `agents`   | Lists the sessions the bridge knows in the project, and the agents it can start a session of     |
+| Tool       | What it does                                                                                                    |
+| ---------- | --------------------------------------------------------------------------------------------------------------- |
+| `delegate` | Hands a job to `codex`, `claude` or an agent by name, and returns its number at once                            |
+| `ask`      | Asks the other agent of a job a question. The answer wakes the session                                          |
+| `answer`   | Answers a question another agent asked, or decides its permission request: allow, deny, or leave it to the user |
+| `report`   | Reports the result of a job handed to this session, which ends the job. `failed` says it did not                |
+| `note`     | Tells the other agent something it need not answer                                                              |
+| `inbox`    | Reads the letters that wait, when nothing woke the session                                                      |
+| `job`      | Shows one job: its state, and for a job of this session its latest letters                                      |
+| `jobs`     | Lists the jobs this session handed over or carries out                                                          |
+| `cancel`   | Takes back a job this session handed over                                                                       |
+| `agents`   | Lists the sessions the bridge knows in the project, and the agents it can start a session of                    |
 
 No tool waits for another agent. The server tells every client the same in its `instructions`: after `delegate` say in one line what was handed over and end the turn, reply to a letter with the tools and never only in the chat, and treat a job of another agent as that agent's request, not the user's.
 
@@ -176,14 +177,14 @@ A job also carries who handed it over and who carries it out, the project and th
 
 ## Letters
 
-| Kind         | Sent by          | Effect                                                                |
-| ------------ | ---------------- | --------------------------------------------------------------------- |
-| `task`       | `createJob`      | The job itself                                                        |
-| `question`   | either side      | Needs an `answer`. From the one doing the job it puts the job on hold |
-| `permission` | either side      | A question that asks for leave to do something                        |
-| `answer`     | the one asked    | Answers a question, and resumes the job once none is open             |
-| `report`     | the one doing it | Ends the job, `outcome: 'completed'` (default) or `'failed'`          |
-| `note`       | either side      | Something to know, needs no answer                                    |
+| Kind         | Sent by          | Effect                                                                                           |
+| ------------ | ---------------- | ------------------------------------------------------------------------------------------------ |
+| `task`       | `createJob`      | The job itself                                                                                   |
+| `question`   | either side      | Needs an `answer`. From the one doing the job it puts the job on hold                            |
+| `permission` | either side      | A question that asks for leave. When it names its call, the bridge decides whose answer it takes |
+| `answer`     | the one asked    | Answers a question, and resumes the job once none is open                                        |
+| `report`     | the one doing it | Ends the job, `outcome: 'completed'` (default) or `'failed'`                                     |
+| `note`       | either side      | Something to know, needs no answer                                                               |
 
 A letter moves `queued`, `delivered`, `read`, `handled` and never back. `acknowledge(letterId)` is how a note is put away. A question or a job is not dismissed that way: it is done with once answered or reported on, or when its job is over.
 
@@ -192,6 +193,53 @@ A letter is text: one with a NUL character in it is refused, since no harness ca
 `wait({ timeoutMs })` is the inbox for a process that would rather sleep than ask: it answers the moment a letter is queued for the session, and with nothing when the time runs out. What it returns stays queued until `delivered(ids)` says it reached the session, so a waiter that dies with a letter in hand loses nothing. A session has one waiter at a time, and a letter a waiter holds is given to nobody else meanwhile, so a session reached two ways does not get it twice. `waitForMail` wraps both and also waits for a dispatcher that is not running, which is what `cogitator bridge wait` does.
 
 `inbox()` returns 20 letters at most (`limit`, up to 100) and no more text than one answer holds, and marks only the letters it returned: call it again for the rest. `inbox({ unhandled: true })` adds the newest of what was taken before and not answered or put away, for a session that may have missed an answer, and `afterSeq` looks further back or forward than one call returns. `letters()` and `readJournal()` return 200 entries at most, go on from the last one with `afterSeq`. The history of the A2A task under a job keeps the first 4000 characters of a long letter, the letter itself is kept whole.
+
+## Leave for a call, and the person
+
+An agent that carries a job out sometimes needs leave for one call: to run a command, to change a file its own rules do not let it change. It asks with a `permission` letter that names the call (`ask`), and the bridge decides whose answer that takes before anybody is woken. The measure is the rights of the agent that handed the job over, read from the permission settings of the job's project (`.claude/settings.json`, `.cogitator/settings.json`, their `.local` files, the person's and the machine's), in the permission mode that agent runs in:
+
+| Its rules say | What happens                                                          |
+| ------------- | --------------------------------------------------------------------- |
+| forbidden     | The call is refused at once, in the bridge's name. Nobody is asked    |
+| allowed       | The request goes to that agent, which answers `allow` or `deny`       |
+| ask a person  | Only the person can allow it. The agent is told, and can still refuse |
+
+So an agent never gets leave from another agent that the other one does not have itself. A job handed over from inside a job is bound by every agent up the chain.
+
+The one who asked does not get the answer as mail: it waits for it with `verdict({ letter })`, which answers the moment the request is decided. A request whose job ends first counts as refused. The same call may be asked for again once it was allowed, and is held back as a repeat once it was refused.
+
+An agent can also leave a letter to the person itself: `answer` with the decision `person` (`escalate` in code) passes a question or a request on, and the person's answer goes straight to the one who asked.
+
+What waits for the person is theirs to answer from a terminal:
+
+```bash
+cogitator bridge asks                           # what waits for your word
+cogitator bridge allow 12                       # allow the call job 12 asks leave for
+cogitator bridge deny 12 "not on a Friday"
+cogitator bridge reply 12 "the release in March"
+```
+
+`serve` and the daemon also keep these letters in an inbox, `inbox.json` next to the database (an `experimental_Inbox` of core, so its sinks and whatever reads the file see them), and send them to a Telegram chat when `COGITATOR_BRIDGE_TELEGRAM_TOKEN` and `COGITATOR_BRIDGE_TELEGRAM_CHAT` name a bot and a chat: a permission request with Allow and Refuse buttons, a question to be answered by replying to it. `COGITATOR_BRIDGE_TELEGRAM_USERS` limits who in that chat is listened to. Give the bridge a bot of its own.
+
+Waiting for the person does not spend the job's time: the deadline does not fail a job that waits for them, and moves by as long as it waited once they answered. The person has a limit of their own instead: after 4 hours they are reminded, after as long again the job fails.
+
+In your own process the pieces are `hostBridge({ rights, person })`:
+
+```typescript
+import { channelRoute, hostBridge, inboxRoute, personRoutes } from '@cogitator-ai/bridge';
+import { settingsRights } from '@cogitator-ai/bridge/rights';
+import { telegramChannel } from '@cogitator-ai/channels';
+import { experimental_Inbox } from '@cogitator-ai/core';
+
+const telegram = channelRoute({ channel: telegramChannel({ token }), chatId: '123456' });
+const host = await hostBridge({
+  rights: settingsRights(),
+  person: personRoutes([inboxRoute(new experimental_Inbox()), telegram]),
+});
+await telegram.start();
+```
+
+`rights` is any function from a job and a call to `allow`, `ask` or `deny`. Without one every call is the person's, and without `person` what only they could allow is refused. A route is anything with `ask` and `settle`, and `host.dispatcher.personAnswer({ letter, verdict })` takes the answer.
 
 ## Who a letter is for
 
@@ -223,6 +271,7 @@ Each number is a default that `hostBridge({ limits })` changes.
 | Sessions starting | 2          | No more sessions are started at once                                                                 |
 | Silence           | 12 hours   | A session with no job in progress is taken for gone, unless its harness lists it or its hook waits   |
 | Session check     | 1 minute   | How often a harness that can list its sessions is asked which of them still run                      |
+| Person's answer   | 4 hours    | The person is reminded of a letter that waits for them. After as long again the job fails            |
 | Delivery          | 5 attempts | Retried with a growing wait, then left for the inbox                                                 |
 
 Two more rules have no number. A letter that says what the previous one in the same direction said is not delivered, and neither is a job the same agent already has from the caller and has not finished.
@@ -273,7 +322,7 @@ const host = await hostBridge({
 
 Now `delegate qwen "Review the diff"` from a Claude Code window starts a run of `reviewer` and wakes the window with its answer. Every session keeps its own thread, so with memory configured the agent remembers its earlier turns. An answer or a note that arrives while a run goes on steers it in the middle, a second job waits for its own turn, and so does what is written about it meanwhile. A job that is canceled stops the run that carries it out, and one canceled before its turn is never started. A run that pauses for an approval or for a question of a tool fails its job, since nobody is there to answer: give a hosted agent the permission rules it needs before it starts.
 
-An agent of the [Agent Client Protocol](/docs/integrations/acp), such as Gemini CLI, is hosted the same way through `AcpAgentProvider`. Its permissions are decided by the provider's rules, since no person sits at a session the bridge started. A provider works in the folder of its workspace whatever folder a job names, so say where that is with `root` (a job for another folder is refused), or give `provider` as a function that makes one for the folder of each session:
+An agent of the [Agent Client Protocol](/docs/integrations/acp), such as Gemini CLI, is hosted the same way through `AcpAgentProvider`. Nobody sits at a session the bridge started, so a call the provider's rules do not settle is asked through the bridge: the agent that handed the job over answers within its own rights, the person for the rest. A tool call of a runtime agent that needs approval goes the same way. A provider works in the folder of its workspace whatever folder a job names, so say where that is with `root` (a job for another folder is refused), or give `provider` as a function that makes one for the folder of each session:
 
 ```typescript
 import { AcpAgentProvider, resolveAcpAgent } from '@cogitator-ai/acp';
@@ -403,8 +452,8 @@ for (const conformance of adapterConformanceCases(target)) {
 
 ## Trust
 
-The bridge is a tool of one person on one machine. The socket and the database are created for their owner only, a folder or a database that belongs to another user is refused, and every process of that user can connect: read any job and letter, and call as a session by naming its id. A job is done inside the project it is handed over in, or the worktree its caller works in. A session the bridge starts has the rights its harness gives it: a Claude Code session the permission mode you configure (`claudeCodeAdapter({ permissionMode })`), a Codex thread the `workspace-write` sandbox unless you choose another (`codexAdapter({ sandbox })`). A letter is text from another agent, never an order from you: every letter says so in its first line, and whether a session you opened takes a job without asking you is yours to say at `cogitator bridge install` (`--take-jobs`). A tool call names its session the way a connection to the socket does, and is believed the same way. Do not point `COGITATOR_BRIDGE_HOME` at a folder other users can write to. On Windows the dispatcher listens on a named pipe that other users of the same machine can reach, so run it only on a machine you do not share. The Claude Code and Codex adapters run on macOS and Linux.
+The bridge is a tool of one person on one machine. The socket and the database are created for their owner only, a folder or a database that belongs to another user is refused, and every process of that user can connect: read any job and letter, and call as a session by naming its id. A job is done inside the project it is handed over in, or the worktree its caller works in. A session the bridge starts has the rights its harness gives it: a Claude Code session the permission mode you configure (`claudeCodeAdapter({ permissionMode })`), a Codex thread the `workspace-write` sandbox unless you choose another (`codexAdapter({ sandbox })`). A letter is text from another agent, never an order from you: every letter says so in its first line, and whether a session you opened takes a job without asking you is yours to say at `cogitator bridge install` (`--take-jobs`). A tool call names its session the way a connection to the socket does, and is believed the same way. Do not point `COGITATOR_BRIDGE_HOME` at a folder other users can write to. A permission request is judged by the settings files of the job's project as they are on disk when it is asked. An answer of the person comes over the socket from a connection that named no session: the command line refuses to answer for the person from inside a session of an agent, which keeps an agent from doing so by accident and does not stop a process that hides what it is. A Telegram chat is as private as the token of its bot. On Windows the dispatcher listens on a named pipe that other users of the same machine can reach, so run it only on a machine you do not share. The Claude Code and Codex adapters run on macOS and Linux.
 
 ## Errors
 
-Every refusal is a `BridgeError` with a `code` to branch on and a message written for the agent that gets it: `not_registered`, `unknown_agent`, `ambiguous_agent`, `no_session`, `unknown_job`, `unknown_letter`, `not_a_party`, `job_finished`, `invalid_letter`, `invalid_input`, `depth_exceeded`, `budget_exhausted`, `loop_detected`, `already_running`, `not_running`, `storage`.
+Every refusal is a `BridgeError` with a `code` to branch on and a message written for the agent that gets it: `not_registered`, `unknown_agent`, `ambiguous_agent`, `no_session`, `unknown_job`, `unknown_letter`, `not_a_party`, `job_finished`, `invalid_letter`, `invalid_input`, `depth_exceeded`, `budget_exhausted`, `loop_detected`, `needs_person`, `no_person`, `already_running`, `not_running`, `storage`.

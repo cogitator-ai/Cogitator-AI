@@ -468,6 +468,17 @@ cogitator bridge mcp                       # serve the bridge tools over MCP (st
 cogitator bridge caller --hook claude-code # tell the tools which session calls
 ```
 
+What waits for your own word is answered from a terminal that is not a session of an agent:
+
+```bash
+cogitator bridge asks                               # permission requests and questions left to you
+cogitator bridge allow <job-or-letter> [reason...]  # allow the call an agent asks leave for
+cogitator bridge deny <job-or-letter> [reason...]   # refuse it
+cogitator bridge reply <job-or-letter> [text...]    # answer a question
+```
+
+A call an agent asks leave for is yours to decide when the rules of the agent that handed the job over would have it ask you too, and a question is yours when an agent left it to you. A session that got a permission request decides it with `send --kind answer --decision allow` or `deny`, and leaves it or a question to you with `--decision person`. `serve` and the daemon also keep these letters in `inbox.json` in the folder of the bridge, and send them to a Telegram chat when `COGITATOR_BRIDGE_TELEGRAM_TOKEN` and `COGITATOR_BRIDGE_TELEGRAM_CHAT` are set: a request with Allow and Refuse buttons, a question to reply to. `COGITATOR_BRIDGE_TELEGRAM_USERS` names who in that chat may answer.
+
 `delegate` prints the number of the job and returns at once, the answer arrives as a letter. `<to>` is `codex`, `claude`, the name of an agent, or `codex:new` for a fresh session. The text of `delegate` and `send` is the arguments, or stdin when there are none or they are `-`. A text that starts with a dash goes after `--`. `send --kind report --failed` reports a job that could not be done, `--reply-to <letter>` names the letter an answer is for. All three take `--json`.
 
 `wait` is what the wake hook of a Claude Code session runs: it waits for the mail of the session (`--timeout <seconds>`, 600 by default), and when a letter comes writes it to stderr and exits with code 2, which makes Claude Code wake the session with it. With `--hook claude-code` it takes the session from what Claude Code wrote to the hook's stdin, and `--agent <name>` is the name the bridge gave a session it started. Under the letters it adds one line saying how to answer through the bridge: with the tools when `--tools` says the session has them, with the command line otherwise. Without mail it exits with 0 and prints nothing. A failure, a mistyped option included, exits with 1 and never with 2, so an error cannot wake a session. See the [Agent Bridge guide](/docs/bridge#claude-code-and-codex) for the hook itself.
