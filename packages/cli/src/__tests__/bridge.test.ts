@@ -462,6 +462,7 @@ describe('the command line', () => {
       'send',
       'serve',
       'status',
+      'stuck',
       'uninstall',
       'wait',
     ]);

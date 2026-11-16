@@ -25,6 +25,15 @@ export interface PersonLetter {
   job: BridgeJob;
 }
 
+/** Something the person should know that takes no answer through the bridge. */
+export interface PersonNotice {
+  /** The agent it is about */
+  agent: string;
+  /** The jobs that stand still because of it */
+  jobs: BridgeJob[];
+  text: string;
+}
+
 /** A letter the person is told of. */
 export interface PersonRequest extends PersonLetter {
   /** The person was told of it before and has not answered: this is the reminder */
@@ -49,6 +58,11 @@ export interface PersonRoute {
   ask(request: PersonRequest): void | Promise<void>;
   /** The letter waits no more: it was answered, by the person or not, or its job is over */
   settle(waited: PersonLetter): void | Promise<void>;
+  /**
+   * Something for the person to know: an agent waits for them at its own window, where only
+   * they can answer. A route that does not take notices leaves it out
+   */
+  tell?(notice: PersonNotice): void | Promise<void>;
 }
 
 /**
@@ -74,5 +88,6 @@ export function personRoutes(routes: readonly PersonRoute[]): PersonRoute {
     },
     ask: (request) => each((route) => route.ask(request)),
     settle: (waited) => each((route) => route.settle(waited)),
+    tell: (notice) => each((route) => route.tell?.(notice)),
   };
 }

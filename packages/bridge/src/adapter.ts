@@ -70,6 +70,11 @@ export interface LiveSession {
   name?: string;
   /** In the middle of a turn */
   busy?: boolean;
+  /**
+   * What the session waits for from a person at its window, in the words of its harness, such
+   * as `permission prompt`. Absent for a session that waits for nobody
+   */
+  waitingFor?: string;
 }
 
 /** What tells a process of a harness apart: its environment and, for a hook, what the harness wrote to it. */
@@ -160,6 +165,12 @@ export interface BridgeAdapter {
    * that of such a hook
    */
   permissionHook?(context: IdentifyContext): PermissionHookCall | undefined;
+  /**
+   * Reads what the harness wrote to a hook that runs when a session begins to wait for a person
+   * at its own window: who waits, and for what. Undefined when the input is not that of such a
+   * hook
+   */
+  stuckHook?(context: IdentifyContext): { caller: CallerIdentity; what: string } | undefined;
   /**
    * The sessions of the harness running on this machine, when the harness can list them. The
    * bridge keeps a listed session in its address book however long it is silent, and takes one

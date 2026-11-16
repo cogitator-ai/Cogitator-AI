@@ -289,6 +289,103 @@ export function claudePermitHook(options: ClaudePermitHookOptions = {}): ClaudeP
   };
 }
 
+export interface ClaudeStuckHookOptions {
+  /** How the bridge's command line is run, `cogitator bridge` by default */
+  bridgeCommand?: string;
+  /** The folder of the bridge's files, when it is not the default one */
+  bridgeHome?: string;
+}
+
+export interface ClaudeStuckHookSettings {
+  hooks: {
+    Notification: {
+      matcher: string;
+      hooks: { type: 'command'; command: string; timeout: number; async: true }[];
+    }[];
+  };
+}
+
+/** What Claude Code calls the notification of an open permission dialog. */
+const PERMISSION_PROMPT = 'permission_prompt';
+
+/** Seconds the hook that says a session waits for a person may take. */
+const STUCK_HOOK_TIMEOUT_S = 30;
+
+/** The command a hook of a Claude Code session runs when the session waits for a person. */
+export function claudeStuckCommand(options: ClaudeStuckHookOptions = {}): string {
+  return [
+    options.bridgeCommand ?? 'cogitator bridge',
+    'stuck',
+    `--hook ${HARNESSES.claudeCode}`,
+    ...(options.bridgeHome ? [`--home ${shellQuote(options.bridgeHome)}`] : []),
+  ].join(' ');
+}
+
+/**
+ * The settings that tell the bridge a Claude Code session waits for a person at its window: a
+ * `Notification` hook for permission prompts, which Claude Code runs when it opens its
+ * permission dialog. The hook runs in the background and decides nothing: it only lets the
+ * agent that handed the session a job know that the job stands still until a person answers.
+ * For the sessions a person opens, where the dialog is theirs.
+ */
+export function claudeStuckHook(options: ClaudeStuckHookOptions = {}): ClaudeStuckHookSettings {
+  return {
+    hooks: {
+      Notification: [
+        {
+          matcher: PERMISSION_PROMPT,
+          hooks: [
+            {
+              type: 'command',
+              command: claudeStuckCommand(options),
+              timeout: STUCK_HOOK_TIMEOUT_S,
+              async: true,
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+const NotificationInputSchema = z.object({
+  session_id: z.string().min(1),
+  cwd: z.string().min(1).optional(),
+  hook_event_name: z.literal('Notification'),
+  notification_type: z.string().optional(),
+  message: z.string().optional(),
+});
+
+/**
+ * What Claude Code wrote to a `Notification` hook when it opened its permission dialog: the
+ * session that waits, and what it shows. Undefined for any other input, other notifications
+ * included.
+ *
+ * @param hookInput what Claude Code wrote to the hook's stdin
+ */
+export function claudeStuckCall(
+  hookInput: string
+): { caller: CallerIdentity; what: string } | undefined {
+  let input: unknown;
+  try {
+    input = JSON.parse(hookInput);
+  } catch {
+    return undefined;
+  }
+  const parsed = NotificationInputSchema.safeParse(input);
+  if (!parsed.success || parsed.data.notification_type !== PERMISSION_PROMPT) return undefined;
+  const cwd = resolve(parsed.data.cwd ?? process.cwd());
+  return {
+    caller: {
+      harness: HARNESSES.claudeCode,
+      sessionId: parsed.data.session_id,
+      cwd,
+      project: findProjectRoot(cwd),
+    },
+    what: parsed.data.message?.trim() || 'Claude Code needs a permission',
+  };
+}
+
 const PermissionHookInputSchema = z.object({
   session_id: z.string().min(1),
   cwd: z.string().min(1).optional(),
@@ -378,6 +475,8 @@ const ListedSessionSchema = z.object({
   pid: z.number().optional(),
   status: z.string().optional(),
   state: z.string().optional(),
+  /** What a session that waits is waiting for, such as `permission prompt` */
+  waitingFor: z.string().optional(),
 });
 
 const ServersSchema = z.record(z.string(), z.unknown()).optional();
@@ -675,6 +774,7 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
               ...(session.cwd && { cwd: session.cwd }),
               ...(session.name && { name: session.name }),
               ...(session.status && { busy: session.status === 'busy' }),
+              ...(session.waitingFor && { waitingFor: session.waitingFor }),
             },
           ]
         : []
@@ -825,6 +925,8 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     toolCallHook,
     permissionHook: (context) =>
       context.hookInput === undefined ? undefined : claudePermissionCall(context.hookInput),
+    stuckHook: (context) =>
+      context.hookInput === undefined ? undefined : claudeStuckCall(context.hookInput),
     health,
   };
 }

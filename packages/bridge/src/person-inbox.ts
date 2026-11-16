@@ -44,7 +44,8 @@ function itemOf({ letter, job }: PersonLetter): InboxItemInput {
  * listens to it (a sink, Studio, a webhook) shows the letter: a permission request as an
  * approval, a question as a question. The item says which letter of the bridge it stands for
  * in `metadata.bridge`. A reminder puts the item back as unread, which tells the sinks again.
- * Once the letter waits no more, the item is marked answered and archived.
+ * Once the letter waits no more, the item is marked answered and archived. An agent that waits
+ * for the person at its own window is an item too, one that takes no answer here.
  *
  * The inbox only shows: the answer itself goes to the bridge, with `cogitator bridge allow`,
  * `deny` and `reply` or through a route that takes answers, such as `channelRoute`.
@@ -66,6 +67,14 @@ export function inboxRoute(inbox: PersonInbox): PersonRoute {
       const id = inboxItemId(letter.id);
       await inbox.claimAnswer(id);
       await inbox.archive(id);
+    },
+    async tell({ agent, jobs, text }) {
+      await inbox.add({
+        kind: 'result',
+        title: `${agent} waits for you at its own window`,
+        summary: text,
+        metadata: { bridge: { agent, jobs: jobs.map((job) => job.number) } },
+      });
     },
   };
 }
