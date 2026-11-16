@@ -341,6 +341,52 @@ describe('SqliteBridgeStore', () => {
       expect(store.countLetters({ job: 1 })).toBe(2);
       expect(store.countLetters({ kinds: [] })).toBe(0);
     });
+
+    it('keeps the call a permission request names, its verdict and who it waits for', () => {
+      const ask = {
+        tool: 'Bash',
+        access: 'command' as const,
+        command: 'git push origin main',
+        cwd: '/work/demo',
+      };
+      store.insertLetter(letterInput({ id: 'plain' }));
+      store.insertLetter(
+        letterInput({
+          id: 'request',
+          kind: 'permission',
+          ask,
+          needsPerson: true,
+          personAskedAt: at(1_000),
+        })
+      );
+      store.insertLetter(
+        letterInput({ id: 'decision', kind: 'answer', inReplyTo: 'request', verdict: 'allow' })
+      );
+
+      const ids = (filter: Parameters<typeof store.listLetters>[0]) =>
+        store.listLetters(filter).map((letter) => letter.id);
+      expect(store.getLetter('request')).toMatchObject({
+        ask,
+        needsPerson: true,
+        personAskedAt: at(1_000),
+      });
+      expect(store.getLetter('decision')).toMatchObject({ verdict: 'allow' });
+      expect(store.getLetter('plain')).not.toHaveProperty('ask');
+      expect(store.getLetter('plain')).not.toHaveProperty('needsPerson');
+      expect(ids({ needsPerson: true })).toEqual(['request']);
+      expect(ids({ needsPerson: false })).toEqual(['plain', 'decision']);
+      expect(ids({ inReplyTo: 'request' })).toEqual(['decision']);
+
+      const passed = store.updateLetter('plain', {
+        needsPerson: true,
+        personAskedAt: at(2_000),
+        remindedAt: at(3_000),
+      });
+      expect(passed).toMatchObject({ needsPerson: true, personAskedAt: at(2_000) });
+      expect(store.updateLetter('plain', { clear: ['remindedAt'] })).not.toHaveProperty(
+        'remindedAt'
+      );
+    });
   });
 
   describe('journal', () => {
@@ -613,6 +659,51 @@ describe('SqliteBridgeStore', () => {
       await expect(
         SqliteBridgeStore.open(join(dir, 'missing.db'), { readonly: true })
       ).rejects.toMatchObject({ code: 'storage' });
+    });
+
+    /** Takes a database back to schema 1: what version 2 added is dropped. */
+    async function asSchemaOne(path: string): Promise<void> {
+      const Database = (await import('better-sqlite3')).default;
+      const raw = new Database(path);
+      raw.exec(`
+        DROP INDEX letters_reply;
+        DROP INDEX letters_person;
+        ALTER TABLE letters DROP COLUMN ask;
+        ALTER TABLE letters DROP COLUMN verdict;
+        ALTER TABLE letters DROP COLUMN needs_person;
+        ALTER TABLE letters DROP COLUMN person_asked_at;
+      `);
+      raw.pragma('user_version = 1');
+      raw.close();
+    }
+
+    it('brings a database of an older schema up to date and keeps what it holds', async () => {
+      const path = join(dir, 'bridge.db');
+      const old = await SqliteBridgeStore.open(path);
+      old.insertLetter(letterInput({ id: 'kept', inReplyTo: 'before' }));
+      old.close();
+      await asSchemaOne(path);
+
+      const reader = await SqliteBridgeStore.open(path, { readonly: true });
+      expect(reader.getLetter('kept')).toMatchObject({ id: 'kept', inReplyTo: 'before' });
+      expect(reader.getLetter('kept')).not.toHaveProperty('needsPerson');
+      reader.close();
+
+      const upgraded = await SqliteBridgeStore.open(path);
+      try {
+        expect(upgraded.getLetter('kept')).toMatchObject({ id: 'kept', inReplyTo: 'before' });
+        expect(upgraded.listLetters({ inReplyTo: 'before' })).toHaveLength(1);
+        expect(upgraded.listLetters({ needsPerson: true })).toEqual([]);
+        expect(
+          upgraded.updateLetter('kept', { needsPerson: true, personAskedAt: at() })
+        ).toMatchObject({ needsPerson: true });
+      } finally {
+        upgraded.close();
+      }
+      const Database = (await import('better-sqlite3')).default;
+      const raw = new Database(path, { readonly: true });
+      expect(raw.pragma('user_version', { simple: true })).toBe(BRIDGE_SCHEMA_VERSION);
+      raw.close();
     });
 
     it('refuses a database written by a newer version', async () => {

@@ -4,6 +4,8 @@ import type {
   InboxInput,
   SendLetterInput,
   SendLetterResult,
+  VerdictInput,
+  VerdictResult,
 } from './inputs.js';
 import type { LetterFilter } from './store/store.js';
 import type {
@@ -94,6 +96,7 @@ export interface BridgeCalls {
   register(identity: CallerIdentity): Promise<AgentRecord>;
   createJob(caller: string, input: CreateJobInput): Promise<CreateJobResult>;
   send(caller: string, input: SendLetterInput): Promise<SendLetterResult>;
+  verdict(caller: string, input: VerdictInput, signal?: AbortSignal): Promise<VerdictResult>;
   inbox(caller: string, input?: InboxInput): Promise<RenderedLetter[]>;
   acknowledge(caller: string, letterId: string): Promise<Letter>;
   cancel(caller: string, job: number, reason?: string): Promise<BridgeJob>;

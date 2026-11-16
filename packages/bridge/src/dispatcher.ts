@@ -17,20 +17,28 @@ import {
   CreateJobInputSchema,
   DEFAULT_INBOX_LIMIT,
   DEFAULT_LIST_LIMIT,
+  DEFAULT_VERDICT_WAIT_MS,
   DEFAULT_WAIT_MS,
   DeliveredInputSchema,
+  EscalateInputSchema,
   InboxInputSchema,
   JobsFilterSchema,
   JournalQuerySchema,
   LettersFilterSchema,
+  PersonAnswerInputSchema,
   SendLetterInputSchema,
+  VerdictInputSchema,
   VerificationInputSchema,
   WaitInputSchema,
   type CreateJobInput,
   type CreateJobResult,
+  type EscalateInput,
   type InboxInput,
+  type PersonAnswerInput,
   type SendLetterInput,
   type SendLetterResult,
+  type VerdictInput,
+  type VerdictResult,
   type WaitEnd,
   type WaitInput,
   type WaitResult,
@@ -64,6 +72,7 @@ import {
   HarnessNameSchema,
   INBOX_DELIVERY,
   NO_CAPABILITIES,
+  PERSON,
   type AgentRecord,
   type BridgeJob,
   type BridgeJobRecord,
@@ -75,15 +84,28 @@ import {
   type JournalEntry,
   type Letter,
   type LetterKind,
+  type PermissionAsk,
   type RenderedLetter,
+  type Rights,
 } from './types.js';
 import type { BridgeAdapter, BridgeCalls, CreatedSession } from './adapter.js';
+import type { PersonRoute, RightsJudge } from './person.js';
 
 export interface BridgeDispatcherOptions {
   store: BridgeStore;
   /** How the bridge reaches the sessions of each harness. A harness without one reads its inbox */
   adapters?: readonly BridgeAdapter[];
   limits?: BridgeLimitsInput;
+  /**
+   * What the rules of the agent that handed a job over say of a call the one carrying it out
+   * asks leave for. Without it every such call is the person's to decide
+   */
+  rights?: RightsJudge;
+  /**
+   * How a letter that waits for the person reaches them. Without it nothing can be passed on to
+   * the person, and a call only they could allow is refused
+   */
+  person?: PersonRoute;
   /** Ms since the epoch, `Date.now` by default */
   now?: () => number;
   /** The id of a letter whose sender gave none */
@@ -207,6 +229,12 @@ interface Transaction {
   /** Agents with new mail */
   wake: Set<string>;
   spawns: Array<{ agent: string; job: number; letter: string }>;
+  /** Letters the person is to be told of, `again` for a reminder */
+  asked: Array<{ letter: string; again: boolean }>;
+  /** Letters that waited for the person and wait no more */
+  settled: string[];
+  /** Permission requests that got their verdict */
+  decided: Set<string>;
 }
 
 /** A call the bridge refuses after writing down why: what it wrote stays, the caller gets the error. */
@@ -281,6 +309,12 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
   private readonly letterId: () => string;
   private readonly onError: (error: Error) => void;
   private readonly assertWritable: (() => void) | undefined;
+  private readonly rights: RightsJudge | undefined;
+  private readonly person: PersonRoute | undefined;
+  /** Those waiting for the verdict of a permission request, by its id, see `verdict` */
+  private readonly verdictWaiters = new Map<string, Set<() => void>>();
+  /** What the person route is told, one thing after another */
+  private personNews: Promise<void> = Promise.resolve();
   private queue: Promise<unknown> = Promise.resolve();
   private readonly deliveries = new Map<string, Promise<void>>();
   private readonly background = new Set<Promise<void>>();
@@ -314,6 +348,8 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
     this.letterId = options.newLetterId ?? newLetterId;
     this.onError = options.onError ?? (() => undefined);
     this.assertWritable = options.assertWritable;
+    this.rights = options.rights;
+    this.person = options.person;
     for (const adapter of options.adapters ?? []) {
       const harness = parse(HarnessNameSchema, adapter.harness, 'Cannot use the adapter');
       if (this.adapters.has(harness)) {
@@ -581,13 +617,20 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
    * Sends a letter on a job to its other party: a question, an answer, a report that ends the
    * job, a note. The call returns once the bridge has the letter, the answer comes as a letter.
    *
+   * A permission request that names its call (`ask`) is judged first by the rules of the agent
+   * that handed the job over: what they forbid is refused at once, what they allow is that
+   * agent's to answer, and the rest waits for the person. So the one carrying a job out never
+   * gets leave the one who handed it over does not have. The decision comes through `verdict`.
+   *
    * @throws BridgeError `not_registered`, `unknown_job`, `not_a_party`, `job_finished`,
    * `invalid_letter`, `loop_detected` (the same letter twice in a row), `budget_exhausted` (the
-   * job ran out of letters or time, and has failed)
+   * job ran out of letters or time, and has failed), `needs_person` (an agent allowing what only
+   * the person can)
    */
   async send(caller: string, input: SendLetterInput): Promise<SendLetterResult> {
     const request = parse(SendLetterInputSchema, input, 'Cannot send the letter');
     this.checkBody(request.body);
+    const rights = request.ask ? await this.rightsFor(request.job, request.ask) : undefined;
     const outcome = await this.asCaller(caller, async (tx): Promise<SendLetterResult | Refusal> => {
       const from = this.requireCaller(caller);
 
@@ -636,7 +679,44 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
         );
       }
 
+      if (request.ask && !isAssignee) {
+        throw new BridgeError(
+          'invalid_letter',
+          `Only ${job.to}, who carries job ${job.number} out, asks leave for a call`
+        );
+      }
+
       const answered = this.answeredLetter(request, job, from.name);
+      if (request.kind === 'answer' && answered) {
+        if (answered.ask && !request.verdict) {
+          throw new BridgeError(
+            'invalid_letter',
+            `The permission request ${answered.id} takes a decision: allow or deny`,
+            { letter: answered.id }
+          );
+        }
+        if (!answered.ask && request.verdict) {
+          throw new BridgeError(
+            'invalid_letter',
+            `The ${answered.kind} ${answered.id} takes an answer in words, not a decision`,
+            { letter: answered.id }
+          );
+        }
+        if (answered.ask && answered.needsPerson && request.verdict === 'allow') {
+          const error = new BridgeError(
+            'needs_person',
+            `The permission request ${answered.id} is the person's to allow: your own rules would have you ask them too. They were asked. You can refuse it`,
+            { job: job.number, letter: answered.id }
+          );
+          this.journal(tx, {
+            type: 'letter.rejected',
+            job: job.number,
+            agent: from.name,
+            data: { reason: error.code, kind: request.kind, to, inReplyTo: answered.id },
+          });
+          return new Refusal(error);
+        }
+      }
 
       const previous = this.store.listLetters({
         job: job.number,
@@ -645,7 +725,10 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
         newestFirst: true,
         limit: 1,
       })[0];
-      if (repeats(previous, request.kind, request.body, answered?.id)) {
+      if (
+        repeats(previous, request.kind, request.body, answered?.id) &&
+        !this.wasAllowed(previous)
+      ) {
         const error = new BridgeError(
           'loop_detected',
           `This ${request.kind} says what your last letter on job ${job.number} said, so it was not delivered. Say something new, report or cancel the job`,
@@ -661,7 +744,8 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
       }
 
       const now = this.now();
-      const exhausted = exhaustedBudget(job, now, request.kind);
+      const spent = exhaustedBudget(job, now, request.kind);
+      const exhausted = spent === 'time' && this.waitsForPerson(job.number) ? undefined : spent;
       if (exhausted) {
         const reason =
           exhausted === 'letters'
@@ -689,6 +773,14 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
       }
       if (isAssignee && job.state === 'submitted') await this.pickUp(tx, job);
 
+      const forPerson = rights === 'ask' && this.person !== undefined;
+      const refused =
+        rights === 'deny'
+          ? `The rules of ${job.from} forbid this, so it is refused`
+          : rights === 'ask' && !forPerson
+            ? 'Only the person can allow this, and this bridge has no way to reach them, so it is refused'
+            : undefined;
+
       const letter = this.accept(tx, {
         id: request.id ?? this.letterId(),
         job: job.number,
@@ -698,13 +790,29 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
         body: request.body,
         ...(answered && { inReplyTo: answered.id }),
         ...(request.kind === 'report' && { outcome: request.outcome ?? 'completed' }),
-        ...(expectationOf(request.kind) === 'reply' && {
-          replyDueAt: this.iso(now + job.budget.replyTimeoutMs),
-        }),
+        ...(request.ask && { ask: request.ask }),
+        ...(request.verdict && { verdict: request.verdict }),
+        ...(forPerson && { needsPerson: true, personAskedAt: this.iso(now) }),
+        ...(expectationOf(request.kind) === 'reply' &&
+          !refused && {
+            replyDueAt: this.iso(
+              now + (forPerson ? this.limits.personReplyTimeoutMs : job.budget.replyTimeoutMs)
+            ),
+          }),
       });
       await this.patchRecord(job.taskId, { lettersUsed: job.lettersUsed + 1 });
 
-      if (answered && request.kind === 'answer') this.markHandled(tx, answered);
+      if (refused) {
+        const settled = this.refuse(tx, letter, refused);
+        return { letter: settled, job: this.requireJob(job.number).job, duplicate: false };
+      }
+      if (forPerson) tx.asked.push({ letter: letter.id, again: false });
+
+      if (answered && request.kind === 'answer') {
+        this.markHandled(tx, answered);
+        if (answered.ask) this.markHandled(tx, letter);
+        await this.giveBackTheWait(job, answered, now);
+      }
       if (request.kind === 'report') {
         const state = letter.outcome === 'failed' ? 'failed' : 'completed';
         await this.transition(tx, job.number, state, forHistory(request.body, letter.id));
@@ -720,20 +828,312 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
           forHistory(request.body, letter.id)
         );
       } else if (request.kind === 'answer' && !isAssignee) {
-        const open = this.store.countLetters({
-          job: job.number,
-          from: job.to,
-          kinds: NEEDS_ANSWER,
-          states: ['queued', 'delivered', 'read'],
-        });
-        if (open === 0 && this.requireJob(job.number).job.state === 'input-required') {
-          await this.transition(tx, job.number, 'working', forHistory(request.body, letter.id));
-        }
+        await this.resumeIfAnswered(tx, job, forHistory(request.body, letter.id));
       }
-      return { letter, job: this.requireJob(job.number).job, duplicate: false };
+      return {
+        letter: this.store.getLetter(letter.id) ?? letter,
+        job: this.requireJob(job.number).job,
+        duplicate: false,
+      };
     });
     if (outcome instanceof Refusal) throw outcome.error;
     return outcome;
+  }
+
+  /**
+   * Passes a question or a permission request addressed to the caller on to the person: the
+   * answer is theirs to give now, and goes to the one who asked. The caller can still answer it
+   * itself, except to allow a call its own rules leave to the person. Passing a letter on twice
+   * changes nothing.
+   *
+   * @throws BridgeError `unknown_letter` for a letter that is not addressed to the caller,
+   * `invalid_letter` for one that takes no answer or waits no more, `no_person` when the bridge
+   * has no way to reach the person
+   */
+  async escalate(caller: string, input: EscalateInput): Promise<Letter> {
+    const request = parse(EscalateInputSchema, input, 'Cannot pass the letter on');
+    return this.asCaller(caller, async (tx) => {
+      const agent = this.requireCaller(caller);
+      const letter = this.store.getLetter(request.letter);
+      if (letter?.to !== agent.name) {
+        throw new BridgeError(
+          'unknown_letter',
+          `There is no letter ${request.letter} addressed to you`,
+          { letter: request.letter }
+        );
+      }
+      const { job } = this.requireJob(letter.job);
+      if (
+        !NEEDS_ANSWER.includes(letter.kind) ||
+        letter.state === 'handled' ||
+        isFinishedJobState(job.state)
+      ) {
+        throw new BridgeError(
+          'invalid_letter',
+          `The ${letter.kind} ${letter.id} waits for no answer, so there is nothing to pass on`,
+          { letter: letter.id }
+        );
+      }
+      if (letter.needsPerson) return letter;
+      if (!this.person) {
+        throw new BridgeError(
+          'no_person',
+          'This bridge has no way to reach the person. Ask them yourself, in your own window',
+          { letter: letter.id }
+        );
+      }
+      const now = this.now();
+      const updated = this.store.updateLetter(letter.id, {
+        needsPerson: true,
+        personAskedAt: this.iso(now),
+        replyDueAt: this.iso(now + this.limits.personReplyTimeoutMs),
+        clear: ['remindedAt'],
+      });
+      this.journal(tx, {
+        type: 'letter.escalated',
+        job: job.number,
+        letter: letter.id,
+        agent: agent.name,
+      });
+      tx.asked.push({ letter: letter.id, again: false });
+      return updated;
+    });
+  }
+
+  /**
+   * Takes what the person said to a letter that waits for them: `allow` or `deny` for a
+   * permission request that names its call, words for anything else. The answer goes to the one
+   * who asked, signed `person`. Whoever calls this speaks for the person, so it is not served to
+   * agents: a route to the person calls it, see `PersonRoute`.
+   *
+   * @throws BridgeError `unknown_letter` when no such letter waits for the person,
+   * `invalid_letter` when it waits no more or the answer is of the wrong kind
+   */
+  async personAnswer(input: PersonAnswerInput): Promise<SendLetterResult> {
+    const request = parse(PersonAnswerInputSchema, input, "Cannot take the person's answer");
+    if (request.body !== undefined) this.checkBody(request.body);
+    return this.mutate(async (tx) => {
+      const target = this.store.getLetter(request.letter);
+      if (!target?.needsPerson || !NEEDS_ANSWER.includes(target.kind)) {
+        throw new BridgeError(
+          'unknown_letter',
+          `No letter ${request.letter} waits for the person`,
+          { letter: request.letter }
+        );
+      }
+      const { job } = this.requireJob(target.job);
+      if (target.state === 'handled' || isFinishedJobState(job.state)) {
+        throw new BridgeError(
+          'invalid_letter',
+          `The ${target.kind} ${target.id} waits no more: ${isFinishedJobState(job.state) ? `job #${job.number} is ${job.state}` : 'it is answered'}`,
+          { letter: target.id, job: job.number }
+        );
+      }
+      if (target.ask && !request.verdict) {
+        throw new BridgeError(
+          'invalid_letter',
+          `The permission request ${target.id} takes a decision: allow or deny`,
+          { letter: target.id }
+        );
+      }
+      if (!target.ask && (request.verdict || request.body === undefined)) {
+        throw new BridgeError(
+          'invalid_letter',
+          `The ${target.kind} ${target.id} takes an answer in words`,
+          { letter: target.id }
+        );
+      }
+      const body =
+        request.body ??
+        (request.verdict === 'allow' ? 'Allowed by the person' : 'Refused by the person');
+      const letter = this.accept(tx, {
+        id: this.letterId(),
+        job: job.number,
+        kind: 'answer',
+        from: PERSON,
+        to: target.from,
+        body,
+        inReplyTo: target.id,
+        ...(request.verdict && { verdict: request.verdict }),
+      });
+      this.markHandled(tx, target);
+      const sent = target.ask ? this.markHandled(tx, letter) : letter;
+      await this.giveBackTheWait(job, target, this.now());
+      await this.resumeIfAnswered(tx, job, forHistory(body, letter.id));
+      return { letter: sent, job: this.requireJob(job.number).job, duplicate: false };
+    });
+  }
+
+  /** The letters that wait for the person, oldest first, each with the text to show. */
+  async forPerson(): Promise<RenderedLetter[]> {
+    return this.enqueue(async () =>
+      this.store
+        .listLetters({ needsPerson: true, states: ['queued', 'delivered', 'read'] })
+        .map((letter) => renderLetter(letter, this.requireJob(letter.job).job))
+    );
+  }
+
+  /**
+   * Whether a permission request the caller sent is decided. Answers at once when it is,
+   * otherwise as soon as it is, or with `waiting` when `timeoutMs` passes: the caller asks
+   * again. A request whose job ended before anybody answered counts as refused.
+   *
+   * @throws BridgeError `unknown_letter` for anything but a permission request of the caller
+   * that names its call
+   */
+  async verdict(caller: string, input: VerdictInput, signal?: AbortSignal): Promise<VerdictResult> {
+    const request = parse(VerdictInputSchema, input, 'Cannot look the verdict up');
+    const timeoutMs = request.timeoutMs ?? DEFAULT_VERDICT_WAIT_MS;
+    const first = await this.asCaller(
+      caller,
+      async (): Promise<VerdictResult | { later: Promise<void> }> => {
+        const agent = this.requireCaller(caller);
+        const letter = this.store.getLetter(request.letter);
+        if (letter?.from !== agent.name || letter.kind !== 'permission' || !letter.ask) {
+          throw new BridgeError(
+            'unknown_letter',
+            `You sent no permission request ${request.letter} that names its call`,
+            { letter: request.letter }
+          );
+        }
+        const decision = this.decisionOf(letter);
+        if (decision.state === 'decided' || timeoutMs === 0 || signal?.aborted || this.closing) {
+          return decision;
+        }
+        return { later: this.untilDecided(letter.id, timeoutMs, signal) };
+      }
+    );
+    if (!('later' in first)) return first;
+    await first.later;
+    if (this.closed) return { state: 'waiting' };
+    return this.enqueue(async () => {
+      const letter = this.store.getLetter(request.letter);
+      return letter ? this.decisionOf(letter) : { state: 'waiting' };
+    });
+  }
+
+  private decisionOf(letter: Letter): VerdictResult {
+    if (letter.state !== 'handled') return { state: 'waiting' };
+    const answer = this.store
+      .listLetters({ inReplyTo: letter.id, kinds: ['answer'], newestFirst: true })
+      .find((candidate) => candidate.verdict !== undefined);
+    if (answer?.verdict) {
+      return { state: 'decided', verdict: answer.verdict, reason: answer.body, by: answer.from };
+    }
+    const { job } = this.requireJob(letter.job);
+    return {
+      state: 'decided',
+      verdict: 'deny',
+      reason: `Nobody answered before job #${job.number} was ${job.state}${job.reason ? ` (${job.reason})` : ''}`,
+      by: BRIDGE_SENDER,
+    };
+  }
+
+  /** Resolves when the request gets its verdict, `ms` pass, or `signal` aborts. */
+  private untilDecided(
+    letterId: string,
+    ms: number,
+    signal: AbortSignal | undefined
+  ): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const waiting = this.verdictWaiters.get(letterId) ?? new Set<() => void>();
+      this.verdictWaiters.set(letterId, waiting);
+      const look = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', look);
+        waiting.delete(look);
+        if (waiting.size === 0 && this.verdictWaiters.get(letterId) === waiting) {
+          this.verdictWaiters.delete(letterId);
+        }
+        resolve();
+      };
+      const timer = setTimeout(look, ms);
+      signal?.addEventListener('abort', look, { once: true });
+      waiting.add(look);
+    });
+  }
+
+  /**
+   * What the rules of the agent that handed a job over make of a call. A judge that throws, and
+   * a bridge without one, leave the call to the person: nothing is allowed by accident.
+   */
+  private async rightsFor(number: number, ask: PermissionAsk): Promise<Rights> {
+    if (!this.rights) return 'ask';
+    const task = this.store.taskOfJob(number);
+    const job = task && jobOf(task);
+    if (!job) return 'ask';
+    try {
+      return await this.rights({ job, delegator: this.store.getAgent(job.from), ask });
+    } catch (error) {
+      this.onError(asError(error));
+      return 'ask';
+    }
+  }
+
+  /** Whether a permission request was answered with `allow`: the same call may be asked for again. */
+  private wasAllowed(letter: Letter | undefined): boolean {
+    if (letter?.kind !== 'permission' || !letter.ask) return false;
+    const decision = this.decisionOf(letter);
+    return decision.state === 'decided' && decision.verdict === 'allow';
+  }
+
+  /**
+   * Refuses a permission request on the spot, in the bridge's own name: the request is done
+   * with, and its sender finds the refusal through `verdict`.
+   */
+  private refuse(tx: Transaction, request: Letter, reason: string): Letter {
+    const settled = this.markHandled(tx, request);
+    const answer = this.accept(tx, {
+      id: this.letterId(),
+      job: request.job,
+      kind: 'answer',
+      from: BRIDGE_SENDER,
+      to: request.from,
+      body: reason,
+      inReplyTo: request.id,
+      verdict: 'deny',
+    });
+    this.markHandled(tx, answer);
+    return settled;
+  }
+
+  /** Whether a letter of the job waits for the person right now. */
+  private waitsForPerson(number: number): boolean {
+    return (
+      this.store.countLetters({
+        job: number,
+        needsPerson: true,
+        states: ['queued', 'delivered', 'read'],
+      }) > 0
+    );
+  }
+
+  /**
+   * The time a job spent waiting for the person is not time its agents worked: once the letter
+   * is answered, the job's deadline moves by as long as it waited. While it waits, the deadline
+   * does not fail the job at all, the person's own time limit does.
+   */
+  private async giveBackTheWait(job: BridgeJob, answered: Letter, now: number): Promise<void> {
+    if (!answered.personAskedAt) return;
+    const waited = now - Date.parse(answered.personAskedAt);
+    if (waited <= 0) return;
+    const { job: fresh } = this.requireJob(job.number);
+    await this.patchRecord(fresh.taskId, {
+      deadlineAt: this.iso(Date.parse(fresh.deadlineAt) + waited),
+    });
+  }
+
+  /** Puts a job that waited for an answer back to work once nothing of it waits for one. */
+  private async resumeIfAnswered(tx: Transaction, job: BridgeJob, said: string): Promise<void> {
+    const open = this.store.countLetters({
+      job: job.number,
+      from: job.to,
+      kinds: NEEDS_ANSWER,
+      states: ['queued', 'delivered', 'read'],
+    });
+    if (open === 0 && this.requireJob(job.number).job.state === 'input-required') {
+      await this.transition(tx, job.number, 'working', said);
+    }
   }
 
   /**
@@ -1105,6 +1505,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
         .sort((a, b) => a.number - b.number);
       for (const late of overdue) {
         if (isFinishedJobState(this.requireJob(late.number).job.state)) continue;
+        if (this.waitsForPerson(late.number)) continue;
         await this.failJob(tx, late.number, ranOutOfTime(late));
         failed.push(late.number);
       }
@@ -1115,6 +1516,31 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
         const { job } = this.requireJob(letter.job);
         if (isFinishedJobState(job.state) || fresh.state === 'handled') {
           this.store.updateLetter(letter.id, { clear: ['replyDueAt'] });
+          continue;
+        }
+        if (fresh.needsPerson) {
+          const patience = this.limits.personReplyTimeoutMs;
+          if (!fresh.remindedAt) {
+            this.store.updateLetter(letter.id, {
+              remindedAt: this.iso(now),
+              replyDueAt: this.iso(now + patience),
+            });
+            tx.asked.push({ letter: letter.id, again: true });
+            this.journal(tx, {
+              type: 'letter.reminded',
+              job: job.number,
+              letter: letter.id,
+              agent: PERSON,
+            });
+            reminded.push(letter.id);
+            continue;
+          }
+          await this.failJob(
+            tx,
+            job.number,
+            `the person did not answer the ${letter.kind} ${letter.id} in ${formatDuration(2 * patience)}`
+          );
+          failed.push(job.number);
           continue;
         }
         const pickup = expectationOf(letter.kind) === 'pickup';
@@ -1295,6 +1721,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
   async close(): Promise<void> {
     this.closing = true;
     for (const waiter of [...this.waiters.values()]) waiter.end('closed');
+    for (const letter of [...this.verdictWaiters.keys()]) this.announce(letter);
     await this.idle();
     await Promise.all(
       [...this.adapters.values()].map(async (adapter) => {
@@ -1344,7 +1771,14 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
   }
 
   private async transact<T>(work: (tx: Transaction) => Promise<T>): Promise<T> {
-    const tx: Transaction = { entries: [], wake: new Set(), spawns: [] };
+    const tx: Transaction = {
+      entries: [],
+      wake: new Set(),
+      spawns: [],
+      asked: [],
+      settled: [],
+      decided: new Set(),
+    };
     const result = await this.store.transaction(() => {
       this.assertWritable?.();
       return work(tx);
@@ -1360,7 +1794,49 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
       for (const spawn of tx.spawns) this.startSession(spawn.agent, spawn.job, spawn.letter);
     }
     for (const agent of tx.wake) this.wake(agent);
+    for (const letter of tx.decided) this.announce(letter);
+    this.tellPerson(tx);
     return result;
+  }
+
+  /** Lets those who wait for the verdict of a permission request look again. */
+  private announce(letterId: string): void {
+    const waiting = this.verdictWaiters.get(letterId);
+    if (!waiting) return;
+    this.verdictWaiters.delete(letterId);
+    for (const look of waiting) look();
+  }
+
+  /**
+   * Hands the person route what a call changed for it, after the call is stored and in the
+   * order it happened. A route that throws stops nothing: the letter still waits in the bridge.
+   */
+  private tellPerson(tx: Pick<Transaction, 'asked' | 'settled'>): void {
+    const route = this.person;
+    if (!route || this.closing || tx.asked.length + tx.settled.length === 0) return;
+    const rendered = (id: string) => {
+      const letter = this.store.getLetter(id);
+      if (!letter) return undefined;
+      const { job } = this.requireJob(letter.job);
+      return { letter: renderLetter(letter, job), job };
+    };
+    const news: Array<() => void | Promise<void>> = [];
+    const settled = new Set(tx.settled);
+    for (const { letter: id, again } of tx.asked) {
+      if (settled.has(id)) continue;
+      const found = rendered(id);
+      if (found) news.push(() => route.ask({ ...found, again }));
+    }
+    for (const id of settled) {
+      const found = rendered(id);
+      if (found) news.push(() => route.settle(found.letter, found.job));
+    }
+    for (const tell of news) {
+      this.personNews = this.personNews.then(tell).catch((error: unknown) => {
+        this.onError(asError(error));
+      });
+    }
+    this.track(this.personNews);
   }
 
   private journal(tx: Transaction, entry: Omit<JournalEntry, 'seq' | 'at'>): void {
@@ -1574,7 +2050,18 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
   private accept(
     tx: Transaction,
     fields: Pick<Letter, 'id' | 'job' | 'kind' | 'from' | 'to' | 'body'> &
-      Partial<Pick<Letter, 'inReplyTo' | 'outcome' | 'replyDueAt'>>
+      Partial<
+        Pick<
+          Letter,
+          | 'inReplyTo'
+          | 'outcome'
+          | 'replyDueAt'
+          | 'ask'
+          | 'verdict'
+          | 'needsPerson'
+          | 'personAskedAt'
+        >
+      >
   ): Letter {
     const letter = this.store.insertLetter({
       ...fields,
@@ -1594,6 +2081,9 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
         body: letter.body,
         ...(letter.inReplyTo && { inReplyTo: letter.inReplyTo }),
         ...(letter.outcome && { outcome: letter.outcome }),
+        ...(letter.ask && { ask: letter.ask }),
+        ...(letter.verdict && { verdict: letter.verdict }),
+        ...(letter.needsPerson && { needsPerson: true }),
       },
     });
     tx.wake.add(letter.to);
@@ -1702,6 +2192,8 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
       letter: letter.id,
       agent: letter.to,
     });
+    if (letter.needsPerson) tx.settled.push(letter.id);
+    if (letter.kind === 'permission' && letter.ask) tx.decided.add(letter.id);
     return updated;
   }
 

@@ -77,6 +77,10 @@ export interface LetterFilter {
   attemptsBelow?: number;
   /** Letters whose recipient had to react at or before this time, ms since the epoch */
   replyDueBy?: number;
+  /** Letters that wait for the person, or only those that do not */
+  needsPerson?: boolean;
+  /** Letters that reply to this one */
+  inReplyTo?: string;
   limit?: number;
   /** Newest first instead of oldest first */
   newestFirst?: boolean;
@@ -103,10 +107,12 @@ export type LetterPatch = Partial<
     | 'nextAttemptAt'
     | 'replyDueAt'
     | 'remindedAt'
+    | 'needsPerson'
+    | 'personAskedAt'
   >
 > & {
   /** Fields to clear */
-  clear?: ReadonlyArray<'lastError' | 'nextAttemptAt' | 'replyDueAt'>;
+  clear?: ReadonlyArray<'lastError' | 'nextAttemptAt' | 'replyDueAt' | 'remindedAt'>;
 };
 
 /**

@@ -88,7 +88,31 @@ export function renderLetter(letter: Letter, job: Pick<BridgeJob, 'title'>): Ren
       line.replace(/^[\s\p{Cf}\p{Cc}]+/u, '').startsWith(SIGNATURE_MARK) ? `> ${line}` : line
     )
     .join('\n');
-  return { ...letter, text: `${signatureOf(letter, job)}\n${body}` };
+  const whose = whoseAnswer(letter);
+  return {
+    ...letter,
+    text: `${signatureOf(letter, job)}\n${body}${whose ? `\n${SIGNATURE_MARK} ${whose}` : ''}`,
+  };
+}
+
+/**
+ * The line the bridge adds under a letter whose answer is not simply its recipient's to give:
+ * a permission request that names its call, and anything that waits for the person. It starts
+ * like a signature, which no line of a body can.
+ */
+function whoseAnswer(
+  letter: Pick<Letter, 'kind' | 'ask' | 'needsPerson' | 'state' | 'from'>
+): string | undefined {
+  if (letter.state === 'handled') return undefined;
+  if (letter.kind === 'permission' && letter.ask) {
+    return letter.needsPerson
+      ? "This is the person's to allow: your own rules would have you ask them too, and they were asked. You may refuse it: answer with the decision deny."
+      : 'Yours to decide: answer with the decision allow or deny, or pass it to the person.';
+  }
+  if (letter.needsPerson) {
+    return `The person was asked. Their answer goes to ${letter.from}.`;
+  }
+  return undefined;
 }
 
 /** How much of a letter the history of the A2A task under a job keeps. */

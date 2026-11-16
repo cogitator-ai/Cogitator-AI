@@ -7,6 +7,12 @@ export const BRIDGE_JOB_KEY = 'cogitator:bridge';
 /** The sender of letters the bridge writes itself: reminders, and news of a job that ended. */
 export const BRIDGE_SENDER = 'bridge';
 
+/**
+ * The person at the machine, as the sender of an answer they gave. No agent carries this name:
+ * a session cannot sign a letter with it
+ */
+export const PERSON = 'person';
+
 /** Harnesses the bridge knows by name. Any other string names a harness an adapter brings. */
 export const HARNESSES = {
   claudeCode: 'claude-code',
@@ -226,6 +232,56 @@ export interface BridgeJob extends BridgeJobRecord {
   updatedAt: string;
 }
 
+/** What a call needs leave for, in the terms permission rules are written in. */
+export type PermissionAccess = 'command' | 'read' | 'edit' | 'fetch' | 'other';
+
+export const PERMISSION_ACCESSES: readonly PermissionAccess[] = [
+  'command',
+  'read',
+  'edit',
+  'fetch',
+  'other',
+];
+
+/**
+ * A call an agent asks leave for, in a form the rules of any harness can judge. What a reader
+ * sees is the body of the letter that carries it
+ */
+export interface PermissionAsk {
+  /** The tool as the agent's harness names it: `Bash`, `Edit`, `mcp__github__create_issue` */
+  tool: string;
+  access: PermissionAccess;
+  /** Of a `command`: the command line */
+  command?: string;
+  /** Of a `command`: the folder it runs in */
+  cwd?: string;
+  /** Of a `read` or an `edit`: the files, absolute */
+  paths?: string[];
+  /** Of a `fetch`: the address */
+  url?: string;
+}
+
+export const PermissionAskSchema = z.strictObject({
+  tool: OneLineSchema,
+  access: z.enum(['command', 'read', 'edit', 'fetch', 'other']),
+  command: z.string().min(1).max(100_000).optional(),
+  cwd: AbsolutePathSchema.optional(),
+  paths: z.array(AbsolutePathSchema).max(1000).optional(),
+  url: z.string().min(1).max(8192).optional(),
+});
+
+/** The answer to a permission request. */
+export type Verdict = 'allow' | 'deny';
+
+export const VERDICTS: readonly Verdict[] = ['allow', 'deny'];
+
+/**
+ * What the rules of the agent that handed a job over say of a call the one carrying it out asks
+ * leave for: `allow`, it may do this itself, so the answer is its own to give, `deny`, its rules
+ * forbid it, `ask`, it would have to ask the person, so only the person can allow it
+ */
+export type Rights = 'allow' | 'ask' | 'deny';
+
 /**
  * `task`: the job itself, `question` and `permission`: need an `answer`, `report`: the result
  * that ends the job, `note`: something to know that needs no answer
@@ -267,6 +323,14 @@ export interface Letter {
   inReplyTo?: string;
   /** Of a `report`: how it ends the job */
   outcome?: ReportOutcome;
+  /** Of a `permission`: the call leave is asked for, when the request names one */
+  ask?: PermissionAsk;
+  /** Of an `answer` to a `permission` that names its call: whether it may go ahead */
+  verdict?: Verdict;
+  /** The answer is the person's to give, not the recipient's */
+  needsPerson?: boolean;
+  /** ISO 8601 time the letter began to wait for the person */
+  personAskedAt?: string;
   state: DeliveryState;
   /** ISO 8601 */
   createdAt: string;
@@ -302,7 +366,8 @@ export type JournalEntryType =
   | 'letter.handled'
   | 'letter.rejected'
   | 'letter.undelivered'
-  | 'letter.reminded';
+  | 'letter.reminded'
+  | 'letter.escalated';
 
 /** One line of the bridge's append-only journal. */
 export interface JournalEntry {
@@ -349,6 +414,12 @@ export interface BridgeLimits {
   maxStartingSessions: number;
   /** How often adapters that can list their sessions are asked which of them still run */
   presenceCheckMs: number;
+  /**
+   * How long a letter waits for the person before they are reminded, and after that before the
+   * job fails, in ms. A person is slower than an agent, so it is longer than the job's own
+   * `replyTimeoutMs`
+   */
+  personReplyTimeoutMs: number;
 }
 
 export const BridgeLimitsSchema = z.strictObject({
@@ -370,6 +441,11 @@ export const BridgeLimitsSchema = z.strictObject({
   jobsPerHour: z.number().int().positive().max(100_000),
   maxStartingSessions: z.number().int().positive().max(100),
   presenceCheckMs: z.number().int().positive().max(86_400_000),
+  personReplyTimeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .max(7 * 86_400_000),
 });
 
 export const DEFAULT_LIMITS: BridgeLimits = {
@@ -387,4 +463,5 @@ export const DEFAULT_LIMITS: BridgeLimits = {
   jobsPerHour: 60,
   maxStartingSessions: 2,
   presenceCheckMs: 60_000,
+  personReplyTimeoutMs: 4 * 3_600_000,
 };
