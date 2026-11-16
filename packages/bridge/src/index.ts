@@ -186,5 +186,15 @@ export type {
 } from './adapters/hosted.js';
 export { CommandMissingError, shellQuote } from './adapters/exec.js';
 
+export { claudeSetup, codexSetup } from './setup/index.js';
+export type {
+  AdapterSetup,
+  ClaudeSetupOptions,
+  CodexSetupOptions,
+  InstallContext,
+  SetupContext,
+  SetupStep,
+} from './setup/index.js';
+
 export { mailText, waitForMail } from './waiter.js';
 export type { WaitForMailOptions, WaitForMailResult } from './waiter.js';

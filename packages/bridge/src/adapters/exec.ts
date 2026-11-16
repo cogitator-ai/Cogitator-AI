@@ -126,6 +126,18 @@ const SURROUNDING_SESSION_ENV = [
 ];
 
 /**
+ * An environment without what tells of a session it was taken from: for a command of a harness
+ * that must act for the person, not for the session the bridge happens to be run from.
+ */
+export function outsideSessionEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
+  for (const { variable } of HARNESS_SESSION_ENV) delete env[variable];
+  for (const variable of SURROUNDING_SESSION_ENV) delete env[variable];
+  for (const variable of [HARNESS_ENV, AGENT_NAME_ENV, SESSION_NAME_ENV]) delete env[variable];
+  return env;
+}
+
+/**
  * The environment of a session the bridge starts: what belongs to the session the dispatcher
  * itself may run in is taken out (the new session gets its own from its harness), and the
  * bridge's name for the session goes in, so its first call is recognized.
@@ -134,10 +146,7 @@ export function sessionEnv(
   base: NodeJS.ProcessEnv,
   session: { harness: string; agentName: string; sessionName?: string }
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...base };
-  for (const { variable } of HARNESS_SESSION_ENV) delete env[variable];
-  for (const variable of SURROUNDING_SESSION_ENV) delete env[variable];
-  delete env[SESSION_NAME_ENV];
+  const env = outsideSessionEnv(base);
   env[HARNESS_ENV] = session.harness;
   env[AGENT_NAME_ENV] = session.agentName;
   if (session.sessionName) env[SESSION_NAME_ENV] = session.sessionName;
