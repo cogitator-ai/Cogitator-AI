@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApprovalDecision, ToolApprovalRequest } from '@cogitator-ai/types';
 import {
   cogitatorSessions,
@@ -606,6 +606,21 @@ describe('a call a hosted agent asks leave for', () => {
       reason:
         'Job 1 is canceled (canceled by claude@demo: Not needed). Hand over a new job to go on',
     });
+  });
+
+  it('keeps looking for the verdict, and rests between looks that come back at once', async () => {
+    const { bridge, claude, approve } = await working({ rights: () => 'allow' });
+    const looks = vi.spyOn(bridge, 'verdict');
+    looks.mockResolvedValueOnce({ state: 'waiting' }).mockResolvedValueOnce({ state: 'waiting' });
+    const started = Date.now();
+
+    const waiting = approve(PUSH);
+    await settle(kit);
+    await bridge.send(claude.name, { job: 1, kind: 'answer', body: 'Go', verdict: 'allow' });
+
+    expect(await waiting).toEqual({ approved: true });
+    expect(looks).toHaveBeenCalledTimes(3);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(450);
   });
 
   it('says what a call touches, from the name of its tool and its arguments', () => {
