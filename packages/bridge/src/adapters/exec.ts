@@ -154,22 +154,31 @@ export function fitsArgument(text: string): boolean {
   return Buffer.byteLength(text, 'utf8') <= MAX_ARGUMENT_BYTES;
 }
 
+export interface TooLongNoticeOptions {
+  /** How the session runs the bridge's command line, `cogitator bridge` by default */
+  bridgeCommand?: string;
+  /** The folder of the bridge's files, when it is not the default one */
+  bridgeHome?: string;
+  /** Whether sessions of the harness may have the bridge's tools: the notice names them first */
+  tools?: boolean;
+}
+
 /**
  * What a session gets in place of a letter too long for an argument: the letter's signature and
- * how to read the rest, with the bridge's command line as the session can run it. The letter
- * itself stays unread in the session's inbox.
+ * how to read the rest, with the bridge's tool where sessions have the tools, and its command
+ * line as the session can run it. The letter itself stays unread in the session's inbox.
  */
-export function tooLongNotice(
-  letter: RenderedLetter,
-  bridgeCommand = 'cogitator bridge',
-  bridgeHome?: string
-): string {
+export function tooLongNotice(letter: RenderedLetter, options: TooLongNoticeOptions = {}): string {
   const signature = letter.text.split('\n', 1)[0];
+  const command =
+    `${options.bridgeCommand ?? 'cogitator bridge'} inbox --job ${letter.job}` +
+    (options.bridgeHome ? ` --home ${shellQuote(options.bridgeHome)}` : '');
   return (
     `${signature}\n` +
     `This letter is ${letter.body.length} characters long, too long to hand over here. ` +
-    `Read it from the bridge: ${bridgeCommand} inbox --job ${letter.job}` +
-    (bridgeHome ? ` --home ${shellQuote(bridgeHome)}` : '')
+    (options.tools
+      ? `Read it with the inbox tool of the bridge (job ${letter.job}), or from a shell: ${command}`
+      : `Read it from the bridge: ${command}`)
   );
 }
 

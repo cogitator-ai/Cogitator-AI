@@ -324,6 +324,7 @@ describe('the scripted model', () => {
         { command: 'pwd', code: 0, stdout: `${work}\n`, stderr: '' },
         { command: 'echo out; echo err >&2; exit 3', code: 3, stdout: 'out\n', stderr: 'err\n' },
       ],
+      tools: [],
       answer: 'last',
       wokenBy: 'exec',
     });
@@ -940,7 +941,7 @@ describe('fake codex', () => {
       { stdout: `${sandboxed.threadId}|read-only|kept` },
     ]);
     expect(fakes.transcript('codex', free.threadId)[0].ran).toMatchObject([
-      { stdout: `${free.threadId}||kept` },
+      { stdout: `${free.threadId}|read-only|kept` },
     ]);
   });
 

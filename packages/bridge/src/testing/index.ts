@@ -12,5 +12,6 @@ export type {
   FakeCommandRun,
   FakeHarnessOptions,
   FakeHarnesses,
+  FakeToolRun,
   FakeTurn,
 } from './fake-harnesses.js';

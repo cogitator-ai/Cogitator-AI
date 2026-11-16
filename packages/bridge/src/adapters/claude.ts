@@ -11,7 +11,8 @@ import type {
   LiveSession,
   SessionRequest,
 } from '../adapter.js';
-import { findProjectRoot } from '../paths.js';
+import { canonicalPath, findProjectRoot } from '../paths.js';
+import { TOOL_CALL_HINT_KEY, type ToolCallHint } from '../tools/caller.js';
 import { HARNESSES, type CallerIdentity } from '../types.js';
 import {
   CommandMissingError,
@@ -23,6 +24,7 @@ import {
   shellQuote,
   tooLongNotice,
 } from './exec.js';
+import { BRIDGE_TOOLS_SERVER, toolsServerEnv, type ToolsServerCommand } from './tools-server.js';
 
 /** How letters reach a Claude Code session: a hook of the session waits for them. */
 export const CLAUDE_DELIVERY = 'hook';
@@ -42,6 +44,8 @@ export interface ClaudeWaitHookOptions {
   agentName?: string;
   /** The folder of the bridge's files, when it is not the default one */
   bridgeHome?: string;
+  /** Whether the session has the bridge's tools: the waiter then says to answer with them */
+  tools?: boolean;
 }
 
 export interface ClaudeHookSettings {
@@ -69,6 +73,7 @@ export function claudeWaitCommand(options: ClaudeWaitHookOptions = {}): string {
     `--timeout ${waitS}`,
     ...(options.agentName ? [`--agent ${shellQuote(options.agentName)}`] : []),
     ...(options.bridgeHome ? [`--home ${shellQuote(options.bridgeHome)}`] : []),
+    ...(options.tools ? ['--tools'] : []),
   ].join(' ');
 }
 
@@ -110,23 +115,118 @@ export function hasClaudeWaitHook(settings: unknown): boolean {
   );
 }
 
-const SettingsSchema = z.object({
-  hooks: z
-    .object({
-      Stop: z
-        .array(
-          z.object({
-            hooks: z
-              .array(
-                z.object({ command: z.string().optional(), asyncRewake: z.boolean().optional() })
-              )
-              .optional(),
-          })
-        )
+const HookGroupsSchema = z
+  .array(
+    z.object({
+      hooks: z
+        .array(z.object({ command: z.string().optional(), asyncRewake: z.boolean().optional() }))
         .optional(),
     })
-    .optional(),
+  )
+  .optional();
+
+const SettingsSchema = z.object({
+  hooks: z.object({ Stop: HookGroupsSchema, PreToolUse: HookGroupsSchema }).optional(),
 });
+
+/** How a Claude Code session names the tools of the bridge's server, and what rules match them by. */
+export const CLAUDE_TOOLS_PREFIX = `mcp__${BRIDGE_TOOLS_SERVER}`;
+
+/** The permission rule that lets a session call the bridge's tools without a prompt. */
+export const CLAUDE_TOOLS_PERMISSION = CLAUDE_TOOLS_PREFIX;
+
+/** Seconds the hook that names the session of a tool call may take. */
+const CALLER_HOOK_TIMEOUT_S = 15;
+
+export interface ClaudeToolsHookOptions {
+  /** How the bridge's command line is run, `cogitator bridge` by default */
+  bridgeCommand?: string;
+}
+
+export interface ClaudeToolsHookSettings {
+  hooks: {
+    PreToolUse: {
+      matcher: string;
+      hooks: { type: 'command'; command: string; timeout: number }[];
+    }[];
+  };
+}
+
+/** The command a hook of a Claude Code session runs before a call of a bridge tool. */
+export function claudeCallerCommand(options: ClaudeToolsHookOptions = {}): string {
+  return `${options.bridgeCommand ?? 'cogitator bridge'} caller --hook ${HARNESSES.claudeCode}`;
+}
+
+/**
+ * The settings that tell the bridge's tools which Claude Code session calls them: a `PreToolUse`
+ * hook on the tools of the bridge's server that adds the session to the arguments of the call.
+ * Claude Code starts the server once and keeps it across `/clear`, so the session the server was
+ * started for is not always the one that calls. Without the hook the tools go by that first
+ * session.
+ */
+export function claudeToolsHook(options: ClaudeToolsHookOptions = {}): ClaudeToolsHookSettings {
+  return {
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: `${CLAUDE_TOOLS_PREFIX}__.*`,
+          hooks: [
+            {
+              type: 'command',
+              command: claudeCallerCommand(options),
+              timeout: CALLER_HOOK_TIMEOUT_S,
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+/** Whether Claude Code settings hold the hook that names the session of a bridge tool call. */
+export function hasClaudeToolsHook(settings: unknown): boolean {
+  const parsed = SettingsSchema.safeParse(settings);
+  if (!parsed.success) return false;
+  return (parsed.data.hooks?.PreToolUse ?? []).some((group) =>
+    (group.hooks ?? []).some((hook) => /\bbridge\s+caller\b/.test(hook.command ?? ''))
+  );
+}
+
+const ToolHookInputSchema = z.object({
+  session_id: z.string().min(1),
+  cwd: z.string().min(1).optional(),
+  tool_input: z.record(z.string(), z.unknown()),
+});
+
+/**
+ * What the hook of `claudeToolsHook` answers Claude Code with: the arguments of the call with
+ * the session that makes it added (`hookSpecificOutput.updatedInput`). Undefined when the input
+ * is not that of a `PreToolUse` hook, and the call goes on as the model wrote it.
+ *
+ * @param hookInput what Claude Code wrote to the hook's stdin
+ */
+export function claudeToolCallHook(hookInput: string): string | undefined {
+  let input: unknown;
+  try {
+    input = JSON.parse(hookInput);
+  } catch {
+    return undefined;
+  }
+  const parsed = ToolHookInputSchema.safeParse(input);
+  if (!parsed.success) return undefined;
+  const { session_id: session, cwd, tool_input: args } = parsed.data;
+  const hint: ToolCallHint = {
+    harness: HARNESSES.claudeCode,
+    session,
+    ...(cwd && { cwd: resolve(cwd) }),
+  };
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      updatedInput: { ...args, [TOOL_CALL_HINT_KEY]: hint },
+    },
+  });
+}
 
 const HookInputSchema = z.object({
   session_id: z.string().min(1),
@@ -142,11 +242,58 @@ const ListedSessionSchema = z.object({
   status: z.string().optional(),
 });
 
+const ServersSchema = z.record(z.string(), z.unknown()).optional();
+
 const TrustConfigSchema = z.object({
   projects: z
-    .record(z.string(), z.object({ hasTrustDialogAccepted: z.boolean().optional() }))
+    .record(
+      z.string(),
+      z.object({ hasTrustDialogAccepted: z.boolean().optional(), mcpServers: ServersSchema })
+    )
     .optional(),
+  mcpServers: ServersSchema,
 });
+
+const ProjectServersSchema = z.object({ mcpServers: ServersSchema });
+
+/**
+ * Where Claude Code has the bridge's server of tools for the sessions of a folder: `local`
+ * (this person, this project), `project` (the project's `.mcp.json`) or `user` (this person,
+ * every project). Undefined when it has it nowhere.
+ */
+export function claudeToolsScope(
+  folder: string,
+  configPath = join(homedir(), '.claude.json')
+): 'local' | 'project' | 'user' | undefined {
+  const config = TrustConfigSchema.safeParse(readJson(configPath));
+  const projects = config.success ? (config.data.projects ?? {}) : {};
+  const folders = spellingsOf(folder).flatMap((start) => {
+    const up: string[] = [];
+    for (let current = start; ; current = dirname(current)) {
+      up.push(current);
+      if (dirname(current) === current) return up;
+    }
+  });
+  if (folders.some((dir) => projects[dir]?.mcpServers?.[BRIDGE_TOOLS_SERVER] !== undefined)) {
+    return 'local';
+  }
+  const shared = folders.some((dir) => {
+    const file = ProjectServersSchema.safeParse(readJson(join(dir, '.mcp.json')));
+    return file.success && file.data.mcpServers?.[BRIDGE_TOOLS_SERVER] !== undefined;
+  });
+  if (shared) return 'project';
+  return config.success && config.data.mcpServers?.[BRIDGE_TOOLS_SERVER] !== undefined
+    ? 'user'
+    : undefined;
+}
+
+/**
+ * The ways a folder may be written in what Claude Code keeps: by its real path, which is how
+ * Claude Code names a project, and as it was given.
+ */
+function spellingsOf(folder: string): string[] {
+  return [...new Set([canonicalPath(folder), resolve(folder)])];
+}
 
 export type ClaudeTrust = 'trusted' | 'untrusted' | 'unknown';
 
@@ -205,7 +352,16 @@ export interface ClaudeCodeAdapterOptions {
   userSettingsPath?: string;
   /** How long a started session may take to show up among the running ones, 30 s by default */
   sessionListedMs?: number;
+  /**
+   * How a session starts the bridge's server of tools. With it the sessions the adapter starts
+   * get the tools, the hook that tells the tools which session calls, and the permission to call
+   * them. Without it they use the bridge's command line
+   */
+  toolsServer?: ToolsServerCommand;
 }
+
+/** What sets a project up for the sessions a person opens in it. */
+const INSTALL = 'cogitator bridge install claude';
 
 const DEFAULT_SESSION_LISTED_MS = 30_000;
 const LISTING_INTERVAL_MS = 300;
@@ -276,19 +432,44 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
   async function createSession(request: SessionRequest): Promise<CreatedSession> {
     if (claudeTrust(request.cwd, configPath) === 'untrusted') throw untrusted(request.cwd);
     const whole = fitsArgument(request.firstLetter.text);
-    const settings = claudeWaitHook({ ...hook, agentName: request.agentName });
+    const tools = options.toolsServer;
+    const waits = claudeWaitHook({ ...hook, agentName: request.agentName, tools: !!tools });
+    const settings = tools
+      ? {
+          hooks: { ...waits.hooks, ...claudeToolsHook(hook).hooks },
+          permissions: { allow: [CLAUDE_TOOLS_PERMISSION] },
+        }
+      : waits;
+    const servers = tools && {
+      mcpServers: {
+        [BRIDGE_TOOLS_SERVER]: {
+          command: tools.command,
+          args: [...tools.args],
+          env: toolsServerEnv({
+            harness: HARNESSES.claudeCode,
+            agentName: request.agentName,
+            ...(request.sessionName && { sessionName: request.sessionName }),
+          }),
+        },
+      },
+    };
     const result = await runCommand(
       command,
       [
         '--bg',
         '--settings',
         JSON.stringify(settings),
+        ...(servers ? ['--mcp-config', JSON.stringify(servers)] : []),
         ...(request.sessionName ? ['--name', request.sessionName] : []),
         ...(options.permissionMode ? ['--permission-mode', options.permissionMode] : []),
         ...(options.sessionArgs ?? []),
         whole
           ? request.firstLetter.text
-          : tooLongNotice(request.firstLetter, options.bridgeCommand, bridgeHome),
+          : tooLongNotice(request.firstLetter, {
+              ...(options.bridgeCommand !== undefined && { bridgeCommand: options.bridgeCommand }),
+              ...(bridgeHome !== undefined && { bridgeHome }),
+              tools: !!tools,
+            }),
       ],
       {
         cwd: request.cwd,
@@ -452,11 +633,36 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
       detail: armed
         ? `sessions opened in this folder wait for their mail (${armed})`
         : 'sessions a person opens in this folder do not wake for mail, they read it when asked. Sessions the bridge starts carry the hook themselves',
-      ...(!armed && {
-        fix: `Merge into ${places[0]}: ${JSON.stringify(claudeWaitHook(hook))}`,
-      }),
+      ...(!armed && { fix: INSTALL }),
     });
+
+    const scope = claudeToolsScope(context.cwd, configPath);
+    checks.push({
+      id: 'tools',
+      title: 'Bridge tools',
+      status: scope ? 'ok' : 'warn',
+      detail: scope
+        ? `sessions opened in this folder have the bridge's tools (${scope} config)`
+        : 'sessions a person opens in this folder have no bridge tools, they use its command line. Sessions the bridge starts get the tools themselves',
+      ...(!scope && { fix: INSTALL }),
+    });
+    if (scope) {
+      const named = places.find((place) => hasClaudeToolsHook(readJson(place)));
+      checks.push({
+        id: 'caller',
+        title: 'Session of a tool call',
+        status: named ? 'ok' : 'warn',
+        detail: named
+          ? `a hook tells the tools which session calls them (${named})`
+          : 'the tools go by the session their server was started for: after /clear they act as the session before it',
+        ...(!named && { fix: INSTALL }),
+      });
+    }
     return checks;
+  }
+
+  function toolCallHook(context: IdentifyContext): string | undefined {
+    return context.hookInput === undefined ? undefined : claudeToolCallHook(context.hookInput);
   }
 
   return {
@@ -466,6 +672,7 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     createSession,
     liveSessions,
     identify,
+    toolCallHook,
     health,
   };
 }

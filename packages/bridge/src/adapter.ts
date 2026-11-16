@@ -132,6 +132,13 @@ export interface BridgeAdapter {
    */
   identify?(context: IdentifyContext): CallerIdentity | undefined;
   /**
+   * What a hook of the harness answers before a call of a bridge tool, so the call carries the
+   * session that makes it: the harness then hands the tool the arguments with the hint in them
+   * (`TOOL_CALL_HINT_KEY`). Undefined when the hook's input names no session, and the call goes
+   * on as it was. For a harness whose server of tools outlives its sessions
+   */
+  toolCallHook?(context: IdentifyContext): string | undefined;
+  /**
    * The sessions of the harness running on this machine, when the harness can list them. The
    * bridge keeps a listed session in its address book however long it is silent, and takes one
    * that was listed and no longer is for gone
