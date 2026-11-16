@@ -23,6 +23,14 @@ import {
 import { CommandError, examplesHelp, printJson, reportFailure } from '../utils/cli.js';
 import { bridgeAdapters, CODEX_SANDBOXES } from '../utils/bridge-adapters.js';
 import {
+  INSTALL_CHOICES,
+  runBridgeInstall,
+  runBridgeUninstall,
+  type BridgeInstallFlags,
+  type BridgeUninstallFlags,
+} from './bridge-install.js';
+import { runBridgeCaller, runBridgeMcp } from './bridge-tools.js';
+import {
   SENDABLE_KINDS,
   runBridgeDelegate,
   runBridgeDoctor,
@@ -428,6 +436,7 @@ export const bridgeCommand = new Command('bridge')
   .addHelpText(
     'after',
     examplesHelp([
+      ['cogitator bridge install', 'give Claude Code and Codex the bridge in this project'],
       ['cogitator bridge serve', 'run the dispatcher of this machine'],
       ['cogitator bridge status', 'who is connected and what is in progress'],
       ['cogitator bridge log --follow', 'watch the letters as they go'],
@@ -559,7 +568,66 @@ bridgeCommand
   .option('--hook <harness>', 'run as a hook of this harness: its stdin tells the session')
   .option('--timeout <seconds>', 'how long to wait (default 600)', positiveInt)
   .option('--agent <name>', 'the name the bridge gave the session')
+  .option('--tools', 'the session has the bridge tools: tell it to reply with them')
   .option(...homeOption)
   .action(async (flags: BridgeWaitFlags) => {
     process.exitCode = await runBridgeWait(flags);
+  });
+
+bridgeCommand
+  .command('mcp')
+  .description(
+    'Serve the bridge tools to a session over MCP (stdio): what Claude Code and Codex start'
+  )
+  .option(...homeOption)
+  .action(async (flags: HomeFlags) => {
+    process.exitCode = await runBridgeMcp(flags);
+  });
+
+bridgeCommand
+  .command('caller')
+  .description(
+    'Tell the bridge tools which session calls them: what a hook runs before a tool call'
+  )
+  .requiredOption('--hook <harness>', 'the harness whose hook runs the command')
+  .action(async (flags: { hook: string }) => {
+    process.exitCode = await runBridgeCaller(flags);
+  });
+
+const setupTarget = [
+  '[harness]',
+  `which harness: ${INSTALL_CHOICES.join(', ')} (default: all that are installed)`,
+] as const;
+
+bridgeCommand
+  .command('install')
+  .description(
+    'Give the sessions you open in Claude Code and Codex the bridge: its tools, the hooks, the notes'
+  )
+  .argument(...setupTarget)
+  .option('--user', 'for every project of yours, not only this one')
+  .option('--take-jobs', 'let sessions carry out the jobs of other agents without asking you first')
+  .option('--no-notes', 'leave CLAUDE.md and AGENTS.md as they are')
+  .option('--no-allow', 'keep the permission prompt of Claude Code for the bridge tools')
+  .option('--cwd <dir>', 'the project to set up (default: the one the current folder is in)')
+  .option('--dry-run', 'list the changes, make none')
+  .option('-y, --yes', 'make the changes without asking')
+  .option(...homeOption)
+  .option('--json', 'print the changes as JSON, with --yes or --dry-run')
+  .action(async (harness: string | undefined, flags: BridgeInstallFlags) => {
+    process.exitCode = await runBridgeInstall(harness, flags);
+  });
+
+bridgeCommand
+  .command('uninstall')
+  .description('Take out what install put in, and nothing else')
+  .argument(...setupTarget)
+  .option('--user', 'what was set up for every project of yours')
+  .option('--cwd <dir>', 'the project (default: the one the current folder is in)')
+  .option('--dry-run', 'list the changes, make none')
+  .option('-y, --yes', 'make the changes without asking')
+  .option(...homeOption)
+  .option('--json', 'print the changes as JSON, with --yes or --dry-run')
+  .action(async (harness: string | undefined, flags: BridgeUninstallFlags) => {
+    process.exitCode = await runBridgeUninstall(harness, flags);
   });

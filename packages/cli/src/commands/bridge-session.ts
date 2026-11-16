@@ -262,6 +262,11 @@ export function replyHint(bridgeCommand: string, home?: string): string {
   );
 }
 
+/** How a session with the bridge's tools answers a letter it was woken with. */
+export const TOOLS_REPLY_HINT =
+  '(The agent bridge woke this session with the mail above. Reply with the bridge tools, not only in this chat: ' +
+  'answer for a question, report for the result of a job handed to you, ask when whoever handed it over has to decide something.)';
+
 export interface BridgeWaitFlags extends HomeFlags {
   /** The harness whose hook runs the command: its stdin tells the session */
   hook?: string;
@@ -269,6 +274,8 @@ export interface BridgeWaitFlags extends HomeFlags {
   timeout?: number;
   /** The name the bridge gave the session, for one it started */
   agent?: string;
+  /** The session has the bridge's tools: it is told to reply with them, not with the command line */
+  tools?: boolean;
 }
 
 /** What `wait` exits with when it has mail: the code that makes a harness wake its session. */
@@ -312,9 +319,10 @@ export async function runBridgeWait(
       ...(context.signal && { signal: context.signal }),
     });
     if (waited.reason !== 'letters') return 0;
-    context.wake(
-      `${mailText(waited.letters)}\n\n${replyHint(bridgeCommandOf(context.env), flags.home)}`
-    );
+    const hint = flags.tools
+      ? TOOLS_REPLY_HINT
+      : replyHint(bridgeCommandOf(context.env), flags.home);
+    context.wake(`${mailText(waited.letters)}\n\n${hint}`);
     await waited.confirm().catch(() => undefined);
     return WAKE_EXIT_CODE;
   } catch (error) {

@@ -54,15 +54,20 @@ const USAGE_CODES = new Set([
   'commander.conflictingOption',
 ]);
 
+/** The commands of `cogitator bridge` a hook of a harness runs. */
+const HOOK_COMMANDS = new Set(['wait', 'caller']);
+
 /**
- * The exit code of the process for an error that reached the entry point. `bridge wait` wakes a
- * session by exiting with 2, so there a mistyped command line exits with 1: a stale hook must
- * not wake its session with a usage error after every turn.
+ * The exit code of the process for an error that reached the entry point. A harness reads the
+ * exit code 2 of a hook as a message for its session: `bridge wait` wakes a session with it, and
+ * from `bridge caller` it would refuse the tool call the hook runs before. So there a mistyped
+ * command line exits with 1: a stale hook must not wake its session after every turn, or keep
+ * it from the bridge's tools.
  */
 export function exitCodeFor(error: unknown, args: readonly string[]): ExitCode {
   const code = exitCodeOf(error);
-  const wakes = args[0] === 'bridge' && args[1] === 'wait';
-  return wakes && code === EXIT.usage ? EXIT.failed : code;
+  const hook = args[0] === 'bridge' && args[1] !== undefined && HOOK_COMMANDS.has(args[1]);
+  return hook && code === EXIT.usage ? EXIT.failed : code;
 }
 
 /** The exit code of any error a command ends with. */
