@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import type { StreamEvent } from '@cogitator-ai/server-shared';
+import type { ToolApprovalDecision, ToolApprovalRequest } from '@cogitator-ai/types';
 import type {
   BridgeAdapter,
   BridgeCalls,
@@ -10,8 +12,9 @@ import type {
 } from '../adapter.js';
 import { isBridgeError } from '../errors.js';
 import { pause } from './exec.js';
+import { oneLine } from '../letters.js';
 import { isInside } from '../paths.js';
-import type { BridgeJob, JobState, LetterKind, RenderedLetter } from '../types.js';
+import type { BridgeJob, JobState, LetterKind, PermissionAsk, RenderedLetter } from '../types.js';
 
 /** How letters reach a session the host runs itself: handed to its agent in the same process. */
 export const HOSTED_DELIVERY = 'hosted';
@@ -32,6 +35,13 @@ export interface HostedTurn {
 export interface HostedTurnContext {
   /** The job the turn carries out, when the job's first letter starts it */
   job?: BridgeJob;
+  /**
+   * Asks leave for a tool call the agent's own rules do not settle: the bridge takes the request
+   * to whoever may answer it, the agent that handed the job over or the person, and resolves
+   * with their answer. Nobody sits at a hosted session, so this is the only way such a call is
+   * ever allowed
+   */
+  approve?(request: ToolApprovalRequest): Promise<ToolApprovalDecision>;
 }
 
 /** A session of an agent the host runs. One turn goes on at a time. */
@@ -67,6 +77,12 @@ export interface HostedAdapterOptions {
   onError?: (error: Error) => void;
   /** How long a turn that was told to stop is waited for when the host closes, 5 s by default */
   stopGraceMs?: number;
+  /**
+   * Says what a tool call an agent asks leave for touches, so the rules of the agent that handed
+   * the job over can judge it. `permissionAskOf` by default, which knows the tools of the
+   * Cogitator runtime and of ACP agents by name
+   */
+  askOf?: (request: ToolApprovalRequest, session: { cwd: string }) => PermissionAsk;
 }
 
 const DEFAULT_STOP_GRACE_MS = 5_000;
@@ -80,6 +96,91 @@ interface Running {
   turn: HostedTurn;
   /** The job the turn carries out, when a job's first letter started it */
   job?: number;
+  /** Set once the turn is over or was told to stop */
+  done: boolean;
+}
+
+/** How long one look for the verdict of a permission request waits before it looks again. */
+const VERDICT_POLL_MS = 60_000;
+
+/** How much of a call's arguments the letter that asks leave for it shows. */
+const ARGUMENTS_SHOWN = 2_000;
+
+const COMMAND_TOOLS: ReadonlySet<string> = new Set(['run_command', 'exec', 'bash', 'shell']);
+const READ_TOOLS: ReadonlySet<string> = new Set([
+  'read_file',
+  'file_read',
+  'list_files',
+  'file_list',
+  'glob',
+  'grep',
+]);
+const EDIT_TOOLS: ReadonlySet<string> = new Set([
+  'edit_file',
+  'file_edit',
+  'write_file',
+  'file_write',
+  'delete_file',
+  'file_delete',
+  'move_file',
+]);
+const FETCH_TOOLS: ReadonlySet<string> = new Set(['web_fetch', 'fetch']);
+
+function textOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+/**
+ * What a tool call touches, read from the name of its tool and its arguments: the tools of the
+ * Cogitator runtime and the names `AcpAgentProvider` gives the calls of an ACP agent. A call it
+ * cannot read is known by the name of its tool alone, which leaves it to the person unless a
+ * rule names that tool.
+ */
+export function permissionAskOf(
+  request: Pick<ToolApprovalRequest, 'toolName' | 'arguments'>,
+  session: { cwd: string }
+): PermissionAsk {
+  const args = request.arguments;
+  const tool = oneLine(request.toolName).slice(0, 256) || 'tool';
+  const absolute = (path: string): string => resolve(session.cwd, path);
+  const paths = [args.file_path, args.path, args.filePath, args.notebook_path]
+    .map(textOf)
+    .filter((path): path is string => path !== undefined);
+  if (Array.isArray(args.paths)) {
+    paths.push(...args.paths.map(textOf).filter((path): path is string => path !== undefined));
+  }
+  if (COMMAND_TOOLS.has(tool)) {
+    const command = textOf(args.command);
+    const cwd = textOf(args.cwd);
+    if (command) {
+      return { tool, access: 'command', command, cwd: absolute(cwd ?? '.') };
+    }
+  }
+  if (READ_TOOLS.has(tool) && paths.length > 0) {
+    return { tool, access: 'read', paths: paths.map(absolute) };
+  }
+  if (EDIT_TOOLS.has(tool) && paths.length > 0) {
+    return { tool, access: 'edit', paths: paths.map(absolute) };
+  }
+  if (FETCH_TOOLS.has(tool)) {
+    const url = textOf(args.url);
+    if (url) return { tool, access: 'fetch', url };
+  }
+  return { tool, access: 'other' };
+}
+
+/** The words of a letter that asks leave for a call: what the agent said of it, then the call. */
+function describeCall(request: ToolApprovalRequest, ask: PermissionAsk): string {
+  const said = request.description.trim();
+  const call =
+    ask.access === 'command' && ask.command
+      ? `Run in ${ask.cwd ?? 'its folder'}:\n${ask.command}`
+      : ask.access === 'fetch' && ask.url
+        ? `Fetch ${ask.url}`
+        : ask.paths && ask.paths.length > 0
+          ? `${ask.access === 'edit' ? 'Change' : 'Read'}: ${ask.paths.join(', ')}`
+          : `Call ${ask.tool} with ${JSON.stringify(request.arguments).slice(0, ARGUMENTS_SHOWN)}`;
+  return said && said !== call ? `${said}\n${call}` : call;
 }
 
 /** A letter with the job it is about. */
@@ -143,12 +244,20 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
     let turn: HostedTurn;
     const { letter } = mail;
     const job = letter.kind === 'task' ? letter.job : undefined;
+    const running: Running = {
+      turn: { result: Promise.resolve('') },
+      ...(job !== undefined && { job }),
+      done: false,
+    };
     try {
-      turn = hosted.session.turn(letter.text, job === undefined ? {} : { job: mail.job });
+      turn = hosted.session.turn(letter.text, {
+        ...(job !== undefined && { job: mail.job }),
+        approve: (request) => approve(hosted, running, letter.job, request),
+      });
     } catch (error) {
       turn = { result: Promise.reject(asError(error)) };
     }
-    const running: Running = { turn, ...(job !== undefined && { job }) };
+    running.turn = turn;
     hosted.running = running;
     if (job !== undefined) {
       hosted.waiting = hosted.waiting.filter(
@@ -167,10 +276,51 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
         }
       )
       .finally(() => {
+        running.done = true;
         if (hosted.running !== running) return;
         delete hosted.running;
         void startNext(hosted);
       });
+  }
+
+  /**
+   * Takes a call the agent asks leave for to the bridge, as a permission request on the job the
+   * turn is about, and waits for the verdict. Whatever goes wrong refuses the call: a request
+   * the bridge does not take, a turn that is over, a host that closes.
+   */
+  async function approve(
+    hosted: Hosted,
+    running: Running,
+    job: number,
+    request: ToolApprovalRequest
+  ): Promise<ToolApprovalDecision> {
+    if (!bridge) return { approved: false, reason: 'The bridge is not there to ask' };
+    const ask = (options.askOf ?? permissionAskOf)(request, { cwd: hosted.cwd });
+    let letter: string;
+    try {
+      const sent = await bridge.send(hosted.agentName, {
+        job,
+        kind: 'permission',
+        body: describeCall(request, ask),
+        ask,
+      });
+      letter = sent.letter.id;
+    } catch (error) {
+      return { approved: false, reason: asError(error).message };
+    }
+    while (!closed && !running.done) {
+      let decision;
+      try {
+        decision = await bridge.verdict(hosted.agentName, { letter, timeoutMs: VERDICT_POLL_MS });
+      } catch (error) {
+        return { approved: false, reason: asError(error).message };
+      }
+      if (decision.state === 'waiting') continue;
+      return decision.verdict === 'allow'
+        ? { approved: true }
+        : { approved: false, reason: `Refused by ${decision.by}: ${decision.reason}` };
+    }
+    return { approved: false, reason: 'The turn is over' };
   }
 
   /** Whether the job a letter is about is over: reported on, failed or canceled. */
@@ -217,7 +367,10 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
   async function stopIfOver(hosted: Hosted, job: number): Promise<void> {
     const running = hosted.running;
     if (running?.job !== job || !(await over(job))) return;
-    if (hosted.running === running) running.turn.abort?.(new Error(`Job #${job} is over`));
+    if (hosted.running === running) {
+      running.done = true;
+      running.turn.abort?.(new Error(`Job #${job} is over`));
+    }
   }
 
   /** Hands a letter to a turn that goes on. False when the turn does not take it. */
@@ -313,6 +466,7 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
           hosted.waiting.length = 0;
           const turn = hosted.running?.turn;
           if (turn) {
+            if (hosted.running) hosted.running.done = true;
             turn.abort?.(new Error('The host is closing'));
             await Promise.race([
               turn.result.catch(() => undefined),
@@ -339,12 +493,19 @@ export interface HostedRun {
  * tool call or answer a tool's question in a session the bridge hosts.
  */
 const PAUSED =
-  'the run stopped to wait for an approval or an answer, which nobody gives in a hosted session. ' +
-  'Give the agent the permission rules it needs before it starts';
+  'the run stopped to wait for an answer nobody gives in a hosted session: a question of a tool, or an approval the runtime did not ask the bridge for';
 
 /** The part of the Cogitator runtime the bridge uses. `Cogitator` fits. */
 export interface HostedRuntime<TAgent> {
-  start(agent: TAgent, options: { input: string; threadId: string }): HostedRun;
+  start(
+    agent: TAgent,
+    options: {
+      input: string;
+      threadId: string;
+      /** Asked for every tool call the agent's permission rules do not settle */
+      onApproval?: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision | 'pause'>;
+    }
+  ): HostedRun;
 }
 
 export interface CogitatorSessionsOptions<TAgent> {
@@ -356,8 +517,10 @@ export interface CogitatorSessionsOptions<TAgent> {
 /**
  * Sessions of an agent of the Cogitator runtime, on whatever model the agent names: every turn
  * is a run on the session's own thread, so with memory configured the agent remembers the
- * turns before. A letter that arrives during a run steers it or follows it up. A run that
- * pauses for an approval or for a question of a tool fails its job: its answer is not a report.
+ * turns before. A letter that arrives during a run steers it or follows it up. A tool call the
+ * agent's permission rules leave open is taken to the bridge: the agent that handed the job over
+ * answers within its own rights, the person for the rest. A run that pauses for a question of a
+ * tool fails its job: its answer is not a report.
  *
  * @example
  * ```ts
@@ -379,8 +542,13 @@ export function cogitatorSessions<TAgent>(
     const agent = agentOf(context);
     const threadId = `bridge-${context.sessionId}`;
     return {
-      turn(text) {
-        const run = options.runtime.start(agent, { input: text, threadId });
+      turn(text, about) {
+        const approve = about?.approve;
+        const run = options.runtime.start(agent, {
+          input: text,
+          threadId,
+          ...(approve && { onApproval: approve }),
+        });
         return {
           result: run.result.then((result) => {
             if (result.status === 'paused') throw new Error(PAUSED);
@@ -408,6 +576,8 @@ export interface ProviderTurn {
   setPermissionMode(mode: ProviderPermissionMode): Promise<void>;
   emit(event: StreamEvent): void;
   readonly signal: AbortSignal;
+  /** Asked for every call of the agent the provider's permission rules do not settle */
+  onApproval?(request: ToolApprovalRequest): Promise<ToolApprovalDecision | 'pause'>;
 }
 
 export type ProviderPermissionMode =
@@ -434,7 +604,7 @@ export interface ProviderSessionsOptions {
   root?: string;
   /**
    * The permission mode of every turn, `default` when absent: what the provider's rules do not
-   * settle is refused, since no person sits at a session the bridge started
+   * settle is taken to the bridge, which asks the agent that handed the job over or the person
    */
   permissionMode?: ProviderPermissionMode;
 }
@@ -506,6 +676,7 @@ export function providerSessions(options: ProviderSessionsOptions): OpenHostedSe
             },
             emit: () => undefined,
             signal: stop.signal,
+            ...(about?.approve && { onApproval: about.approve }),
           })
           .then((answer) => {
             if (answer.refused)
