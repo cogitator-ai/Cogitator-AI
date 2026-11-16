@@ -23,6 +23,8 @@ import {
   type JournalEntryType,
   type Letter,
   type LetterKind,
+  type PermissionAsk,
+  type Verdict,
   type ReportOutcome,
 } from '../types.js';
 import type {
@@ -39,7 +41,22 @@ import type {
 } from './store.js';
 
 /** The version of the schema this code reads and writes, kept in `PRAGMA user_version`. */
-export const BRIDGE_SCHEMA_VERSION = 1;
+export const BRIDGE_SCHEMA_VERSION = 2;
+
+/**
+ * What each version of the schema added to the one before it: the first entry takes a database
+ * of version 1 to version 2, and so on. `SCHEMA` is always the newest one whole
+ */
+const UPGRADES: readonly string[] = [
+  `
+  ALTER TABLE letters ADD COLUMN ask TEXT;
+  ALTER TABLE letters ADD COLUMN verdict TEXT;
+  ALTER TABLE letters ADD COLUMN needs_person INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE letters ADD COLUMN person_asked_at INTEGER;
+  CREATE INDEX letters_reply ON letters (in_reply_to) WHERE in_reply_to IS NOT NULL;
+  CREATE INDEX letters_person ON letters (seq) WHERE needs_person = 1;
+  `,
+];
 
 const MEMORY_PATH = ':memory:';
 const LEASE_KEY = 'lease';
@@ -112,11 +129,17 @@ const SCHEMA = `
     last_error TEXT,
     next_attempt_at INTEGER,
     reply_due_at INTEGER,
-    reminded_at INTEGER
+    reminded_at INTEGER,
+    ask TEXT,
+    verdict TEXT,
+    needs_person INTEGER NOT NULL DEFAULT 0,
+    person_asked_at INTEGER
   );
   CREATE INDEX letters_recipient ON letters (recipient, state, seq);
   CREATE INDEX letters_job ON letters (job, seq);
   CREATE INDEX letters_due ON letters (reply_due_at) WHERE reply_due_at IS NOT NULL;
+  CREATE INDEX letters_reply ON letters (in_reply_to) WHERE in_reply_to IS NOT NULL;
+  CREATE INDEX letters_person ON letters (seq) WHERE needs_person = 1;
 
   CREATE TABLE journal (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,6 +199,10 @@ interface LetterRow {
   next_attempt_at: number | null;
   reply_due_at: number | null;
   reminded_at: number | null;
+  ask?: string | null;
+  verdict?: string | null;
+  needs_person?: number;
+  person_asked_at?: number | null;
 }
 
 interface JournalRow {
@@ -250,6 +277,10 @@ function toLetter(row: LetterRow): Letter {
     ...(row.next_attempt_at !== null && { nextAttemptAt: iso(row.next_attempt_at) }),
     ...(row.reply_due_at !== null && { replyDueAt: iso(row.reply_due_at) }),
     ...(row.reminded_at !== null && { remindedAt: iso(row.reminded_at) }),
+    ...(row.ask && { ask: JSON.parse(row.ask) as PermissionAsk }),
+    ...(row.verdict && { verdict: row.verdict as Verdict }),
+    ...(row.needs_person === 1 && { needsPerson: true }),
+    ...(typeof row.person_asked_at === 'number' && { personAskedAt: iso(row.person_asked_at) }),
   };
 }
 
@@ -473,27 +504,36 @@ export class SqliteBridgeStore implements BridgeStore {
     return new SqliteBridgeStore(db, readonly);
   }
 
+  /**
+   * Brings a database to the schema this code writes: an empty one gets it whole, an older one
+   * the steps it lacks. A reader changes nothing, and reads an older database as it is: what a
+   * newer schema added is simply absent from it.
+   */
   private static migrate(db: BetterSqlite3.Database, path: string, readonly: boolean): void {
-    const check = (): boolean => {
-      const version = db.pragma('user_version', { simple: true }) as number;
-      if (version > BRIDGE_SCHEMA_VERSION) {
+    const version = (): number => {
+      const found = db.pragma('user_version', { simple: true }) as number;
+      if (found > BRIDGE_SCHEMA_VERSION) {
         throw new BridgeError(
           'storage',
-          `The bridge database ${path} was written by a newer version (schema ${version}, this one reads ${BRIDGE_SCHEMA_VERSION}). Update @cogitator-ai/bridge`
+          `The bridge database ${path} was written by a newer version (schema ${found}, this one reads ${BRIDGE_SCHEMA_VERSION}). Update @cogitator-ai/bridge`
         );
       }
-      return version === BRIDGE_SCHEMA_VERSION;
+      return found;
     };
-    if (check()) return;
+    const found = version();
+    if (found === BRIDGE_SCHEMA_VERSION) return;
     if (readonly) {
+      if (found > 0) return;
       throw new BridgeError(
         'storage',
         `The bridge database ${path} is empty: no dispatcher ran yet`
       );
     }
     db.transaction(() => {
-      if (check()) return;
-      db.exec(SCHEMA);
+      const from = version();
+      if (from === BRIDGE_SCHEMA_VERSION) return;
+      if (from === 0) db.exec(SCHEMA);
+      else for (const step of UPGRADES.slice(from - 1)) db.exec(step);
       db.pragma(`user_version = ${BRIDGE_SCHEMA_VERSION}`);
     }).immediate();
   }
@@ -744,8 +784,9 @@ export class SqliteBridgeStore implements BridgeStore {
       .prepare(
         `INSERT INTO letters
            (id, job, kind, sender, recipient, body, in_reply_to, outcome, state, created_at,
-            delivered_at, read_at, handled_at, attempts, last_error, next_attempt_at, reply_due_at, reminded_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            delivered_at, read_at, handled_at, attempts, last_error, next_attempt_at, reply_due_at, reminded_at,
+            ask, verdict, needs_person, person_asked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         letter.id,
@@ -765,7 +806,11 @@ export class SqliteBridgeStore implements BridgeStore {
         letter.lastError ?? null,
         optionalMs(letter.nextAttemptAt),
         optionalMs(letter.replyDueAt),
-        optionalMs(letter.remindedAt)
+        optionalMs(letter.remindedAt),
+        letter.ask ? JSON.stringify(letter.ask) : null,
+        letter.verdict ?? null,
+        letter.needsPerson ? 1 : 0,
+        optionalMs(letter.personAskedAt)
       );
     return { ...letter, seq: Number(result.lastInsertRowid) };
   }
@@ -791,10 +836,13 @@ export class SqliteBridgeStore implements BridgeStore {
     if (patch.nextAttemptAt !== undefined) set('next_attempt_at', ms(patch.nextAttemptAt));
     if (patch.replyDueAt !== undefined) set('reply_due_at', ms(patch.replyDueAt));
     if (patch.remindedAt !== undefined) set('reminded_at', ms(patch.remindedAt));
+    if (patch.needsPerson !== undefined) set('needs_person', patch.needsPerson ? 1 : 0);
+    if (patch.personAskedAt !== undefined) set('person_asked_at', ms(patch.personAskedAt));
     const clearable = {
       lastError: 'last_error',
       nextAttemptAt: 'next_attempt_at',
       replyDueAt: 'reply_due_at',
+      remindedAt: 'reminded_at',
     } as const;
     for (const field of patch.clear ?? []) set(clearable[field], null);
 
@@ -875,6 +923,14 @@ export class SqliteBridgeStore implements BridgeStore {
     if (filter.replyDueBy !== undefined) {
       where.push('reply_due_at IS NOT NULL AND reply_due_at <= ?');
       binds.push(filter.replyDueBy);
+    }
+    if (filter.needsPerson !== undefined) {
+      where.push('needs_person = ?');
+      binds.push(filter.needsPerson ? 1 : 0);
+    }
+    if (filter.inReplyTo !== undefined) {
+      where.push('in_reply_to = ?');
+      binds.push(filter.inReplyTo);
     }
     return { clause: where.length > 0 ? `WHERE ${where.join(' AND ')}` : '', binds };
   }

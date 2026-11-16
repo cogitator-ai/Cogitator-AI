@@ -60,15 +60,20 @@ export type { AddressResolution, ResolveAddressContext } from './registry.js';
 export { renderLetter, signatureOf } from './letters.js';
 export { isFinishedJobState, jobOf, jobRecordOf } from './job-record.js';
 export type { BridgeLimitsInput } from './guards.js';
-export { DEFAULT_WAIT_MS, MAX_WAIT_MS } from './inputs.js';
+export { DEFAULT_VERDICT_WAIT_MS, DEFAULT_WAIT_MS, MAX_WAIT_MS } from './inputs.js';
 export type {
   CreateJobInput,
+  EscalateInput,
   InboxInput,
+  PersonAnswerInput,
   SendLetterInput,
+  VerdictInput,
+  VerdictResult,
   WaitEnd,
   WaitInput,
   WaitResult,
 } from './inputs.js';
+export type { PersonRequest, PersonRoute, RightsJudge, RightsQuestion } from './person.js';
 
 export { SqliteBridgeStore, BRIDGE_SCHEMA_VERSION } from './store/sqlite.js';
 export type { OpenBridgeStoreOptions } from './store/sqlite.js';
@@ -95,6 +100,10 @@ export {
   JOB_STATES,
   LETTER_KINDS,
   NO_CAPABILITIES,
+  PERMISSION_ACCESSES,
+  PERSON,
+  PermissionAskSchema,
+  VERDICTS,
 } from './types.js';
 export type {
   AdapterCapabilities,
@@ -113,8 +122,12 @@ export type {
   JournalEntryType,
   Letter,
   LetterKind,
+  PermissionAccess,
+  PermissionAsk,
   RenderedLetter,
   ReportOutcome,
+  Rights,
+  Verdict,
 } from './types.js';
 export type {
   BridgeAdapter,

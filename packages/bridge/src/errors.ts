@@ -13,6 +13,8 @@ export type BridgeErrorCode =
   | 'depth_exceeded'
   | 'budget_exhausted'
   | 'loop_detected'
+  | 'needs_person'
+  | 'no_person'
   | 'already_running'
   | 'not_running'
   | 'storage';

@@ -6,13 +6,16 @@ import {
   JobBudgetSchema,
   JobCheckSchema,
   LETTER_KINDS,
+  PermissionAskSchema,
   type BridgeJob,
   type JobBudget,
   type JobCheck,
   type Letter,
   type LetterKind,
+  type PermissionAsk,
   type RenderedLetter,
   type ReportOutcome,
+  type Verdict,
 } from './types.js';
 
 /** An id a sender may give its letter, so sending it again does not deliver it twice. */
@@ -85,10 +88,20 @@ export const SendLetterInputSchema = z
     id: LetterIdSchema.optional(),
     inReplyTo: LetterIdSchema.optional(),
     outcome: z.enum(['completed', 'failed']).optional(),
+    ask: PermissionAskSchema.optional(),
+    verdict: z.enum(['allow', 'deny']).optional(),
   })
   .refine((input) => input.outcome === undefined || input.kind === 'report', {
     message: 'Only a report has an outcome',
     path: ['outcome'],
+  })
+  .refine((input) => input.ask === undefined || input.kind === 'permission', {
+    message: 'Only a permission request names a call',
+    path: ['ask'],
+  })
+  .refine((input) => input.verdict === undefined || input.kind === 'answer', {
+    message: 'Only an answer carries a verdict',
+    path: ['verdict'],
   });
 
 /** A letter on a job that exists. The job's own first letter is written by `createJob`. */
@@ -102,6 +115,13 @@ export interface SendLetterInput {
   inReplyTo?: string;
   /** Of a report: `completed` by default */
   outcome?: ReportOutcome;
+  /**
+   * Of a permission request: the call leave is asked for. With it the bridge decides who may
+   * answer, and the answer comes through `verdict` rather than as mail
+   */
+  ask?: PermissionAsk;
+  /** Of an answer to a permission request that names its call: whether it may go ahead */
+  verdict?: Verdict;
 }
 
 export interface CreateJobResult {
@@ -117,6 +137,59 @@ export interface SendLetterResult {
   /** True when the letter was sent before with the same id, and nothing changed now */
   duplicate: boolean;
 }
+
+export const EscalateInputSchema = z.strictObject({ letter: LetterIdSchema });
+
+/** A question or a permission request the caller passes on to the person. */
+export interface EscalateInput {
+  letter: string;
+}
+
+export const PersonAnswerInputSchema = z.strictObject({
+  letter: LetterIdSchema,
+  verdict: z.enum(['allow', 'deny']).optional(),
+  body: z
+    .string()
+    .refine((body) => body.trim().length > 0, 'The answer is empty')
+    .refine(withoutNul, NUL_REFUSED)
+    .optional(),
+});
+
+/** What the person says to a letter that waits for them. */
+export interface PersonAnswerInput {
+  letter: string;
+  /** For a permission request that names its call */
+  verdict?: Verdict;
+  /** The answer to a question, or the reason of a verdict */
+  body?: string;
+}
+
+export const VerdictInputSchema = z.strictObject({
+  letter: LetterIdSchema,
+  timeoutMs: z.number().int().min(0).max(86_400_000).optional(),
+});
+
+export interface VerdictInput {
+  /** The permission request the caller sent */
+  letter: string;
+  /** How long to wait for the decision, 30 s by default, `0` to only look */
+  timeoutMs?: number;
+}
+
+/** How long `verdict` waits when the call names no time, in ms. */
+export const DEFAULT_VERDICT_WAIT_MS = 30_000;
+
+/** Whether a permission request is decided, and how. */
+export type VerdictResult =
+  | { state: 'waiting' }
+  | {
+      state: 'decided';
+      verdict: Verdict;
+      /** What the one who decided said, or why the bridge decided itself */
+      reason: string;
+      /** The agent that decided, `person`, or `bridge` */
+      by: string;
+    };
 
 /** How many letters one call to the inbox returns when it names no limit. */
 export const DEFAULT_INBOX_LIMIT = 20;
