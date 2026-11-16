@@ -150,6 +150,28 @@ describe('the rights the settings of a project give', () => {
     expect(await rights({ tool: 'Read', access: 'read', paths: [file] })).toBe('allow');
   });
 
+  it('judge a command with the environment it sets for itself', async () => {
+    settings({ allow: ['Bash(ls *)'] });
+
+    expect(await rights(run('ls .'))).toBe('allow');
+    expect(await rights({ ...run('ls .'), env: { LD_PRELOAD: '/tmp/x.so' } })).toBe('ask');
+  });
+
+  it('never let an agent allow a command that names the folders of the settings', async () => {
+    settings({ allow: ['Bash'] });
+
+    expect(await rights(run('pnpm test'))).toBe('allow');
+    expect(await rights(run("printf '{}' > .claude/settings.json"))).toBe('ask');
+    expect(await rights(run('sed -i s/deny/allow/ ./.cogitator/settings.local.json'))).toBe('ask');
+    expect(await rights(run(`cp rules.json ${join(project, '.claude', 'settings.json')}`))).toBe(
+      'ask'
+    );
+    expect(await rights(run('cat docs/claude.md'))).toBe('allow');
+    expect(await rights(run("printf '{}' > .claude/settings.json"), 'bypassPermissions')).toBe(
+      'ask'
+    );
+  });
+
   it('never let an agent allow a change to the settings it is judged by', async () => {
     settings({ allow: ['Edit'] });
     const own = join(project, '.claude', 'settings.local.json');

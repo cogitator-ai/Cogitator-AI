@@ -269,6 +269,8 @@ export interface PermissionAsk {
   command?: string;
   /** Of a `command`: the folder it runs in */
   cwd?: string;
+  /** Of a `command`: the environment variables it sets for itself */
+  env?: Record<string, string>;
   /** Of a `read` or an `edit`: the files, absolute */
   paths?: string[];
   /** Of a `fetch`: the address */
@@ -280,6 +282,7 @@ export const PermissionAskSchema = z.strictObject({
   access: z.enum(['command', 'read', 'edit', 'fetch', 'other']),
   command: z.string().min(1).max(100_000).optional(),
   cwd: AbsolutePathSchema.optional(),
+  env: z.record(z.string().min(1).max(256), z.string().max(100_000)).optional(),
   paths: z.array(AbsolutePathSchema).max(1000).optional(),
   url: z.string().min(1).max(8192).optional(),
 });

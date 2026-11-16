@@ -199,7 +199,7 @@ An agent that carries a job out sometimes needs leave for one call: to run a com
 | allowed       | The request goes to that agent, which answers `allow` or `deny`       |
 | ask a person  | Only the person can allow it. The agent is told, and can still refuse |
 
-So an agent never gets leave from another agent that the other one does not have itself. A job handed over from inside a job is bound by every agent up the chain. Without a rule the person is asked what a person at a session would be asked: a command, an address to fetch, a file outside the project. A change to the settings files themselves is always the person's to allow, whatever the rules and the mode say: an agent does not write the rules it is judged by.
+So an agent never gets leave from another agent that the other one does not have itself. A job handed over from inside a job is bound by every agent up the chain. Without a rule the person is asked what a person at a session would be asked: a command, an address to fetch, a file outside the project. A change to the settings files themselves is always the person's to allow, whatever the rules and the mode say, and so is a command that names their folders: an agent does not write the rules it is judged by. For a command this reads the words of the command line and no more, as every rule on a command does.
 
 The one who asked does not get the answer as mail: it waits for it with `verdict({ letter })`, which answers the moment the request is decided. A request whose job ends first counts as refused. The same call may be asked for again once it was allowed, and is held back as a repeat once it was refused.
 

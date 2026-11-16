@@ -751,8 +751,8 @@ export class BridgeDispatcher
       }
 
       const now = this.now();
-      const spent = exhaustedBudget(job, now, request.kind);
-      const exhausted = spent === 'time' && this.waitsForPerson(job.number) ? undefined : spent;
+      const clockHeld = now >= Date.parse(job.deadlineAt) && this.waitsForPerson(job.number);
+      const exhausted = exhaustedBudget(job, now, request.kind, clockHeld);
       if (exhausted) {
         const reason =
           exhausted === 'letters'
