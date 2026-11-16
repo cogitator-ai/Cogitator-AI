@@ -431,10 +431,16 @@ importers:
       '@cogitator-ai/server-shared':
         specifier: workspace:*
         version: link:../server-shared
+      '@cogitator-ai/types':
+        specifier: workspace:*
+        version: link:../types
       zod:
         specifier: ^4.6.6
         version: 4.6.7
     devDependencies:
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0

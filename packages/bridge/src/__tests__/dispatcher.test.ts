@@ -1401,7 +1401,15 @@ describe('verification', () => {
 
 describe('status and close', () => {
   it('counts what is going on', async () => {
-    kit = await makeKit({ adapters: [new FakeAdapter({ harness: 'gemini' })] });
+    kit = await makeKit({
+      adapters: [
+        new FakeAdapter({ harness: 'gemini' }),
+        new FakeAdapter({
+          harness: 'qwen',
+          createSession: async () => ({ sessionId: 'session-qwen' }),
+        }),
+      ],
+    });
     const { bridge, claude } = kit;
     await bridge.createJob(claude.name, { to: 'codex', body: 'Do it' });
 
@@ -1409,7 +1417,8 @@ describe('status and close', () => {
       agents: 2,
       activeJobs: 1,
       queuedLetters: 1,
-      adapters: ['gemini'],
+      adapters: ['gemini', 'qwen'],
+      startable: ['qwen'],
       waiting: [],
     });
   });
