@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import type { ToolApprovalDecision, ToolApprovalRequest } from '@cogitator-ai/types';
 import {
   cogitatorSessions,
   hostedAdapter,
+  permissionAskOf,
   providerSessions,
   type HostedRun,
   type HostedSessionContext,
@@ -35,6 +37,7 @@ function scripted(options: { steer?: boolean; followUp?: boolean } = {}) {
     steered: string[];
     followed: string[];
     aborted: boolean;
+    approve: HostedTurnContext['approve'];
     end: (answer: string) => void;
     fail: (error: Error) => void;
   }[] = [];
@@ -51,6 +54,7 @@ function scripted(options: { steer?: boolean; followUp?: boolean } = {}) {
           steered: [] as string[],
           followed: [] as string[],
           aborted: false,
+          approve: about?.approve,
           end: result.resolve,
           fail: result.reject,
         };
@@ -498,6 +502,147 @@ describe('sessions the host runs', () => {
   });
 });
 
+const PUSH: ToolApprovalRequest = {
+  toolCallId: 'call-1',
+  toolName: 'run_command',
+  arguments: { command: 'git push origin main' },
+  description: 'Push the branch',
+};
+
+describe('a call a hosted agent asks leave for', () => {
+  /** A hosted agent in the middle of the turn of a job Claude handed it. */
+  async function working(options: Parameters<typeof makeKit>[0] = {}) {
+    const agent = scripted();
+    kit = await makeKit({
+      ...options,
+      adapters: [hostedAdapter({ harness: 'qwen', open: agent.open })],
+    });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Ship the fix' });
+    await settle(kit);
+    const approve = agent.turns[0].approve;
+    if (!approve) throw new Error('The turn was given no way to ask leave');
+    return { bridge, claude, agent, approve };
+  }
+
+  it('goes to the agent that handed the job over, whose answer the call gets', async () => {
+    const { bridge, claude, approve } = await working({ rights: () => 'allow' });
+
+    const first = approve(PUSH);
+    await settle(kit);
+    const [request] = await bridge.inbox(claude.name);
+    expect(request).toMatchObject({
+      kind: 'permission',
+      from: 'qwen@demo',
+      body: 'Push the branch\nRun in /work/demo:\ngit push origin main',
+      ask: {
+        tool: 'run_command',
+        access: 'command',
+        command: 'git push origin main',
+        cwd: '/work/demo',
+      },
+    });
+    expect((await bridge.job(1)).state).toBe('input-required');
+    await bridge.send(claude.name, { job: 1, kind: 'answer', body: 'Go', verdict: 'allow' });
+
+    expect(await first).toEqual({ approved: true });
+    expect((await bridge.job(1)).state).toBe('working');
+
+    const second = approve({ ...PUSH, arguments: { command: 'git push --force' } });
+    await settle(kit);
+    await bridge.send(claude.name, {
+      job: 1,
+      kind: 'answer',
+      body: 'Never force',
+      verdict: 'deny',
+    });
+
+    expect(await second).toEqual({
+      approved: false,
+      reason: 'Refused by claude@demo: Never force',
+    });
+    expect(kit.errors).toEqual([]);
+  });
+
+  it('is refused at once by the rules of the one who handed the job over', async () => {
+    const { approve } = await working({ rights: () => 'deny' });
+
+    expect(await approve(PUSH)).toEqual({
+      approved: false,
+      reason: 'Refused by bridge: The rules of claude@demo forbid this, so it is refused',
+    });
+  });
+
+  it('waits for the person when it is theirs to allow', async () => {
+    const { bridge, approve } = await working({
+      rights: () => 'ask',
+      person: { ask: () => undefined, settle: () => undefined },
+    });
+
+    const waiting = approve(PUSH);
+    await settle(kit);
+    const [letter] = await bridge.forPerson();
+    await bridge.personAnswer({ letter: letter.id, verdict: 'allow' });
+
+    expect(await waiting).toEqual({ approved: true });
+  });
+
+  it('is refused when its job is canceled, and when the bridge does not take the request', async () => {
+    const { bridge, claude, agent, approve } = await working({ rights: () => 'allow' });
+
+    const waiting = approve(PUSH);
+    await settle(kit);
+    await bridge.cancel(claude.name, 1, 'Not needed');
+
+    expect(await waiting).toEqual({
+      approved: false,
+      reason:
+        'Refused by bridge: Nobody answered before job #1 was canceled (canceled by claude@demo: Not needed)',
+    });
+    await settle(kit);
+    expect(agent.turns[0].aborted).toBe(true);
+    expect(await approve(PUSH)).toEqual({
+      approved: false,
+      reason:
+        'Job 1 is canceled (canceled by claude@demo: Not needed). Hand over a new job to go on',
+    });
+  });
+
+  it('says what a call touches, from the name of its tool and its arguments', () => {
+    const at = { cwd: '/work/demo' };
+    const of = (toolName: string, args: Record<string, unknown>) =>
+      permissionAskOf({ toolName, arguments: args }, at);
+
+    expect(of('exec', { command: 'pnpm test', cwd: 'packages/core' })).toEqual({
+      tool: 'exec',
+      access: 'command',
+      command: 'pnpm test',
+      cwd: '/work/demo/packages/core',
+    });
+    expect(of('read_file', { path: 'README.md' })).toEqual({
+      tool: 'read_file',
+      access: 'read',
+      paths: ['/work/demo/README.md'],
+    });
+    expect(of('edit_file', { paths: ['src/a.ts', '/etc/hosts', 7] })).toEqual({
+      tool: 'edit_file',
+      access: 'edit',
+      paths: ['/work/demo/src/a.ts', '/etc/hosts'],
+    });
+    expect(of('web_fetch', { url: 'https://example.com' })).toEqual({
+      tool: 'web_fetch',
+      access: 'fetch',
+      url: 'https://example.com',
+    });
+    expect(of('acp__gemini__deploy', { target: 'prod' })).toEqual({
+      tool: 'acp__gemini__deploy',
+      access: 'other',
+    });
+    expect(of('run_command', {})).toEqual({ tool: 'run_command', access: 'other' });
+    expect(of('edit_file', {})).toEqual({ tool: 'edit_file', access: 'other' });
+  });
+});
+
 describe('agents of the runtime as hosted sessions', () => {
   it('runs every turn on the thread of the session and passes steering on', async () => {
     const started: { agent: string; input: string; threadId: string }[] = [];
@@ -577,8 +722,47 @@ describe('agents of the runtime as hosted sessions', () => {
     const [report] = await bridge.inbox(claude.name);
     expect(report).toMatchObject({ kind: 'report', outcome: 'failed' });
     expect(report.body).toBe(
-      'The agent failed: the run stopped to wait for an approval or an answer, which nobody gives in a hosted session. Give the agent the permission rules it needs before it starts'
+      'The agent failed: the run stopped to wait for an answer nobody gives in a hosted session: a question of a tool, or an approval the runtime did not ask the bridge for'
     );
+  });
+
+  it('hands the runtime the way to ask leave, so a run asks the bridge instead of pausing', async () => {
+    const asked: unknown[] = [];
+    const runtime = {
+      start(
+        _agent: string,
+        options: {
+          input: string;
+          onApproval?: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision | 'pause'>;
+        }
+      ): HostedRun {
+        return {
+          result: (async () => {
+            const answer = await options.onApproval?.(PUSH);
+            asked.push(answer);
+            return { output: 'Pushed' };
+          })(),
+          steer: () => false,
+          followUp: () => false,
+          abort: () => undefined,
+        };
+      },
+    };
+    kit = await makeKit({
+      rights: () => 'allow',
+      adapters: [
+        hostedAdapter({ harness: 'qwen', open: cogitatorSessions({ runtime, agent: 'writer' }) }),
+      ],
+    });
+    const { bridge, claude } = kit;
+
+    await bridge.createJob(claude.name, { to: 'qwen', body: 'Ship the fix' });
+    await settle(kit);
+    await bridge.send(claude.name, { job: 1, kind: 'answer', body: 'Go', verdict: 'allow' });
+    await settle(kit);
+
+    expect(asked).toEqual([{ approved: true }]);
+    expect(await bridge.job(1)).toMatchObject({ state: 'completed' });
   });
 });
 
@@ -627,6 +811,22 @@ describe('agents behind a session provider as hosted sessions', () => {
 
     await expect(session.turn('one').result).rejects.toThrow('I cannot help with that');
     expect(modes).toEqual(['plan']);
+  });
+
+  it('hands the provider the way to ask leave for a call its rules do not settle', async () => {
+    const asked: unknown[] = [];
+    const provider = {
+      async runTurn(turn: ProviderTurn) {
+        asked.push(await turn.onApproval?.(PUSH));
+        return { output: 'done' };
+      },
+    };
+    const session = await providerSessions({ provider, root: '/work/demo' })(context);
+
+    await session.turn('one', { approve: async () => ({ approved: false, reason: 'No' }) }).result;
+    await session.turn('two').result;
+
+    expect(asked).toEqual([{ approved: false, reason: 'No' }, undefined]);
   });
 
   it('refuses a job for a folder its one provider does not work in', async () => {
