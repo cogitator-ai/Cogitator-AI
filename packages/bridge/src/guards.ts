@@ -93,14 +93,16 @@ export function resolveBudget(
 /**
  * What a job has run out of, if anything, when one more letter is about to be sent at `now`. The
  * report that ends the job is never held back by the count of letters: refusing it would throw
- * away finished work.
+ * away finished work. A job whose clock is held (`clockHeld`: it waits for the person) does not
+ * run out of time, and still runs out of letters.
  */
 export function exhaustedBudget(
   job: Pick<BridgeJobRecord, 'budget' | 'lettersUsed' | 'deadlineAt'>,
   now: number,
-  kind?: LetterKind
+  kind?: LetterKind,
+  clockHeld = false
 ): 'letters' | 'time' | undefined {
-  if (now >= Date.parse(job.deadlineAt)) return 'time';
+  if (!clockHeld && now >= Date.parse(job.deadlineAt)) return 'time';
   if (kind !== 'report' && job.lettersUsed >= job.budget.letters) return 'letters';
   return undefined;
 }

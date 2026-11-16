@@ -564,6 +564,24 @@ describe('a call a hosted agent asks leave for', () => {
     expect(kit.errors).toEqual([]);
   });
 
+  it('shows the environment a command sets for itself to whoever decides', async () => {
+    const { bridge, claude, approve } = await working({ rights: () => 'allow' });
+
+    const waiting = approve({
+      ...PUSH,
+      arguments: { command: 'ls .', env: { LD_PRELOAD: '/tmp/x.so' } },
+    });
+    await settle(kit);
+    const [request] = await bridge.inbox(claude.name);
+
+    expect(request.body).toBe(
+      'Push the branch\nRun in /work/demo with LD_PRELOAD=/tmp/x.so:\nls .'
+    );
+    expect(request.ask).toMatchObject({ env: { LD_PRELOAD: '/tmp/x.so' } });
+    await bridge.send(claude.name, { job: 1, kind: 'answer', body: 'No', verdict: 'deny' });
+    await waiting;
+  });
+
   it('is refused at once by the rules of the one who handed the job over', async () => {
     const { approve } = await working({ rights: () => 'deny' });
 
@@ -651,6 +669,22 @@ describe('a call a hosted agent asks leave for', () => {
     });
     expect(of('acp__gemini__deploy', { target: 'prod' })).toEqual({
       tool: 'acp__gemini__deploy',
+      access: 'other',
+    });
+    expect(of('exec', { command: 'ls .', env: { LD_PRELOAD: '/tmp/x.so' } })).toEqual({
+      tool: 'exec',
+      access: 'command',
+      command: 'ls .',
+      cwd: '/work/demo',
+      env: { LD_PRELOAD: '/tmp/x.so' },
+    });
+    expect(of('run_command', { command: 'ls', env: [{ name: 'A', value: '1' }] })).toMatchObject({
+      access: 'command',
+      env: { A: '1' },
+    });
+    expect(of('run_command', { command: 'ls', env: {} })).not.toHaveProperty('env');
+    expect(of('run_command', { command: 'ls', env: { A: 1 } })).toEqual({
+      tool: 'run_command',
       access: 'other',
     });
     expect(of('run_command', {})).toEqual({ tool: 'run_command', access: 'other' });

@@ -69,9 +69,18 @@ function toolOf(name: string, access: PermissionAsk['access'] | 'named'): Tool {
     access === 'command'
       ? tool({
           ...base,
-          parameters: z.object({ command: z.string(), cwd: z.string().optional() }),
+          parameters: z.object({
+            command: z.string(),
+            cwd: z.string().optional(),
+            env: z.record(z.string(), z.string()).optional(),
+          }),
           requiresApproval: true,
-          access: { kind: 'command', command: ({ command }) => command, cwd: ({ cwd }) => cwd },
+          access: {
+            kind: 'command',
+            command: ({ command }) => command,
+            cwd: ({ cwd }) => cwd,
+            env: ({ env }) => env,
+          },
         })
       : access === 'read'
         ? tool({
@@ -101,6 +110,20 @@ function toolOf(name: string, access: PermissionAsk['access'] | 'named'): Tool {
               });
   TOOLS.set(key, made);
   return made;
+}
+
+/** The folders of settings files by name, wherever they lie: `.claude` and `.cogitator`. */
+const SETTINGS_FOLDER = /(?:^|[^A-Za-z0-9_-])\.(?:claude|cogitator)(?![A-Za-z0-9_-])/;
+
+/**
+ * Whether a command line names a place the settings are read from: one of their folders by its
+ * name, or one of them by its path. Such a command may rewrite the rules, and nothing here can
+ * tell that it does not, so it is never the agent's own to allow. This reads the words of the
+ * command line, no more: a command that builds the name while it runs is not caught, as no
+ * rule on a command line catches such a one.
+ */
+function namesSettings(command: string, folders: readonly string[]): boolean {
+  return SETTINGS_FOLDER.test(command) || folders.some((folder) => command.includes(folder));
 }
 
 interface Subject {
@@ -133,7 +156,11 @@ function subjectOf(ask: PermissionAsk, place: Place): Subject {
   if (ask.access === 'command' && ask.command) {
     return {
       tool: toolOf(name, 'command'),
-      args: { command: ask.command, cwd: canonicalPath(ask.cwd ?? place.cwd) },
+      args: {
+        command: ask.command,
+        cwd: canonicalPath(ask.cwd ?? place.cwd),
+        ...(ask.env && { env: ask.env }),
+      },
       needsApproval: true,
     };
   }
@@ -160,7 +187,8 @@ function subjectOf(ask: PermissionAsk, place: Place): Subject {
  * A call those rules allow is the agent's own to allow, one they forbid is forbidden to the
  * agent it handed the job to as well, and anything they would ask a person about is the
  * person's. A change to one of the settings files themselves is never the agent's to allow,
- * whatever the rules and the mode say: an agent must not write the rules it is judged by.
+ * whatever the rules and the mode say, and neither is a command that names their folders: an
+ * agent must not write the rules it is judged by.
  *
  * @example
  * ```ts
@@ -189,11 +217,17 @@ export function settingsRights(options: SettingsRightsOptions = {}): RightsJudge
       cwd: canonicalPath(delegator?.cwd ?? job.cwd),
       projectRoot: project,
     });
-    if (decision !== 'allow' || ask.access !== 'edit') return decision;
+    if (decision !== 'allow') return decision;
     const settings = [...loaded.files.keys()].map((file) => canonicalPath(dirname(file)));
-    const rewritesRules = (ask.paths ?? []).some((path) =>
-      settings.some((dir) => isInside(dir, canonicalPath(path)))
-    );
-    return rewritesRules ? 'ask' : decision;
+    if (ask.access === 'edit') {
+      const rewritesRules = (ask.paths ?? []).some((path) =>
+        settings.some((dir) => isInside(dir, canonicalPath(path)))
+      );
+      return rewritesRules ? 'ask' : decision;
+    }
+    if (ask.access === 'command' && ask.command && namesSettings(ask.command, settings)) {
+      return 'ask';
+    }
+    return decision;
   };
 }
