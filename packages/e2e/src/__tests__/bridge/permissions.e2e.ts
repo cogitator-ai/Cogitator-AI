@@ -244,7 +244,11 @@ describe('a call a hosted agent needs leave for', () => {
     const report = await letterOf(conductor, job.number, 'report');
 
     expect(report).toMatchObject({ body: 'ran:pushed', outcome: 'completed' });
-    expect((await inbox.get(inboxItemId(request.id)))?.status).toBe('archived');
+    await until(
+      async () =>
+        (await inbox.get(inboxItemId(request.id)))?.status === 'archived' ? true : undefined,
+      'the item of the request to be put away'
+    );
     expect(errors).toEqual([]);
   });
 });
