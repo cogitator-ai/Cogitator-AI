@@ -89,7 +89,7 @@ import {
   type Rights,
 } from './types.js';
 import type { BridgeAdapter, BridgeCalls, CreatedSession } from './adapter.js';
-import type { PersonRoute, RightsJudge } from './person.js';
+import type { PersonCalls, PersonLetter, PersonRoute, RightsJudge } from './person.js';
 
 export interface BridgeDispatcherOptions {
   store: BridgeStore;
@@ -300,7 +300,10 @@ function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
  * await bridge.send(codex.name, { job: job.number, kind: 'report', body: 'Done: 14 tests' });
  * ```
  */
-export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> implements BridgeCalls {
+export class BridgeDispatcher
+  extends EventEmitter<BridgeDispatcherEvents>
+  implements BridgeCalls, PersonCalls
+{
   readonly limits: BridgeLimits;
   private readonly store: BridgeStore;
   private readonly tasks: TaskManager;
@@ -358,6 +361,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
       this.adapters.set(harness, adapter);
     }
     for (const adapter of this.adapters.values()) adapter.attach?.(this);
+    this.person?.attach?.(this);
   }
 
   /**
@@ -970,12 +974,15 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
     });
   }
 
-  /** The letters that wait for the person, oldest first, each with the text to show. */
-  async forPerson(): Promise<RenderedLetter[]> {
+  /** The letters that wait for the person, oldest first, each with its job and the text to show. */
+  async forPerson(): Promise<PersonLetter[]> {
     return this.enqueue(async () =>
       this.store
         .listLetters({ needsPerson: true, states: ['queued', 'delivered', 'read'] })
-        .map((letter) => renderLetter(letter, this.requireJob(letter.job).job))
+        .map((letter) => {
+          const { job } = this.requireJob(letter.job);
+          return { letter: renderLetter(letter, job), job };
+        })
     );
   }
 
@@ -1848,7 +1855,7 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
     }
     for (const id of settled) {
       const found = rendered(id);
-      if (found) news.push(() => route.settle(found.letter, found.job));
+      if (found) news.push(() => route.settle(found));
     }
     for (const tell of news) {
       this.personNews = this.personNews.then(tell).catch((error: unknown) => {

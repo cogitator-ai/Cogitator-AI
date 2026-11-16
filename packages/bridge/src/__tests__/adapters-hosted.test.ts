@@ -581,7 +581,7 @@ describe('a call a hosted agent asks leave for', () => {
 
     const waiting = approve(PUSH);
     await settle(kit);
-    const [letter] = await bridge.forPerson();
+    const [{ letter }] = await bridge.forPerson();
     await bridge.personAnswer({ letter: letter.id, verdict: 'allow' });
 
     expect(await waiting).toEqual({ approved: true });

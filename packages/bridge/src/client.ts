@@ -39,6 +39,7 @@ import type {
   Letter,
   RenderedLetter,
 } from './types.js';
+import type { PersonLetter } from './person.js';
 
 export interface BridgeClientOptions {
   /** Where the dispatcher listens */
@@ -211,7 +212,7 @@ export class BridgeClient {
   }
 
   /** The letters that wait for the person */
-  forPerson(): Promise<RenderedLetter[]> {
+  forPerson(): Promise<PersonLetter[]> {
     return this.call(BRIDGE_METHODS.forPerson, {});
   }
 

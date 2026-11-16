@@ -463,7 +463,7 @@ describe('BridgeClient', () => {
     const waiting = codex.verdict({ letter: letter.id, timeoutMs: 5_000 });
     await until(() => asked.length === 1, 'the person to be asked');
 
-    expect((await person.forPerson()).map((found) => found.id)).toEqual([letter.id]);
+    expect((await person.forPerson()).map((found) => found.letter.id)).toEqual([letter.id]);
     await expect(claude.personAnswer({ letter: letter.id, verdict: 'allow' })).rejects.toThrow(
       /claude@demo is a session of an agent, and only the person answers for the person/
     );

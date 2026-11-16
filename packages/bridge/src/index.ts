@@ -73,7 +73,19 @@ export type {
   WaitInput,
   WaitResult,
 } from './inputs.js';
-export type { PersonRequest, PersonRoute, RightsJudge, RightsQuestion } from './person.js';
+export { personRoutes } from './person.js';
+export type {
+  PersonCalls,
+  PersonLetter,
+  PersonRequest,
+  PersonRoute,
+  RightsJudge,
+  RightsQuestion,
+} from './person.js';
+export { inboxItemId, inboxRoute } from './person-inbox.js';
+export type { PersonInbox } from './person-inbox.js';
+export { channelRoute } from './person-channel.js';
+export type { ChannelPersonRoute, ChannelRouteOptions } from './person-channel.js';
 
 export { SqliteBridgeStore, BRIDGE_SCHEMA_VERSION } from './store/sqlite.js';
 export type { OpenBridgeStoreOptions } from './store/sqlite.js';
@@ -180,6 +192,7 @@ export {
   HOSTED_DELIVERY,
   cogitatorSessions,
   hostedAdapter,
+  permissionAskOf,
   providerSessions,
 } from './adapters/hosted.js';
 export type {

@@ -1,3 +1,4 @@
+import type { PersonAnswerInput, SendLetterResult } from './inputs.js';
 import type { AgentRecord, BridgeJob, PermissionAsk, RenderedLetter, Rights } from './types.js';
 
 /** What a permission request is judged by. */
@@ -17,22 +18,61 @@ export interface RightsQuestion {
  */
 export type RightsJudge = (question: RightsQuestion) => Rights | Promise<Rights>;
 
-/** A letter that waits for the person. */
-export interface PersonRequest {
+/** A letter that waits for the person, with the job it is about. */
+export interface PersonLetter {
   /** The question or the permission request, with the text its recipient sees */
   letter: RenderedLetter;
   job: BridgeJob;
+}
+
+/** A letter the person is told of. */
+export interface PersonRequest extends PersonLetter {
   /** The person was told of it before and has not answered: this is the reminder */
   again: boolean;
 }
 
+/** The bridge as a route to the person calls it. Whoever calls it speaks for the person. */
+export interface PersonCalls {
+  personAnswer(input: PersonAnswerInput): Promise<SendLetterResult>;
+  forPerson(): Promise<PersonLetter[]>;
+}
+
 /**
  * How the bridge reaches the person at the machine: an inbox, a chat, whatever shows them a
- * letter that waits for their word. The answer comes back through `BridgeDispatcher.personAnswer`.
+ * letter that waits for their word. A route that also takes their answer hands it to the bridge
+ * it was attached to.
  */
 export interface PersonRoute {
+  /** The bridge the route serves, given once before anything else */
+  attach?(bridge: PersonCalls): void;
   /** A letter waits for the person. Called again, with `again`, when they are reminded */
   ask(request: PersonRequest): void | Promise<void>;
   /** The letter waits no more: it was answered, by the person or not, or its job is over */
-  settle(letter: RenderedLetter, job: BridgeJob): void | Promise<void>;
+  settle(waited: PersonLetter): void | Promise<void>;
+}
+
+/**
+ * Several routes as one: the person is told on each. A route that fails does not keep the
+ * others from being told, and what failed is thrown once all were tried.
+ */
+export function personRoutes(routes: readonly PersonRoute[]): PersonRoute {
+  const each = async (tell: (route: PersonRoute) => void | Promise<void>): Promise<void> => {
+    const failed: unknown[] = [];
+    for (const route of routes) {
+      try {
+        await tell(route);
+      } catch (error) {
+        failed.push(error);
+      }
+    }
+    if (failed.length === 1) throw failed[0];
+    if (failed.length > 1) throw new AggregateError(failed, 'Several routes to the person failed');
+  };
+  return {
+    attach: (bridge) => {
+      for (const route of routes) route.attach?.(bridge);
+    },
+    ask: (request) => each((route) => route.ask(request)),
+    settle: (waited) => each((route) => route.settle(waited)),
+  };
 }

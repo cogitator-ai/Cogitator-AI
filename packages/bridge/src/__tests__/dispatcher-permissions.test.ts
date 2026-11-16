@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { PersonRequest, PersonRoute, RightsJudge, RightsQuestion } from '../person';
+import type {
+  PersonLetter,
+  PersonRequest,
+  PersonRoute,
+  RightsJudge,
+  RightsQuestion,
+} from '../person';
 import {
   BRIDGE_SENDER,
   DEFAULT_LIMITS,
@@ -32,7 +38,7 @@ class FakeRoute implements PersonRoute {
   ask(request: PersonRequest): void {
     this.asked.push(request);
   }
-  settle(letter: RenderedLetter): void {
+  settle({ letter }: PersonLetter): void {
     this.settled.push(letter);
   }
 }
@@ -389,7 +395,7 @@ describe('a letter passed on to the person', () => {
     expect(person.asked[0].letter.text.split('\n').at(-1)).toBe(
       `[agent bridge] The person was asked. Their answer goes to ${codex.name}.`
     );
-    expect((await bridge.forPerson()).map((waiting) => waiting.id)).toEqual([letter.id]);
+    expect((await bridge.forPerson()).map((waiting) => waiting.letter.id)).toEqual([letter.id]);
 
     const answered = await bridge.personAnswer({ letter: letter.id, body: 'The one in March' });
     await bridge.idle();
@@ -529,6 +535,6 @@ describe('a letter passed on to the person', () => {
     await bridge.idle();
 
     expect(kit.errors.map((error) => error.message)).toEqual(['the chat is down']);
-    expect((await bridge.forPerson()).map((waiting) => waiting.id)).toEqual([letter.id]);
+    expect((await bridge.forPerson()).map((waiting) => waiting.letter.id)).toEqual([letter.id]);
   });
 });
