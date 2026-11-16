@@ -346,7 +346,7 @@ describe.skipIf(!posix)('the bridge tools from a sandbox', () => {
     }, 'the report of the thread');
     expect(report).toMatchObject({ kind: 'report', from: job.to, body: 'From the tool' });
     const [worker] = await conductor.agents({ harness: 'codex' });
-    const [turn] = fakes.transcript('codex', worker.sessionId);
+    const turn = await fakes.waitForTurn('codex', worker.sessionId, () => true);
     expect(turn.ran[0].stderr).toContain('EPERM');
     expect(turn.input).toContain('Report on job #1 with the report tool of the bridge');
     expect((await fakes.run('codex', ['mcp', 'get', 'bridge'])).code).toBe(1);

@@ -186,7 +186,10 @@ describe.skipIf(!posix)('bridge adapters', () => {
       ),
       'Mock Redis or run a real one?',
     ]);
-    const codexTurns = fakes.transcript('codex', worker.sessionId);
+    const codexTurns = await until(() => {
+      const turns = fakes.transcript('codex', worker.sessionId);
+      return turns.length >= 2 ? turns : undefined;
+    }, 'the thread to end the turn it reported in');
     expect(codexTurns.map((turn) => turn.wokenBy)).toEqual(['exec', 'queue']);
     expect(codexTurns[0].input).toContain('Write the tests for the rate limiter');
     expect(codexTurns[1].input.split('\n')[1]).toBe('Mock it');
