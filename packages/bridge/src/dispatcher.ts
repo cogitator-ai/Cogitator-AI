@@ -113,6 +113,8 @@ export interface DispatcherStatus {
   queuedLetters: number;
   /** The harnesses the dispatcher has an adapter for */
   adapters: string[];
+  /** The harnesses it can start a session of, for a job handed to one that has none */
+  startable: string[];
   /** The agents with a waiter armed: a letter for one of them wakes its session at once */
   waiting: string[];
 }
@@ -1079,6 +1081,9 @@ export class BridgeDispatcher extends EventEmitter<BridgeDispatcherEvents> imple
       activeJobs: this.store.jobTasks({ states: ACTIVE_JOB_STATES }).length,
       queuedLetters: this.store.countLetters({ states: ['queued'] }),
       adapters: [...this.adapters.keys()],
+      startable: [...this.adapters.values()]
+        .filter((adapter) => adapter.createSession !== undefined)
+        .map((adapter) => adapter.harness),
       waiting: [...this.waiters.keys()].sort(),
     }));
   }

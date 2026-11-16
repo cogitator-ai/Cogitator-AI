@@ -1,0 +1,439 @@
+import { tool } from '@cogitator-ai/core';
+import type { Tool, ToolAnnotations } from '@cogitator-ai/types';
+import { z } from 'zod';
+import { BridgeClient } from '../client.js';
+import { BridgeError, isBridgeError } from '../errors.js';
+import { oneLine } from '../letters.js';
+import { NEW_SESSION, aliasOfHarness } from '../registry.js';
+import type { AgentRecord, BridgeJob, CallerIdentity, JobState, Letter } from '../types.js';
+import { mailText } from '../waiter.js';
+import { callerOfToolCall, type ToolCallOrigin } from './caller.js';
+
+export interface BridgeToolsOptions {
+  /** Where the dispatcher of this machine listens, `bridgePaths().socket` */
+  socketPath: string;
+  /** The environment of the process the tools run in, `process.env` by default */
+  env?: NodeJS.ProcessEnv;
+  /** The folder the session works in when the call does not say, the current one by default */
+  cwd?: string;
+  /** How long the dispatcher may take to answer a call, 30 s by default */
+  timeoutMs?: number;
+}
+
+/** A tool that changes something in the bridge: it adds, never destroys, and stays on this machine. */
+const WRITES: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: false,
+};
+
+const READS: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
+
+const OPEN_STATES: readonly JobState[] = ['submitted', 'working', 'input-required'];
+
+/** How many letters of a job `job` shows, the newest. */
+const TRAIL_LETTERS = 10;
+
+/** How much of one letter `job` shows. The whole letter is in the inbox of who got it. */
+const TRAIL_BODY = 4_000;
+
+const JobNumber = z.number().int().positive().describe('The number of the job');
+
+/** An ISO time to the minute, as an agent reads it: `2026-11-16 13:49 UTC`. */
+function clock(at: string): string {
+  return `${at.slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+function jobLine(job: BridgeJob): string {
+  return `#${job.number} ${job.state}  ${job.from} -> ${job.to}  "${oneLine(job.title)}"`;
+}
+
+function letterBlock(letter: Letter): string {
+  const body =
+    letter.body.length > TRAIL_BODY
+      ? `${letter.body.slice(0, TRAIL_BODY)}\n[cut here, ${letter.body.length} characters in all]`
+      : letter.body;
+  const outcome = letter.outcome ? ` (${letter.outcome})` : '';
+  return `${clock(letter.createdAt)} ${letter.kind}${outcome} from ${letter.from} to ${letter.to}, letter ${letter.id}:\n${body}`;
+}
+
+function agentLine(agent: AgentRecord, self: string | undefined, waiting: boolean): string {
+  const notes = [
+    agent.name === self ? 'this session' : undefined,
+    agent.sessionName ? `"${oneLine(agent.sessionName)}"` : undefined,
+    agent.status === 'starting' ? 'starting' : undefined,
+    waiting ? 'wakes for mail' : undefined,
+  ].filter((note) => note !== undefined);
+  return `${agent.name}  ${agent.harness}${notes.length > 0 ? `, ${notes.join(', ')}` : ''}`;
+}
+
+const NO_DISPATCHER =
+  'No bridge dispatcher runs on this machine, so nothing was sent. Tell the user to start it: cogitator bridge serve';
+
+const NO_SESSION =
+  'The bridge cannot tell which session is calling: the call names none, and neither does the environment of the tools. ' +
+  'They work inside a session of Claude Code or Codex. Tell the user to check the setup: cogitator bridge doctor';
+
+/**
+ * The bridge as tools of an agent: hand a job over, ask and answer on the way, report, and see
+ * what goes on. They are what `cogitator bridge mcp` serves to Claude Code and Codex. No tool
+ * waits for another agent: each returns at once, and the reply comes later as a letter.
+ *
+ * Every call says which session makes it (`callerOfToolCall`) and reaches the dispatcher on a
+ * connection of its own, so the tools go on working across a restart of the dispatcher and
+ * across a change of the session they serve.
+ *
+ * @example
+ * ```ts
+ * import { MCPServer } from '@cogitator-ai/mcp';
+ * import { bridgePaths } from '@cogitator-ai/bridge';
+ * import { BRIDGE_INSTRUCTIONS, bridgeTools } from '@cogitator-ai/bridge/tools';
+ *
+ * const server = new MCPServer({
+ *   name: 'cogitator-bridge',
+ *   version: '1.0.0',
+ *   transport: 'stdio',
+ *   instructions: BRIDGE_INSTRUCTIONS,
+ * });
+ * server.registerTools(bridgeTools({ socketPath: bridgePaths().socket }));
+ * await server.start();
+ * ```
+ */
+export function bridgeTools(options: BridgeToolsOptions): Tool[] {
+  const env = options.env ?? process.env;
+
+  function originOf(args: unknown, context: unknown): ToolCallOrigin {
+    const request =
+      typeof context === 'object' && context !== null && 'request' in context
+        ? (context as { request?: unknown }).request
+        : undefined;
+    const { meta, client } = (typeof request === 'object' && request !== null ? request : {}) as {
+      meta?: unknown;
+      client?: unknown;
+    };
+    const name =
+      typeof client === 'object' && client !== null && 'name' in client
+        ? (client as { name?: unknown }).name
+        : undefined;
+    return {
+      args,
+      ...(typeof meta === 'object' && meta !== null && { meta: meta as Record<string, unknown> }),
+      ...(typeof name === 'string' && { client: name }),
+    };
+  }
+
+  /** Runs `work` as the session that made the call, on a connection that lasts for the call. */
+  async function asCaller<T>(
+    args: unknown,
+    context: unknown,
+    work: (bridge: BridgeClient, self: AgentRecord) => Promise<T>
+  ): Promise<T> {
+    let caller: CallerIdentity | undefined;
+    let bridge: BridgeClient | undefined;
+    try {
+      caller = callerOfToolCall(originOf(args, context), env, options.cwd ?? process.cwd());
+      if (!caller) throw new Error(NO_SESSION);
+      bridge = await BridgeClient.connect({
+        socketPath: options.socketPath,
+        caller,
+        ...(options.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
+      });
+      if (!bridge.agent) {
+        throw new BridgeError(
+          'not_registered',
+          'The bridge did not say which agent this session is'
+        );
+      }
+      return await work(bridge, bridge.agent);
+    } catch (error) {
+      if (isBridgeError(error) && error.code === 'not_running' && !bridge) {
+        throw new Error(NO_DISPATCHER, { cause: error });
+      }
+      throw error;
+    } finally {
+      await bridge?.close().catch(() => undefined);
+    }
+  }
+
+  const delegate = tool({
+    name: 'delegate',
+    title: 'Hand a job to another agent',
+    description:
+      'Hand a job to another coding agent on this machine and get its number at once. The agent works in its own session: its questions and its report come back later as letters that wake this session, so end your turn after the call instead of waiting.',
+    parameters: z.looseObject({
+      to: z
+        .string()
+        .min(1)
+        .describe(
+          `Who gets the job: "codex" or "claude" for the session of that agent in this project (one is started when none is open), "codex:${NEW_SESSION}" for a fresh one, or an agent name from the agents tool such as "codex-2@app"`
+        ),
+      task: z
+        .string()
+        .min(1)
+        .describe(
+          'The job: what to do, and what done looks like. The other agent sees nothing of this conversation, so name the files, the constraints and the decisions already made'
+        ),
+      title: z.string().optional().describe('A short name of the job, its first line by default'),
+      cwd: z
+        .string()
+        .optional()
+        .describe("The folder the job is done in, inside this project. This session's by default"),
+      parent: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          'The job this one is part of, when this session carries out several. Found by itself otherwise'
+        ),
+    }),
+    annotations: WRITES,
+    sideEffects: ['process'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const { job, duplicate } = await bridge.createJob({
+          to: args.to,
+          body: args.task,
+          ...(args.title !== undefined && { title: args.title }),
+          ...(args.cwd !== undefined && { cwd: args.cwd }),
+          ...(args.parent !== undefined && { parent: args.parent }),
+        });
+        return (
+          `Job #${job.number} is with ${job.to} (${job.state})${duplicate ? ', handed over before: nothing was sent twice' : ''}. ` +
+          'Its questions and its report arrive as letters. Say in one line what you handed over, then end your turn: do not wait or poll.'
+        );
+      }),
+  });
+
+  const ask = tool({
+    name: 'ask',
+    title: 'Ask about a job',
+    description:
+      'Ask the other agent of a job a question: whoever handed you the job, or the agent you handed one to. The answer comes back as a letter that wakes this session, so end your turn after asking.',
+    parameters: z.looseObject({
+      job: JobNumber,
+      question: z
+        .string()
+        .min(1)
+        .describe('The question, with what the other agent needs to answer it'),
+    }),
+    annotations: WRITES,
+    sideEffects: ['external'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const sent = await bridge.send({ job: args.job, kind: 'question', body: args.question });
+        return `Asked ${sent.letter.to} (letter ${sent.letter.id}). Job #${sent.job.number} is ${sent.job.state}. End your turn: the answer wakes this session.`;
+      }),
+  });
+
+  const answer = tool({
+    name: 'answer',
+    title: 'Answer a question',
+    description:
+      'Answer a question another agent asked about a job. The answer goes to that agent, who does not see this conversation.',
+    parameters: z.looseObject({
+      job: JobNumber,
+      answer: z.string().min(1).describe('The answer'),
+      letter: z
+        .string()
+        .optional()
+        .describe(
+          'The id of the letter this answers, from its first line. The open question of the job by default'
+        ),
+    }),
+    annotations: WRITES,
+    sideEffects: ['external'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const sent = await bridge.send({
+          job: args.job,
+          kind: 'answer',
+          body: args.answer,
+          ...(args.letter !== undefined && { inReplyTo: args.letter }),
+        });
+        return `Answered ${sent.letter.to}. Job #${sent.job.number} is ${sent.job.state}.`;
+      }),
+  });
+
+  const report = tool({
+    name: 'report',
+    title: 'Report on a job',
+    description:
+      'Report the result of a job that was handed to this session, which ends the job. Whoever handed it over reads only this report, so say what was done, where, and what is left.',
+    parameters: z.looseObject({
+      job: JobNumber,
+      result: z
+        .string()
+        .min(1)
+        .describe(
+          'What was done: the outcome, the files touched, how it was checked, what is left open'
+        ),
+      failed: z
+        .boolean()
+        .optional()
+        .describe('True when the job could not be done. The result then says why'),
+    }),
+    annotations: WRITES,
+    sideEffects: ['external'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const sent = await bridge.send({
+          job: args.job,
+          kind: 'report',
+          body: args.result,
+          ...(args.failed && { outcome: 'failed' as const }),
+        });
+        return `Reported to ${sent.letter.to}. Job #${sent.job.number} is ${sent.job.state}.`;
+      }),
+  });
+
+  const note = tool({
+    name: 'note',
+    title: 'Send a note on a job',
+    description:
+      'Tell the other agent of a job something it should know and need not answer: progress, a finding, a change of plan. The job goes on.',
+    parameters: z.looseObject({
+      job: JobNumber,
+      text: z.string().min(1).describe('What the other agent should know'),
+    }),
+    annotations: WRITES,
+    sideEffects: ['external'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const sent = await bridge.send({ job: args.job, kind: 'note', body: args.text });
+        return `Sent the note to ${sent.letter.to}. Job #${sent.job.number} is ${sent.job.state}.`;
+      }),
+  });
+
+  const inbox = tool({
+    name: 'inbox',
+    title: 'Read the letters that wait',
+    description:
+      'Read the letters that wait for this session, each under the line that says which job it is about and who wrote it. Letters usually arrive by themselves: use this when nothing woke the session, or for a letter too long to be handed over whole.',
+    parameters: z.looseObject({
+      job: z.number().int().positive().optional().describe('Only the letters of one job'),
+      peek: z.boolean().optional().describe('Look without taking: the letters stay as they are'),
+      unhandled: z
+        .boolean()
+        .optional()
+        .describe('Also the letters read before and not answered since'),
+    }),
+    annotations: WRITES,
+    sideEffects: [],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const letters = await bridge.inbox({
+          ...(args.job !== undefined && { job: args.job }),
+          ...(args.peek && { peek: true }),
+          ...(args.unhandled && { unhandled: true }),
+        });
+        return letters.length === 0 ? 'No letters wait for this session.' : mailText(letters);
+      }),
+  });
+
+  const job = tool({
+    name: 'job',
+    title: 'Look at a job',
+    description:
+      'See one job: its state, who handed it to whom, and for a job of this session its latest letters. Reads only, takes nothing from the inbox.',
+    parameters: z.looseObject({ job: JobNumber }),
+    annotations: READS,
+    sideEffects: [],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge, self) => {
+        const found = await bridge.job(args.job);
+        const lines = [
+          jobLine(found),
+          `Handed over ${clock(found.createdAt)}, last change ${clock(found.updatedAt)}, folder ${found.cwd}`,
+        ];
+        if (found.reason) lines.push(`Reason: ${found.reason}`);
+        if (found.parent !== undefined) lines.push(`Part of job #${found.parent}`);
+        if (found.from !== self.name && found.to !== self.name) {
+          lines.push('Its letters are between its two agents: this session is neither.');
+          return lines.join('\n');
+        }
+        const trail = await bridge.letters({
+          job: found.number,
+          newestFirst: true,
+          limit: TRAIL_LETTERS,
+        });
+        if (trail.length > 0) {
+          lines.push('', ...trail.reverse().map((letter) => letterBlock(letter)));
+        }
+        return lines.join('\n');
+      }),
+  });
+
+  const jobs = tool({
+    name: 'jobs',
+    title: 'List the jobs of this session',
+    description:
+      'List the jobs this session handed over or carries out: those in progress, or all of them.',
+    parameters: z.looseObject({
+      all: z.boolean().optional().describe('Also the jobs that are over, the newest first'),
+    }),
+    annotations: READS,
+    sideEffects: [],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge, self) => {
+        const found = await bridge.jobs({
+          party: self.name,
+          ...(!args.all && { states: OPEN_STATES }),
+          limit: 50,
+        });
+        if (found.length === 0) {
+          return args.all ? 'This session has no jobs.' : 'This session has no jobs in progress.';
+        }
+        return found.map((entry) => jobLine(entry)).join('\n');
+      }),
+  });
+
+  const cancel = tool({
+    name: 'cancel',
+    title: 'Take a job back',
+    description:
+      'Take back a job this session handed over. The agent that worked on it is told to stop, and what it did so far stays where it is.',
+    parameters: z.looseObject({
+      job: JobNumber,
+      reason: z.string().optional().describe('Why, for the agent that worked on it'),
+    }),
+    annotations: WRITES,
+    sideEffects: ['process'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const canceled = await bridge.cancel(args.job, args.reason?.trim() || undefined);
+        return `Job #${canceled.number} is ${canceled.state}, ${canceled.to} is told.`;
+      }),
+  });
+
+  const agents = tool({
+    name: 'agents',
+    title: 'See who can take a job',
+    description:
+      'List the sessions of coding agents the bridge knows in this project, and the agents it can start a session of. Their names are what delegate takes.',
+    parameters: z.looseObject({}),
+    annotations: READS,
+    sideEffects: [],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge, self) => {
+        const [known, status] = await Promise.all([
+          bridge.agents({ project: self.project, statuses: ['active', 'starting'] }),
+          bridge.status(),
+        ]);
+        const lines = known.map((agent) =>
+          agentLine(agent, self.name, status.waiting.includes(agent.name))
+        );
+        const startable = status.startable.map((harness) => aliasOfHarness(harness));
+        lines.push(
+          '',
+          startable.length > 0
+            ? `The bridge starts a session for a job handed to: ${startable.join(', ')} (when none is open in this project, or with ":${NEW_SESSION}" after the word)`
+            : 'The bridge cannot start sessions here: a job goes to a session that is listed above'
+        );
+        return lines.join('\n');
+      }),
+  });
+
+  return [delegate, ask, answer, report, note, inbox, job, jobs, cancel, agents] as Tool[];
+}
