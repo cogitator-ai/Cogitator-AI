@@ -13,6 +13,14 @@ const describeOllama = describe.skipIf((await ollamaSkipReason()) !== null);
 
 const POLL = { pollIntervalMs: 200 };
 
+/**
+ * A request whose answer cannot end within the 16 tokens the cut-off test allows. An open
+ * request such as "write a long story" can: a small model now and then refuses it in a
+ * dozen tokens, and that answer is rightly completed. The test also asks at temperature 0,
+ * so the model gives the same answer on every run.
+ */
+const COUNT_TO_300 = 'Count from 1 to 300, every number in words, separated by commas.';
+
 const getWeather: OpenAI.ChatCompletionTool = {
   type: 'function',
   function: {
@@ -136,19 +144,20 @@ describeOllama('Chat Completions and Responses over a registered agent', () => {
   it('reports a cut-off answer as incomplete, not completed', async () => {
     const response = await client.responses.create({
       model: 'narrator',
-      input: 'Count from 1 to 300, every number in words, separated by commas.',
+      input: COUNT_TO_300,
       max_output_tokens: 16,
+      temperature: 0,
     });
     expect(response.status).toBe('incomplete');
     expect(response.incomplete_details?.reason).toBe('max_output_tokens');
 
     const assistant = await client.beta.assistants.create({ model: 'cogitator' });
     const thread = await client.beta.threads.create({
-      messages: [{ role: 'user', content: 'Write a long story about a lighthouse keeper.' }],
+      messages: [{ role: 'user', content: COUNT_TO_300 }],
     });
     const run = await client.beta.threads.runs.createAndPoll(
       thread.id,
-      { assistant_id: assistant.id, max_completion_tokens: 16 },
+      { assistant_id: assistant.id, max_completion_tokens: 16, temperature: 0 },
       POLL
     );
     expect(run.status).toBe('incomplete');

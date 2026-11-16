@@ -15,6 +15,9 @@ import { Cogitator, LocalWorkspace } from '@cogitator-ai/core';
 
 const CLI = fileURLToPath(new URL('../../../../cli/dist/index.js', import.meta.url));
 const FAKE_AGENT = fileURLToPath(new URL('../../../fixtures/acp/fake-agent.mjs', import.meta.url));
+const SILENT_AGENT = fileURLToPath(
+  new URL('../../../fixtures/acp/silent-agent.mjs', import.meta.url)
+);
 const SCRATCH_ROOT = fileURLToPath(new URL('../../../.tmp-acp-client-e2e', import.meta.url));
 
 async function until(predicate: () => boolean, what: string): Promise<void> {
@@ -22,6 +25,15 @@ async function until(predicate: () => boolean, what: string): Promise<void> {
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -107,6 +119,66 @@ describe('external ACP agents as session providers (fake agent process)', () => 
       await provider.close();
       await host.close();
     }
+  });
+
+  it('fails the turn of an agent that never answers initialize and stops the agent', async () => {
+    let stderr = '';
+    const provider = new AcpAgentProvider({
+      agent: { command: process.execPath, args: [SILENT_AGENT] },
+      workspace,
+      name: 'silent',
+      handshakeTimeout: 1000,
+      onStderr: (chunk) => (stderr += chunk),
+    });
+    const host = new SessionHost({
+      cogitator: new Cogitator({ memory: { adapter: 'memory' } }),
+      agents: {},
+      providers: { silent: provider },
+      exposeErrors: true,
+    });
+    const notifications: AppServerNotification[] = [];
+    host.subscribe((notification) => notifications.push(notification));
+    try {
+      const thread = await host.startThread({ agent: 'silent' });
+      const turn = await host.startTurn({
+        threadId: thread.id,
+        input: [{ type: 'text', text: 'speak hi' }],
+      });
+      let done: TurnInfo | undefined;
+      await until(() => {
+        for (const n of notifications) {
+          if (n.method === 'turn/completed' && n.params.turn.id === turn.id) done = n.params.turn;
+        }
+        return done !== undefined;
+      }, 'the turn of the silent agent');
+      expect(done?.status).toBe('failed');
+      expect(done?.error?.message).toContain(SILENT_AGENT);
+      expect(done?.error?.message).toMatch(/did not answer initialize in 1000 ms/);
+      expect(done?.error?.message).toMatch(/not signed in/);
+      await until(() => !alive(Number(stderr)), 'the silent agent to be stopped');
+    } finally {
+      await provider.close();
+      await host.close();
+    }
+  });
+
+  it('closes while a launched agent has not answered initialize, and stops it', async () => {
+    let stderr = '';
+    const provider = new AcpAgentProvider({
+      agent: { command: process.execPath, args: [SILENT_AGENT] },
+      workspace,
+      onStderr: (chunk) => (stderr += chunk),
+    });
+    const failure = provider.connect().then(
+      () => undefined,
+      (error: Error) => error
+    );
+    await until(() => /^\d+$/.test(stderr), 'the silent agent to start');
+    const closing = Date.now();
+    await provider.close();
+    expect(Date.now() - closing).toBeLessThan(5000);
+    expect((await failure)?.message).toMatch(/closed while the ACP agent started/);
+    await until(() => !alive(Number(stderr)), 'the silent agent to be stopped');
   });
 
   it('serves the agent to app-server clients next to the native one', async () => {
