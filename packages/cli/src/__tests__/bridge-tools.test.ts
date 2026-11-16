@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
@@ -293,6 +293,30 @@ describe('bridge install and uninstall', () => {
     expect(output()).toContain('Done: 3 changes');
     expect(output()).toContain('No dispatcher runs yet');
     expect(output()).toContain('cogitator bridge doctor');
+  });
+
+  it('sets up the checkout it runs in: a linked worktree, not the main checkout it belongs to', async () => {
+    const gitDir = join(project, '.git', 'worktrees', 'feature');
+    const worktree = join(project, 'trees', 'feature');
+    mkdirSync(gitDir, { recursive: true });
+    mkdirSync(join(worktree, 'src'), { recursive: true });
+    writeFileSync(join(worktree, '.git'), `gitdir: ${gitDir}\n`);
+    writeFileSync(join(gitDir, 'gitdir'), `${join(worktree, '.git')}\n`);
+    const claude = setup([step('Register the server')], [step('Remove the server')]);
+    const inWorktree = { ...context({ claude }, true), cwd: join(worktree, 'src') };
+
+    expect(await runBridgeInstall(undefined, {}, inWorktree)).toBe(0);
+    expect(await runBridgeUninstall(undefined, {}, inWorktree)).toBe(0);
+    expect(await runBridgeInstall(undefined, { cwd: worktree }, context({ claude }, true))).toBe(0);
+
+    expect(output()).toContain(`Setting up the agent bridge for the project ${worktree}`);
+    expect(vi.mocked(claude.install).mock.calls.map(([asked]) => asked.project)).toEqual([
+      worktree,
+      worktree,
+    ]);
+    expect(vi.mocked(claude.uninstall).mock.calls.map(([asked]) => asked.project)).toEqual([
+      worktree,
+    ]);
   });
 
   it('changes nothing after a no, with --dry-run, or when nobody can answer', async () => {

@@ -1,6 +1,10 @@
 /** What `install` and `uninstall` are asked to set up or undo. */
 export interface SetupContext {
-  /** The project the sessions work in, an absolute path */
+  /**
+   * The checkout the sessions work in, an absolute path. A linked git worktree is set up on its
+   * own: a harness reads the settings of the folder a session is opened in, not of the main
+   * checkout
+   */
   project: string;
   /**
    * `project`: for this person in this project only. `user`: for this person in every project.

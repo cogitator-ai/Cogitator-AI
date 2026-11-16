@@ -41,7 +41,7 @@ export type { BridgeStatus, DispatcherInfo, HelloResult } from './protocol.js';
 export { BridgeError, isBridgeError } from './errors.js';
 export type { BridgeErrorCode } from './errors.js';
 
-export { bridgePaths, findProjectRoot } from './paths.js';
+export { bridgePaths, findCheckoutRoot, findProjectRoot } from './paths.js';
 export type { BridgePaths, BridgePathsOptions } from './paths.js';
 
 export {
