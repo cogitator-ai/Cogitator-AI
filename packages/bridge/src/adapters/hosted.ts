@@ -137,10 +137,35 @@ function textOf(value: unknown): string | undefined {
 }
 
 /**
+ * The environment a command sets for itself, as an object of strings or a list of names and
+ * values. A command whose environment cannot be read is not one the rules can judge: a variable
+ * may change what the command does.
+ */
+function envOf(value: unknown): Record<string, string> | 'unreadable' | undefined {
+  if (value === undefined || value === null) return undefined;
+  const entries: [unknown, unknown][] = Array.isArray(value)
+    ? value.map((entry: unknown) =>
+        entry !== null && typeof entry === 'object'
+          ? [(entry as { name?: unknown }).name, (entry as { value?: unknown }).value]
+          : [undefined, undefined]
+      )
+    : typeof value === 'object'
+      ? Object.entries(value)
+      : [[undefined, undefined]];
+  const read: Record<string, string> = {};
+  for (const [name, set] of entries) {
+    if (typeof name !== 'string' || name === '' || typeof set !== 'string') return 'unreadable';
+    read[name] = set;
+  }
+  return Object.keys(read).length > 0 ? read : undefined;
+}
+
+/**
  * What a tool call touches, read from the name of its tool and its arguments: the tools of the
- * Cogitator runtime and the names `AcpAgentProvider` gives the calls of an ACP agent. A call it
- * cannot read is known by the name of its tool alone, which leaves it to the person unless a
- * rule names that tool.
+ * Cogitator runtime and the names `AcpAgentProvider` gives the calls of an ACP agent. A command
+ * carries the environment it sets for itself, which the rules judge with it. A call it cannot
+ * read is known by the name of its tool alone, which leaves it to the person unless a rule names
+ * that tool.
  */
 export function permissionAskOf(
   request: Pick<ToolApprovalRequest, 'toolName' | 'arguments'>,
@@ -158,8 +183,15 @@ export function permissionAskOf(
   if (COMMAND_TOOLS.has(tool)) {
     const command = textOf(args.command);
     const cwd = textOf(args.cwd);
-    if (command) {
-      return { tool, access: 'command', command, cwd: absolute(cwd ?? '.') };
+    const env = envOf(args.env);
+    if (command && env !== 'unreadable') {
+      return {
+        tool,
+        access: 'command',
+        command,
+        cwd: absolute(cwd ?? '.'),
+        ...(env && { env }),
+      };
     }
   }
   if (READ_TOOLS.has(tool) && paths.length > 0) {
@@ -175,12 +207,18 @@ export function permissionAskOf(
   return { tool, access: 'other' };
 }
 
+/** The environment a command sets for itself, in words for a letter: ` with A=1, B=2`. */
+function envWords(env: Record<string, string> | undefined): string {
+  const set = Object.entries(env ?? {}).map(([name, value]) => `${name}=${value}`);
+  return set.length > 0 ? ` with ${set.join(', ')}` : '';
+}
+
 /** The words of a letter that asks leave for a call: what the agent said of it, then the call. */
 function describeCall(request: ToolApprovalRequest, ask: PermissionAsk): string {
   const said = request.description.trim();
   const call =
     ask.access === 'command' && ask.command
-      ? `Run in ${ask.cwd ?? 'its folder'}:\n${ask.command}`
+      ? `Run in ${ask.cwd ?? 'its folder'}${envWords(ask.env)}:\n${ask.command}`
       : ask.access === 'fetch' && ask.url
         ? `Fetch ${ask.url}`
         : ask.paths && ask.paths.length > 0

@@ -523,6 +523,34 @@ describe('a letter passed on to the person', () => {
     expect((await bridge.job(job.number)).reason).toBe('it ran longer than its 4 h budget');
   });
 
+  it('still counts the letters of a job whose clock is held', async () => {
+    const person = new FakeRoute();
+    kit = await makeKit({ person });
+    const { bridge, claude, codex } = kit;
+    const { job } = await bridge.createJob(claude.name, {
+      to: 'codex',
+      body: 'Ship the fix',
+      budget: { letters: 4 },
+    });
+    const { letter } = await bridge.send(codex.name, {
+      job: job.number,
+      kind: 'question',
+      body: 'Which release?',
+    });
+    await bridge.escalate(claude.name, { letter: letter.id });
+    kit.clock.advance(5 * 3_600_000);
+    const note = (body: string) => bridge.send(codex.name, { job: job.number, kind: 'note', body });
+
+    await note('Still waiting');
+    await note('And still');
+
+    await expect(note('One more')).rejects.toThrow(code('budget_exhausted'));
+    expect(await bridge.job(job.number)).toMatchObject({
+      state: 'failed',
+      reason: 'the job used all 4 letters of its budget',
+    });
+  });
+
   it('counts the time two letters waited together once', async () => {
     const person = new FakeRoute();
     const { bridge, claude, codex, job, letter } = await questioned({ person });
