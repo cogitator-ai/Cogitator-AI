@@ -34,7 +34,9 @@ import {
   runBridgeCaller,
   runBridgeMcp,
   runBridgePermit,
+  runBridgeStuck,
   type BridgePermitFlags,
+  type BridgeStuckFlags,
 } from './bridge-tools.js';
 import {
   DECISIONS,
@@ -656,6 +658,17 @@ bridgeCommand
   .option(...homeOption)
   .action(async (flags: HomeFlags) => {
     process.exitCode = await runBridgeMcp(flags);
+  });
+
+bridgeCommand
+  .command('stuck')
+  .description(
+    'Tell the bridge a session waits for a person at its own window: what a hook runs when the session opens its permission dialog'
+  )
+  .requiredOption('--hook <harness>', 'the harness whose hook runs the command')
+  .option(...homeOption)
+  .action(async (flags: BridgeStuckFlags) => {
+    process.exitCode = await runBridgeStuck(flags);
   });
 
 bridgeCommand

@@ -170,6 +170,16 @@ export interface PersonAnswerInput {
   body?: string;
 }
 
+export const StuckInputSchema = z.strictObject({
+  what: z.string().trim().min(1).max(2000).refine(withoutNul, NUL_REFUSED),
+});
+
+/** A session that waits for a person at its own window, and what it shows them. */
+export interface StuckInput {
+  /** What the session waits for, in the words of its harness */
+  what: string;
+}
+
 export const VerdictInputSchema = z.strictObject({
   letter: LetterIdSchema,
   timeoutMs: z.number().int().min(0).max(86_400_000).optional(),

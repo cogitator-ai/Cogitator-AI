@@ -16,6 +16,7 @@ import {
   type PersonAnswerInput,
   type SendLetterInput,
   type SendLetterResult,
+  type StuckInput,
   type VerdictInput,
   type VerdictResult,
   type WaitInput,
@@ -209,6 +210,14 @@ export class BridgeClient {
   verdict(input: VerdictInput): Promise<VerdictResult> {
     const waitMs = input.timeoutMs ?? DEFAULT_VERDICT_WAIT_MS;
     return this.call(BRIDGE_METHODS.verdict, input, waitMs + this.timeoutMs);
+  }
+
+  /**
+   * Says the session waits for a person at its own window. Resolves with the jobs whose other
+   * party was told
+   */
+  stuck(input: StuckInput): Promise<number[]> {
+    return this.call(BRIDGE_METHODS.stuck, input);
   }
 
   /** The letters that wait for the person */

@@ -28,6 +28,7 @@ import {
   createBridgeMcpServer,
   runBridgeCaller,
   runBridgePermit,
+  runBridgeStuck,
   type BridgeCallerContext,
 } from '../commands/bridge-tools.js';
 import {
@@ -227,6 +228,68 @@ describe('bridge permit', () => {
     expect(await runBridgePermit({ hook: 'codex' }, codexHook.context)).toBe(1);
     expect(codexHook.written).toEqual([]);
     expect(failed()).toContain('No adapter asks leave for the sessions of "codex"');
+  });
+});
+
+describe('bridge stuck', () => {
+  const notification = (type: string) =>
+    JSON.stringify({
+      session_id: 'worker-1',
+      cwd: project,
+      hook_event_name: 'Notification',
+      message: 'Claude needs your permission to use Bash',
+      notification_type: type,
+    });
+
+  function hook(input: string | undefined) {
+    const written: string[] = [];
+    const context: BridgeCallerContext = {
+      write: (text) => written.push(text),
+      env: { COGITATOR_BRIDGE_HOME: bridgeDir },
+      cwd: project,
+      stdin: async () => input,
+      adapters: [claudeCodeAdapter(), codexAdapter()],
+    };
+    return { context, written };
+  }
+
+  it('tells whoever handed the session a job that it waits for a person, and says nothing to Claude Code', async () => {
+    const host = await hostBridge({ home: bridgeDir, tickMs: 25 });
+    hosts.push(host);
+    const connect = (harness: string, sessionId: string) =>
+      BridgeClient.connect({
+        socketPath: bridgePaths({ home: bridgeDir }).socket,
+        caller: { harness, sessionId, cwd: project },
+      });
+    const conductor = await connect('conductor', 'conductor-1');
+    const worker = await connect('claude-code', 'worker-1');
+    try {
+      await conductor.createJob({ to: 'claude', body: 'Ship the fix' });
+      await worker.inbox();
+      const idle = hook(notification('idle_prompt'));
+      const prompt = hook(notification('permission_prompt'));
+
+      expect(await runBridgeStuck({ hook: 'claude-code' }, idle.context)).toBe(0);
+      expect(await conductor.inbox()).toEqual([]);
+      expect(await runBridgeStuck({ hook: 'claude-code' }, prompt.context)).toBe(0);
+
+      const [note] = await conductor.inbox();
+      expect(note.body).toContain('> Claude needs your permission to use Bash');
+      expect(prompt.written).toEqual([]);
+    } finally {
+      await conductor.close();
+      await worker.close();
+    }
+  });
+
+  it('is quiet without a dispatcher, and never exits with the code a harness reads as a refusal', async () => {
+    const alone = hook(notification('permission_prompt'));
+    expect(await runBridgeStuck({ hook: 'claude-code' }, alone.context)).toBe(0);
+    expect(failed()).toBe('');
+
+    const codexHook = hook(notification('permission_prompt'));
+    expect(await runBridgeStuck({ hook: 'codex' }, codexHook.context)).toBe(1);
+    expect(failed()).toContain('No adapter knows when a session of "codex" waits for a person');
   });
 });
 
