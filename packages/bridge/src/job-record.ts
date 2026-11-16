@@ -33,6 +33,7 @@ export const BridgeJobRecordSchema = z.object({
   parent: z.number().int().positive().optional(),
   createdAt: z.string(),
   deadlineAt: z.string(),
+  personWaitSince: z.string().optional(),
   reason: z.string().optional(),
   verification: JobVerificationSchema.optional(),
 });

@@ -173,6 +173,25 @@ describe('bridge asks, allow and deny', () => {
     expect(await runBridgeDecide('allow', '#1', [], {}, person())).toBe(0);
   });
 
+  it('take the id of a letter for an id, even one that reads like a job number or starts another', async () => {
+    await startHost();
+    await handedOver();
+    const codexClient = await thread();
+    const ask = { tool: 'Bash', access: 'command' as const, command: 'git push' };
+    for (const id of ['7', 'q1', 'q10']) {
+      await codexClient.send({ id, job: 1, kind: 'permission', body: `Push, asked as ${id}`, ask });
+    }
+
+    expect(await runBridgeDecide('deny', '7', [], {}, person())).toBe(0);
+    expect(await runBridgeDecide('allow', 'q1', [], {}, person())).toBe(0);
+
+    expect(await codexClient.verdict({ letter: '7' })).toMatchObject({ verdict: 'deny' });
+    expect(await codexClient.verdict({ letter: 'q1' })).toMatchObject({ verdict: 'allow' });
+    expect(await codexClient.verdict({ letter: 'q10', timeoutMs: 0 })).toEqual({
+      state: 'waiting',
+    });
+  });
+
   it('are not for agents: a session of one is told so', async () => {
     await startHost();
     await handedOver();
@@ -185,6 +204,10 @@ describe('bridge asks, allow and deny', () => {
       'This runs in a session of claude-code, and an agent does not answer for the person'
     );
     expect(failed()).toContain('This runs in a session of codex');
+    expect(
+      await runBridgeDecide('allow', '1', [], {}, context({ COGITATOR_BRIDGE_AGENT: 'qwen@demo' }))
+    ).toBe(1);
+    expect(failed()).toContain('This runs in a session of qwen@demo');
     lines = [];
     await runBridgeAsks({}, person());
     expect(output()).toContain('Job #1');

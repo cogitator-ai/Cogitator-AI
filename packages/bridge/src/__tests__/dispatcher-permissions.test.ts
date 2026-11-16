@@ -522,6 +522,125 @@ describe('a letter passed on to the person', () => {
     expect((await bridge.job(job.number)).reason).toBe('it ran longer than its 4 h budget');
   });
 
+  it('counts the time two letters waited together once', async () => {
+    const person = new FakeRoute();
+    const { bridge, claude, codex, job, letter } = await questioned({ person });
+    const hour = 3_600_000;
+    await bridge.escalate(claude.name, { letter: letter.id });
+    kit.clock.advance(hour);
+    const second = await bridge.send(codex.name, {
+      job: job.number,
+      kind: 'permission',
+      body: 'Run `git push origin main`',
+      ask: PUSH,
+    });
+    const deadline = async () => Date.parse((await bridge.job(job.number)).deadlineAt);
+    const before = await deadline();
+
+    kit.clock.advance(hour);
+    await bridge.personAnswer({ letter: letter.id, body: 'March' });
+    expect((await deadline()) - before).toBe(2 * hour);
+    expect((await bridge.job(job.number)).state).toBe('input-required');
+
+    kit.clock.advance(hour);
+    const answered = await bridge.personAnswer({ letter: second.letter.id, verdict: 'allow' });
+
+    expect((await deadline()) - before).toBe(3 * hour);
+    expect(answered.job.state).toBe('working');
+    expect(answered.job.personWaitSince).toBeUndefined();
+  });
+
+  it('gives no time back when an agent takes the letter back from the person', async () => {
+    const person = new FakeRoute();
+    const { bridge, claude, job, letter } = await questioned({ person });
+    const hour = 3_600_000;
+    await bridge.escalate(claude.name, { letter: letter.id });
+
+    kit.clock.advance(5 * hour);
+    expect((await bridge.sweep()).failed).toEqual([]);
+    const answered = await bridge.send(claude.name, {
+      job: job.number,
+      kind: 'answer',
+      body: 'Found it myself: March',
+    });
+
+    expect(answered.job.deadlineAt).toBe(job.deadlineAt);
+    expect(answered.job.personWaitSince).toBeUndefined();
+    expect((await bridge.sweep()).failed).toEqual([job.number]);
+  });
+
+  it('holds the clock of every job a waiting job is part of, and gives each its time back', async () => {
+    const person = new FakeRoute();
+    kit = await makeKit({ person });
+    const { bridge, claude, codex } = kit;
+    const gemini = await bridge.register({
+      harness: 'gemini',
+      sessionId: 'g1',
+      cwd: '/work/demo',
+      project: '/work/demo',
+    });
+    const hour = 3_600_000;
+    const outer = await bridge.createJob(claude.name, { to: 'codex', body: 'Ship the fix' });
+    await bridge.inbox(codex.name);
+    const inner = await bridge.createJob(codex.name, {
+      to: 'gemini',
+      body: 'Push the branch',
+      parent: outer.job.number,
+    });
+    await bridge.inbox(gemini.name);
+    const { letter } = await bridge.send(gemini.name, {
+      job: inner.job.number,
+      kind: 'permission',
+      body: 'Run `git push origin main`',
+      ask: PUSH,
+    });
+
+    kit.clock.advance(6 * hour);
+    expect((await bridge.sweep()).failed).toEqual([]);
+    expect((await bridge.job(outer.job.number)).personWaitSince).toBeDefined();
+    await bridge.personAnswer({ letter: letter.id, verdict: 'allow' });
+
+    for (const before of [outer.job, inner.job]) {
+      const after = await bridge.job(before.number);
+      expect(Date.parse(after.deadlineAt) - Date.parse(before.deadlineAt)).toBe(6 * hour);
+      expect(after.personWaitSince).toBeUndefined();
+      expect(after.state).not.toBe('failed');
+    }
+    expect((await bridge.sweep()).failed).toEqual([]);
+  });
+
+  it('does not wait forever for a route that hangs: what comes after is still told', async () => {
+    const told: string[] = [];
+    let hang = true;
+    const person: PersonRoute = {
+      ask: ({ letter }) => {
+        if (hang) return new Promise<void>(() => undefined);
+        told.push(letter.id);
+        return undefined;
+      },
+      settle: () => undefined,
+    };
+    const { bridge, claude, codex, job, letter } = await questioned({
+      person,
+      limits: { deliveryTimeoutMs: 40 },
+    });
+
+    await bridge.escalate(claude.name, { letter: letter.id });
+    hang = false;
+    const second = await bridge.send(codex.name, {
+      job: job.number,
+      kind: 'permission',
+      body: 'Run `git push origin main`',
+      ask: PUSH,
+    });
+    await bridge.idle();
+
+    expect(kit.errors.map((error) => error.message)).toEqual([
+      'Telling the person of a letter took longer than 40 ms',
+    ]);
+    expect(told).toEqual([second.letter.id]);
+  });
+
   it('survives a route that throws: the letter still waits in the bridge', async () => {
     const person: PersonRoute = {
       ask: () => {

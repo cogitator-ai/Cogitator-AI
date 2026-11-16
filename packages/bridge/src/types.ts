@@ -228,6 +228,11 @@ export interface BridgeJobRecord {
   createdAt: string;
   /** ISO 8601 time the job fails at when it is still running */
   deadlineAt: string;
+  /**
+   * ISO 8601 time since which the job waits for the person, or a job handed over from inside
+   * it does. While it is set the deadline does not fail the job
+   */
+  personWaitSince?: string;
   /** Why the job failed or was canceled */
   reason?: string;
   verification?: JobVerification;

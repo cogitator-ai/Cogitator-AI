@@ -67,6 +67,9 @@ function adaptersOf(flags: HomeFlags, context: BridgeSessionContext): readonly B
   );
 }
 
+/** What the bridge sets in the environment of a session it starts: the name it gave the session. */
+const STARTED_BY_BRIDGE_ENV = 'COGITATOR_BRIDGE_AGENT';
+
 const NO_SESSION = new CommandError('This command runs inside a session of an agent', {
   hints: [
     'Run it from Claude Code or Codex: the session is known by CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID',
@@ -119,9 +122,10 @@ async function asPerson<T>(
   work: (client: BridgeClient) => Promise<T>
 ): Promise<T> {
   const session = callerFromEnv(context.env, context.cwd);
-  if (session) {
+  const started = context.env[STARTED_BY_BRIDGE_ENV]?.trim();
+  if (session || started) {
     throw new CommandError(
-      `This runs in a session of ${session.harness}, and an agent does not answer for the person`,
+      `This runs in a session of ${session?.harness ?? started}, and an agent does not answer for the person`,
       {
         hints: [
           'Run it in a terminal of your own',
@@ -297,14 +301,18 @@ export async function runBridgeAsks(
 }
 
 /**
- * The letter a word of the person names: a job number when one letter of that job waits for
- * them, else the id of the letter or the start of it.
+ * The letter a word of the person names: the id of a letter, else a job number when one letter
+ * of that job waits for them, else the start of an id.
  */
 function waitingLetter(waiting: readonly PersonLetter[], word: string): PersonLetter {
-  const named = word.trim().replace(/^#/, '');
-  const found = /^\d+$/.test(named)
-    ? waiting.filter(({ job }) => job.number === Number(named))
-    : waiting.filter(({ letter }) => letter.id === named || letter.id.startsWith(named));
+  const named = word.trim();
+  const exact = waiting.find(({ letter }) => letter.id === named);
+  if (exact) return exact;
+  const number = /^#?(\d+)$/.exec(named)?.[1];
+  const found =
+    number === undefined
+      ? waiting.filter(({ letter }) => letter.id.startsWith(named))
+      : waiting.filter(({ job }) => job.number === Number(number));
   if (found.length === 1) return found[0];
   if (found.length === 0) {
     throw new CommandError(`Nothing that waits for you is named ${word}`, {
