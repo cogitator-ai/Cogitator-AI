@@ -353,12 +353,17 @@ describe('a job from hand-over to report', () => {
       body: 'Done: 14 tests pass',
     });
     expect(report.job).toMatchObject({ state: 'completed', lettersUsed: 4 });
-    expect(report.letter.outcome).toBe('completed');
+    expect(report.letter).toMatchObject({ outcome: 'completed', state: 'held' });
     expect((await bridge.letters({ job: 1, kinds: ['task'] }))[0].state).toBe('handled');
 
+    await bridge.idle();
     const [result] = await bridge.inbox(claude.name);
-    expect(result.text).toContain('report from codex@demo to claude@demo');
-    expect(result.text.endsWith('Done: 14 tests pass')).toBe(true);
+    expect(result.text.split('\n')).toEqual([
+      expect.stringContaining('report from codex@demo to claude@demo'),
+      'Done: 14 tests pass',
+      '[agent bridge] Checks. Not verified: 0 of 1 check passed.',
+      '- not run: pnpm test: this bridge has no rules to judge a command by, and runs none without them',
+    ]);
   });
 
   it('keeps the whole exchange in the journal, in order', async () => {

@@ -11,10 +11,46 @@ import {
   type JobState,
 } from './types.js';
 
+const JobCheckResultSchema = z.object({
+  name: z.string(),
+  command: z.string(),
+  ok: z.boolean(),
+  skipped: z.string().optional(),
+  code: z.number().int().nullable().optional(),
+  timedOut: z.boolean().optional(),
+  durationMs: z.number().nonnegative().optional(),
+  output: z.string().optional(),
+});
+
 const JobVerificationSchema = z.object({
   verified: z.boolean(),
   checkedAt: z.string(),
   summary: z.string().optional(),
+  checks: z.array(JobCheckResultSchema).optional(),
+});
+
+const JobChangesSchema = z.object({
+  files: z.number().int().nonnegative(),
+  insertions: z.number().int().nonnegative(),
+  deletions: z.number().int().nonnegative(),
+  commits: z.number().int().nonnegative(),
+  paths: z.array(z.string()),
+  at: z.string(),
+});
+
+const JobWorktreeRecordSchema = z.object({
+  path: z.string(),
+  branch: z.string(),
+  base: z.string(),
+  end: z
+    .object({
+      how: z.enum(['accepted', 'branch', 'rejected', 'discarded']),
+      at: z.string(),
+      commit: z.string().optional(),
+      into: z.string().optional(),
+      ref: z.string().optional(),
+    })
+    .optional(),
 });
 
 /** The record of a job as it lies in the metadata of its A2A task. */
@@ -25,7 +61,10 @@ export const BridgeJobRecordSchema = z.object({
   to: z.string(),
   project: z.string(),
   cwd: z.string(),
-  worktree: z.string().optional(),
+  isolation: z.literal('worktree').optional(),
+  worktree: JobWorktreeRecordSchema.optional(),
+  changes: JobChangesSchema.optional(),
+  checking: z.object({ letter: z.string(), since: z.string() }).optional(),
   checks: z.array(JobCheckSchema),
   budget: JobBudgetSchema,
   lettersUsed: z.number().int().nonnegative(),
@@ -33,6 +72,7 @@ export const BridgeJobRecordSchema = z.object({
   parent: z.number().int().positive().optional(),
   createdAt: z.string(),
   deadlineAt: z.string(),
+  endedAt: z.string().optional(),
   personWaitSince: z.string().optional(),
   reason: z.string().optional(),
   verification: JobVerificationSchema.optional(),

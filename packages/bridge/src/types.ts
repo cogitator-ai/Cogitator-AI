@@ -197,6 +197,22 @@ export const JobBudgetSchema = z.object({
     .max(7 * 86_400_000),
 });
 
+/** How one check of a job went. */
+export interface JobCheckResult {
+  /** The name of the check, its command when it has none */
+  name: string;
+  command: string;
+  ok: boolean;
+  /** Why the bridge did not run it, when it did not */
+  skipped?: string;
+  /** The exit code, null when a signal ended the command */
+  code?: number | null;
+  timedOut?: boolean;
+  durationMs?: number;
+  /** The end of what the command printed */
+  output?: string;
+}
+
 /** Whether the checks of a job confirmed its result. Absent on a job nobody checked yet. */
 export interface JobVerification {
   verified: boolean;
@@ -204,6 +220,48 @@ export interface JobVerification {
   checkedAt: string;
   /** What the checks showed, in a few lines */
   summary?: string;
+  /** Each check the bridge ran or left out, in the order of the job */
+  checks?: JobCheckResult[];
+}
+
+/** What a job changed in the worktree it was given, counted when it reported. */
+export interface JobChanges {
+  files: number;
+  insertions: number;
+  deletions: number;
+  /** Commits the agent made in the worktree */
+  commits: number;
+  /** The changed files, the first of them when there are many */
+  paths: string[];
+  /** ISO 8601 */
+  at: string;
+}
+
+/** How the work in a job's worktree ended. */
+export interface JobWorktreeEnd {
+  /**
+   * `accepted`: taken into a checkout, `branch`: left as a branch, `rejected`: dropped by the
+   * agent that handed the job over, `discarded`: put away by the bridge when nobody came for it
+   */
+  how: 'accepted' | 'branch' | 'rejected' | 'discarded';
+  /** ISO 8601 */
+  at: string;
+  /** The commit that holds the work, when it held any */
+  commit?: string;
+  /** The checkout the work was taken into */
+  into?: string;
+  /** The branch or ref the work is kept under */
+  ref?: string;
+}
+
+/** The git worktree the bridge made for a job. */
+export interface JobWorktreeRecord {
+  /** Its top folder, gone once the work ended */
+  path: string;
+  branch: string;
+  /** The commit it was made from, which the changes of the job are measured against */
+  base: string;
+  end?: JobWorktreeEnd;
 }
 
 /** What the bridge keeps about a job in the metadata of its A2A task. */
@@ -216,8 +274,17 @@ export interface BridgeJobRecord {
   to: string;
   project: string;
   cwd: string;
-  /** The git worktree the job is done in, when the bridge gave it one */
-  worktree?: string;
+  /** `worktree` on a job that is to be done in a git worktree of its own */
+  isolation?: 'worktree';
+  /** The git worktree the job is done in, once the bridge has made it */
+  worktree?: JobWorktreeRecord;
+  /** What the job changed in its worktree, counted when it reported */
+  changes?: JobChanges;
+  /**
+   * Set while the checks of the job run: the report that waits for them, and since when
+   * (ISO 8601). The report is handed over with their verdict
+   */
+  checking?: { letter: string; since: string };
   checks: JobCheck[];
   budget: JobBudget;
   lettersUsed: number;
@@ -228,6 +295,8 @@ export interface BridgeJobRecord {
   createdAt: string;
   /** ISO 8601 time the job fails at when it is still running */
   deadlineAt: string;
+  /** ISO 8601 time the job was completed, failed or canceled */
+  endedAt?: string;
   /**
    * ISO 8601 time since which the job waits for the person, or a job handed over from inside
    * it does. While it is set the deadline does not fail the job
@@ -317,11 +386,18 @@ export const LETTER_KINDS: readonly LetterKind[] = [
 /**
  * `queued`: the bridge has it, `delivered`: handed to the recipient's harness, `read`: the
  * recipient took it, `handled`: the recipient answered it or said it is done with it. A letter
- * only moves forward
+ * only moves forward. Before all of them comes `held`: the bridge has the letter and keeps it
+ * back, as it does with a report while the checks of its job run
  */
-export type DeliveryState = 'queued' | 'delivered' | 'read' | 'handled';
+export type DeliveryState = 'held' | 'queued' | 'delivered' | 'read' | 'handled';
 
-export const DELIVERY_STATES: readonly DeliveryState[] = ['queued', 'delivered', 'read', 'handled'];
+export const DELIVERY_STATES: readonly DeliveryState[] = [
+  'held',
+  'queued',
+  'delivered',
+  'read',
+  'handled',
+];
 
 /** How a report ends its job. */
 export type ReportOutcome = 'completed' | 'failed';
@@ -377,6 +453,10 @@ export type JournalEntryType =
   | 'job.created'
   | 'job.state'
   | 'job.verified'
+  | 'job.worktree'
+  | 'job.accepted'
+  | 'job.rejected'
+  | 'job.discarded'
   | 'letter.queued'
   | 'letter.delivered'
   | 'letter.read'
@@ -442,6 +522,19 @@ export interface BridgeLimits {
    * waits for a person at its own window, in ms
    */
   windowNoticeMs: number;
+  /**
+   * How many jobs of one project may be in progress in a git worktree of their own. Each is an
+   * agent that builds and tests next to the others, and memory runs out before disk does
+   */
+  worktreesPerProject: number;
+  /** How long one check of a job may run before the bridge ends it, when it names no time, in ms */
+  checkTimeoutMs: number;
+  /**
+   * How long the worktree of a finished job is kept for whoever handed the job over to take or
+   * drop its work, in ms. After that the bridge puts the work away under a ref and removes the
+   * worktree
+   */
+  worktreeKeepMs: number;
 }
 
 export const BridgeLimitsSchema = z.strictObject({
@@ -469,6 +562,13 @@ export const BridgeLimitsSchema = z.strictObject({
     .positive()
     .max(7 * 86_400_000),
   windowNoticeMs: z.number().int().min(0).max(86_400_000),
+  worktreesPerProject: z.number().int().positive().max(100),
+  checkTimeoutMs: z.number().int().positive().max(86_400_000),
+  worktreeKeepMs: z
+    .number()
+    .int()
+    .positive()
+    .max(365 * 86_400_000),
 });
 
 export const DEFAULT_LIMITS: BridgeLimits = {
@@ -488,4 +588,7 @@ export const DEFAULT_LIMITS: BridgeLimits = {
   presenceCheckMs: 60_000,
   personReplyTimeoutMs: 4 * 3_600_000,
   windowNoticeMs: 10 * 60_000,
+  worktreesPerProject: 2,
+  checkTimeoutMs: 10 * 60_000,
+  worktreeKeepMs: 7 * 86_400_000,
 };

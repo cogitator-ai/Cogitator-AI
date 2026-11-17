@@ -82,17 +82,61 @@ export function signatureOf(
  * second letter. Lines are told apart by every kind of line break, and come out separated by
  * a plain one.
  */
-export function renderLetter(letter: Letter, job: Pick<BridgeJob, 'title'>): RenderedLetter {
+export function renderLetter(letter: Letter, job: LetterJob): RenderedLetter {
   const body = linesOf(letter.body)
     .map((line) =>
       line.replace(/^[\s\p{Cf}\p{Cc}]+/u, '').startsWith(SIGNATURE_MARK) ? `> ${line}` : line
     )
     .join('\n');
-  const whose = whoseAnswer(letter);
-  return {
-    ...letter,
-    text: `${signatureOf(letter, job)}\n${body}${whose ? `\n${SIGNATURE_MARK} ${whose}` : ''}`,
-  };
+  const added = [whoseAnswer(letter), ...aboutTheWork(letter, job)]
+    .filter((line) => line !== undefined)
+    .map((line) => `\n${SIGNATURE_MARK} ${line}`)
+    .join('');
+  return { ...letter, text: `${signatureOf(letter, job)}\n${body}${added}` };
+}
+
+/** What of a job the text of its letters is made from. */
+export type LetterJob = Pick<BridgeJob, 'title'> &
+  Partial<Pick<BridgeJob, 'worktree' | 'changes' | 'verification' | 'checks'>>;
+
+/** How many changed files a report names before it says how many more there are. */
+const PATHS_SHOWN = 12;
+
+/**
+ * The lines the bridge adds about the work itself. Under the letter that hands a job over:
+ * the worktree the job is done in and the checks its report will meet. Under its report: what
+ * was changed in the worktree, and what the checks showed. They start like a signature, which
+ * no line of a body can, and come last, so nothing an agent wrote passes for them.
+ */
+function aboutTheWork(letter: Pick<Letter, 'kind' | 'outcome'>, job: LetterJob): string[] {
+  const lines: string[] = [];
+  const worktree = job.worktree && !job.worktree.end ? job.worktree : undefined;
+  if (letter.kind === 'task') {
+    if (worktree) {
+      lines.push(
+        `You work in a git worktree of your own: ${worktree.path}, on the branch ${worktree.branch}, made from commit ${worktree.base.slice(0, 10)}. Change files only there. When you report, the bridge reads what you changed, committed or not. Nothing git ignores is there, such as installed dependencies and build output: install and build only what the job needs.`
+      );
+    }
+    if (job.checks && job.checks.length > 0) {
+      lines.push(
+        `When you report, the bridge runs the checks of the job where you worked: ${job.checks.map((check) => `\`${oneLine(check.name ?? check.command)}\``).join(', ')}.`
+      );
+    }
+  }
+  if (letter.kind === 'report') {
+    if (job.changes && job.worktree) {
+      const { changes } = job;
+      const shown = changes.paths.slice(0, PATHS_SHOWN);
+      const more = changes.files - shown.length;
+      lines.push(
+        changes.files === 0
+          ? `Nothing was changed in the worktree of the job, ${job.worktree.path}.`
+          : `Changed in the worktree of the job, ${job.worktree.path}: ${changes.files} ${changes.files === 1 ? 'file' : 'files'}, +${changes.insertions} -${changes.deletions}${changes.commits > 0 ? `, ${changes.commits} ${changes.commits === 1 ? 'commit' : 'commits'}` : ''}: ${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}. Nothing of it is in your checkout yet: look at it with diff, take it with accept, drop it with reject.`
+      );
+    }
+    if (job.verification?.summary) lines.push(`Checks. ${job.verification.summary}`);
+  }
+  return lines;
 }
 
 /**

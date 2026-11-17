@@ -15,6 +15,8 @@ export type BridgeErrorCode =
   | 'loop_detected'
   | 'needs_person'
   | 'no_person'
+  | 'no_worktree'
+  | 'worktree_limit'
   | 'already_running'
   | 'not_running'
   | 'storage';
