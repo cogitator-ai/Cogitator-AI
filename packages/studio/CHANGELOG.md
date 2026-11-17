@@ -1,5 +1,14 @@
 # @cogitator-ai/studio
 
+## 0.10.2
+
+### Patch Changes
+
+- Updated dependencies [[`1349034`](https://github.com/cogitator-ai/Cogitator-AI/commit/13490342cbe2bd9455589273a5cb06cc88e25885)]:
+  - @cogitator-ai/core@0.79.0
+  - @cogitator-ai/swarms@0.15.13
+  - @cogitator-ai/workflows@0.15.7
+
 ## 0.10.1
 
 ### Patch Changes
