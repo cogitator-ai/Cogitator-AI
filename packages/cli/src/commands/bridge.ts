@@ -686,6 +686,7 @@ bridgeCommand
   )
   .requiredOption('--hook <harness>', 'the harness whose hook runs the command')
   .option('--timeout <seconds>', 'how long to wait for the decision', positiveInt)
+  .option('--agent <name>', 'the name the bridge gave the session, for one it started')
   .option(...homeOption)
   .action(async (flags: BridgePermitFlags) => {
     process.exitCode = await runBridgePermit(flags);
