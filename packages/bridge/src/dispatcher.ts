@@ -31,6 +31,7 @@ import {
   VerdictInputSchema,
   VerificationInputSchema,
   WaitInputSchema,
+  WithdrawInputSchema,
   type CreateJobInput,
   type CreateJobResult,
   type EscalateInput,
@@ -44,6 +45,8 @@ import {
   type WaitEnd,
   type WaitInput,
   type WaitResult,
+  type WithdrawInput,
+  type WithdrawResult,
 } from './inputs.js';
 import { isFinishedJobState, jobOf, jobRecordOf } from './job-record.js';
 import {
@@ -952,7 +955,7 @@ export class BridgeDispatcher
       if (target.state === 'handled' || isFinishedJobState(job.state)) {
         throw new BridgeError(
           'invalid_letter',
-          `The ${target.kind} ${target.id} waits no more: ${isFinishedJobState(job.state) ? `job #${job.number} is ${job.state}` : 'it is answered'}`,
+          `The ${target.kind} ${target.id} waits no more: ${isFinishedJobState(job.state) ? `job #${job.number} is ${job.state}` : this.settledBy(target)}`,
           { letter: target.id, job: job.number }
         );
       }
@@ -1032,6 +1035,17 @@ export class BridgeDispatcher
     return jobs.map((job) => job.number);
   }
 
+  /** How a letter that waits no more was settled, for whoever answers it too late. */
+  private settledBy(letter: Letter): string {
+    const [answer] = this.store.listLetters({
+      inReplyTo: letter.id,
+      kinds: ['answer'],
+      newestFirst: true,
+      limit: 1,
+    });
+    return answer?.from === BRIDGE_SENDER ? answer.body : 'it is answered';
+  }
+
   /**
    * Whether the agent holds a call of the job for a verdict it asked through the bridge. Its
    * harness may say all the while that the session waits for a permission (Claude Code does, a
@@ -1097,6 +1111,40 @@ export class BridgeDispatcher
     return this.enqueue(async () => {
       const letter = this.store.getLetter(request.letter);
       return letter ? this.decisionOf(letter) : { state: 'waiting' };
+    });
+  }
+
+  /**
+   * Takes back a permission request the caller sent and holds its call for no more, such as when
+   * the hook that waited for the verdict gave up and left the call to its harness. The request
+   * is done with as refused in the bridge's name: nobody is asked to decide it any more, an
+   * answer that comes late is refused instead of looking as if it let the call through, and a
+   * job that waited only for it works again. A request that was decided already keeps its
+   * decision, and the caller gets it.
+   *
+   * @throws BridgeError `unknown_letter` for anything but a permission request of the caller
+   * that names its call
+   */
+  async withdraw(caller: string, input: WithdrawInput): Promise<WithdrawResult> {
+    const request = parse(WithdrawInputSchema, input, 'Cannot take the request back');
+    return this.asCaller(caller, async (tx) => {
+      const agent = this.requireCaller(caller);
+      const letter = this.store.getLetter(request.letter);
+      if (letter?.from !== agent.name || letter.kind !== 'permission' || !letter.ask) {
+        throw new BridgeError(
+          'unknown_letter',
+          `You sent no permission request ${request.letter} that names its call`,
+          { letter: request.letter }
+        );
+      }
+      const decision = this.decisionOf(letter);
+      if (decision.state === 'decided') return decision;
+      const { job } = this.requireJob(letter.job);
+      const reason = `${agent.name} waits for this decision no more`;
+      this.refuse(tx, letter, reason);
+      if (letter.needsPerson) await this.stopWaiting(job.number, this.now(), false);
+      await this.resumeIfAnswered(tx, job, forHistory(reason, letter.id));
+      return { state: 'withdrawn' };
     });
   }
 

@@ -256,6 +256,24 @@ describe('bridge permit', () => {
     }
   });
 
+  it('takes its request back when nobody decided in time, and leaves the dialog to Claude Code', async () => {
+    const { conductor, job } = await working('allow');
+    try {
+      const late = hook(hookInput('git push origin main'));
+
+      expect(await runBridgePermit({ hook: 'claude-code', timeout: 1 }, late.context)).toBe(0);
+
+      expect(late.written).toEqual([]);
+      expect(await conductor.inbox()).toEqual([]);
+      expect((await conductor.job(job.number)).state).toBe('working');
+      await expect(
+        conductor.send({ job: job.number, kind: 'answer', body: 'Go', verdict: 'allow' })
+      ).rejects.toThrow(expect.objectContaining({ code: 'invalid_letter' }));
+    } finally {
+      await conductor.close();
+    }
+  });
+
   it("answers nothing, and leaves the dialog to Claude Code, when the call is not the bridge's to ask about", async () => {
     const noDispatcher = hook(hookInput('git push'));
     expect(await runBridgePermit({ hook: 'claude-code' }, noDispatcher.context)).toBe(0);

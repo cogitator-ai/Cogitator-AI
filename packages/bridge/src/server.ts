@@ -208,6 +208,9 @@ class Connection {
         this.gone.signal
       )
     );
+    on(BRIDGE_METHODS.withdraw, (value) =>
+      dispatcher.withdraw(this.caller(), value as Parameters<BridgeDispatcher['withdraw']>[1])
+    );
     on(BRIDGE_METHODS.listLetters, (value) =>
       dispatcher.letters((value ?? {}) as Parameters<BridgeDispatcher['letters']>[0])
     );

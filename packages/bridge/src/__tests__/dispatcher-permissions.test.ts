@@ -687,6 +687,78 @@ describe('a letter passed on to the person', () => {
   });
 });
 
+describe('a request for leave its sender waits on no more', () => {
+  it('is taken back: nobody is asked any more, a late answer is refused and the job works again', async () => {
+    const person = new FakeRoute();
+    const { bridge, claude, codex, job, ask } = await asking({ person, rights: judge('ask') });
+    const sent = await ask();
+    await bridge.idle();
+    expect(person.asked.map((request) => request.letter.id)).toEqual([sent.letter.id]);
+
+    expect(await bridge.withdraw(codex.name, { letter: sent.letter.id })).toEqual({
+      state: 'withdrawn',
+    });
+    await bridge.idle();
+
+    expect(person.settled.map((letter) => letter.id)).toEqual([sent.letter.id]);
+    expect(await bridge.forPerson()).toEqual([]);
+    const after = await bridge.job(job.number);
+    expect(after.state).toBe('working');
+    expect(after.personWaitSince).toBeUndefined();
+    expect(await bridge.verdict(codex.name, { letter: sent.letter.id, timeoutMs: 0 })).toEqual({
+      state: 'decided',
+      verdict: 'deny',
+      reason: `${codex.name} waits for this decision no more`,
+      by: BRIDGE_SENDER,
+    });
+    await expect(bridge.personAnswer({ letter: sent.letter.id, verdict: 'allow' })).rejects.toThrow(
+      expect.objectContaining({
+        code: 'invalid_letter',
+        message: `The permission ${sent.letter.id} waits no more: ${codex.name} waits for this decision no more`,
+      })
+    );
+    expect(await bridge.stuck(codex.name, { what: 'A dialog' })).toEqual([job.number]);
+    expect(await bridge.withdraw(codex.name, { letter: sent.letter.id })).toMatchObject({
+      state: 'decided',
+      verdict: 'deny',
+    });
+    await expect(bridge.withdraw(claude.name, { letter: sent.letter.id })).rejects.toThrow(
+      code('unknown_letter')
+    );
+  });
+
+  it('keeps the decision that was made before its sender gave up', async () => {
+    const { bridge, claude, codex, job, ask } = await asking({ rights: judge('allow') });
+    const sent = await ask();
+    await bridge.send(claude.name, {
+      job: job.number,
+      kind: 'answer',
+      body: 'The branch is reviewed',
+      verdict: 'allow',
+    });
+
+    expect(await bridge.withdraw(codex.name, { letter: sent.letter.id })).toEqual({
+      state: 'decided',
+      verdict: 'allow',
+      reason: 'The branch is reviewed',
+      by: claude.name,
+    });
+  });
+
+  it('is gone from the mail of the agent that was to decide it', async () => {
+    const { bridge, claude, codex, job, ask } = await asking({ rights: judge('allow') });
+    const sent = await ask();
+
+    await bridge.withdraw(codex.name, { letter: sent.letter.id });
+
+    expect(await bridge.inbox(claude.name)).toEqual([]);
+    await expect(
+      bridge.send(claude.name, { job: job.number, kind: 'answer', body: 'Go', verdict: 'allow' })
+    ).rejects.toThrow(code('invalid_letter'));
+    expect((await bridge.job(job.number)).state).toBe('working');
+  });
+});
+
 describe('an agent that waits for a person at its own window', () => {
   /** A route that also takes notices. */
   class NoticedRoute extends FakeRoute {

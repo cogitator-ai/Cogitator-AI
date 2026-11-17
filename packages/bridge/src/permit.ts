@@ -2,6 +2,7 @@ import type { PermissionHookCall } from './adapter.js';
 import { BridgeClient } from './client.js';
 import { isBridgeError } from './errors.js';
 import { pause } from './adapters/exec.js';
+import type { VerdictResult } from './inputs.js';
 import type { JobState, PermissionAsk, Verdict } from './types.js';
 
 const ACTIVE: readonly JobState[] = ['submitted', 'working', 'input-required'];
@@ -56,7 +57,8 @@ export type LeaveOutcome =
  * as a permission request on the job the session carries out, and waits for the verdict. A
  * session that carries out no job, or several, is not asked for: the call is nobody's to
  * decide but the person at its window. A request the bridge refuses to take is a refusal of the
- * call, with what the bridge said.
+ * call, with what the bridge said. When nobody decides in time the request is taken back, so
+ * no answer that comes later looks as if it let the call through.
  */
 export async function askLeave(options: AskLeaveOptions): Promise<LeaveOutcome> {
   const { call, signal } = options;
@@ -101,22 +103,26 @@ export async function askLeave(options: AskLeaveOptions): Promise<LeaveOutcome> 
       if (left <= 0) break;
       const asked = Date.now();
       const decision = await client.verdict({ letter, timeoutMs: Math.min(LOOK_MS, left) });
-      if (decision.state === 'decided') {
-        return {
-          state: 'decided',
-          verdict: decision.verdict,
-          reason:
-            decision.verdict === 'allow'
-              ? decision.reason
-              : `Refused by ${decision.by}: ${decision.reason}`,
-        };
-      }
+      if (decision.state === 'decided') return outcomeOf(decision);
       if (Date.now() - asked < RETRY_MS) await pause(RETRY_MS);
     }
+    const late = await client.withdraw({ letter }).catch(() => undefined);
+    if (late?.state === 'decided') return outcomeOf(late);
     return { state: 'open', why: 'nobody decided in time' };
   } finally {
     await client.close().catch(() => undefined);
   }
+}
+
+function outcomeOf(decision: Extract<VerdictResult, { state: 'decided' }>): LeaveOutcome {
+  return {
+    state: 'decided',
+    verdict: decision.verdict,
+    reason:
+      decision.verdict === 'allow'
+        ? decision.reason
+        : `Refused by ${decision.by}: ${decision.reason}`,
+  };
 }
 
 /**
