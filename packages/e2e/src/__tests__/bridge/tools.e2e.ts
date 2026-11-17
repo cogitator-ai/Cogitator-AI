@@ -190,6 +190,8 @@ describe.skipIf(!posix)('bridge mcp', () => {
     expect(hello.instructions).toContain('not the user');
     expect(tools.map((listed) => listed.name)).toEqual([
       'delegate',
+      'build',
+      'review',
       'ask',
       'answer',
       'report',
