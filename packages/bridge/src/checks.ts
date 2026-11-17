@@ -15,6 +15,9 @@ const OUTPUT_SHOWN = 1_200;
  */
 const DRAIN_MS = 250;
 
+/** How long a check waits for what it killed to be gone, in ms. */
+const KILL_WAIT_MS = 1_000;
+
 /** How long a command that was told to stop gets before it is killed, in ms. */
 const STOP_GRACE_MS = 2_000;
 
@@ -46,8 +49,8 @@ export function skippedCheck(check: JobCheck, why: string): JobCheckResult {
 /**
  * Runs one check of a job: its command, through the shell, in `cwd`. It passes when the command
  * exits with 0. A command that runs longer than `timeoutMs`, or whose run is aborted, is ended
- * with everything it started, and the check fails. A process the command left behind does not
- * keep the check waiting. It never throws: a command that cannot be started is a failed check
+ * with everything it started, and the check fails only once all of it is gone. A process a
+ * command that ended by itself left behind does not keep the check waiting. It never throws: a command that cannot be started is a failed check
  * that says why.
  */
 export function runCheck(check: JobCheck, options: RunCheckOptions): Promise<JobCheckResult> {
@@ -68,13 +71,17 @@ export function runCheck(check: JobCheck, options: RunCheckOptions): Promise<Job
     let output = '';
     let timedOut = false;
     let stopped = false;
+    let stopping = false;
     let done = false;
+    let child: ChildProcess | undefined;
     const timers: NodeJS.Timeout[] = [];
     const finish = (result: Pick<JobCheckResult, 'ok' | 'code' | 'skipped'>): void => {
       if (done) return;
       done = true;
       for (const timer of timers) clearTimeout(timer);
       options.signal?.removeEventListener('abort', onAbort);
+      child?.stdout?.destroy();
+      child?.stderr?.destroy();
       const said = tail(output, OUTPUT_KEPT);
       resolve({
         ...base,
@@ -89,7 +96,6 @@ export function runCheck(check: JobCheck, options: RunCheckOptions): Promise<Job
       else finish({ ok: code === 0 && !timedOut, code });
     };
 
-    let child: ChildProcess;
     try {
       child = spawn(check.command, {
         cwd: options.cwd,
@@ -105,20 +111,31 @@ export function runCheck(check: JobCheck, options: RunCheckOptions): Promise<Job
       });
       return;
     }
+    const running = child;
 
-    const signalAll = (signal: NodeJS.Signals): void => {
+    const signalAll = (signal: NodeJS.Signals | 0): boolean => {
       try {
-        if (group && child.pid !== undefined) process.kill(-child.pid, signal);
-        else child.kill(signal);
+        if (group && running.pid !== undefined) return process.kill(-running.pid, signal);
+        return signal === 0 ? running.exitCode === null : running.kill(signal);
       } catch {
-        child.kill(signal);
+        return false;
       }
     };
+    /** Whether anything the command started is still there */
+    const alive = (): boolean => signalAll(0);
     const stop = (): void => {
+      stopping = true;
       signalAll('SIGTERM');
       timers.push(
-        setTimeout(() => signalAll('SIGKILL'), STOP_GRACE_MS),
-        setTimeout(() => ended(null), STOP_GRACE_MS + DRAIN_MS)
+        setTimeout(() => {
+          signalAll('SIGKILL');
+          const until = Date.now() + KILL_WAIT_MS;
+          const gone = (): void => {
+            if (!alive() || Date.now() >= until) ended(null);
+            else timers.push(setTimeout(gone, 20));
+          };
+          gone();
+        }, STOP_GRACE_MS)
       );
     };
     function onAbort(): void {
@@ -136,15 +153,24 @@ export function runCheck(check: JobCheck, options: RunCheckOptions): Promise<Job
     const keep = (chunk: string): void => {
       output = (output + chunk).slice(-2 * OUTPUT_KEPT);
     };
-    child.stdout?.setEncoding('utf8').on('data', keep);
-    child.stderr?.setEncoding('utf8').on('data', keep);
-    child.once('error', (error) => {
+    running.stdout?.setEncoding('utf8').on('data', keep);
+    running.stderr?.setEncoding('utf8').on('data', keep);
+    running.once('error', (error) => {
       finish({ ok: false, skipped: `it could not be started: ${error.message}` });
     });
-    child.once('exit', (code) => {
-      timers.push(setTimeout(() => ended(code), DRAIN_MS));
+    /**
+     * A command that ended by itself is done once its output is read, whatever it left running.
+     * One that was told to stop is done when nothing it started is left: what ignores the
+     * request is killed when the grace is over, and the check waits for that.
+     */
+    const exited = (code: number | null): void => {
+      if (stopping && alive()) return;
+      ended(code);
+    };
+    running.once('exit', (code) => {
+      timers.push(setTimeout(() => exited(code), DRAIN_MS));
     });
-    child.once('close', (code) => ended(code));
+    running.once('close', (code) => exited(code));
   });
 }
 

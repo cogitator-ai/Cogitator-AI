@@ -72,7 +72,7 @@ An editor driving a Cogitator agent over ACP, and an external ACP agent (Claude 
 
 ### [`bridge/`](./bridge/) - Agent Bridge
 
-Two sessions hand a job back and forth through the dispatcher of `@cogitator-ai/bridge`: inbox, question and answer, limits, verification and the journal. No model needed.
+Two sessions hand a job back and forth through the dispatcher of `@cogitator-ai/bridge`: inbox, question and answer, limits, verification and the journal. Also the tools agents call the bridge with, leave for a call, and a job in a git worktree of its own with its checks and its work taken back. No model needed, except for the agent the bridge hosts.
 
 ### [`mcp/`](./mcp/) — Model Context Protocol
 

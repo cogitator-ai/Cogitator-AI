@@ -415,6 +415,30 @@ describe('taking the work of a job', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('brings two jobs into one checkout one after the other, so neither undoes the other', async () => {
+    const bridge = await start({ limits: { worktreesPerProject: 5 } });
+    const first = await reported(bridge);
+    const second = await reported(bridge);
+
+    const taken = await Promise.allSettled([
+      bridge.accept(claude.name, { job: first.number }),
+      bridge.accept(claude.name, { job: second.number }),
+    ]);
+
+    expect(taken.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+    const refused = taken.find((result) => result.status === 'rejected');
+    expect(refused).toMatchObject({
+      reason: expect.objectContaining({
+        message: expect.stringContaining('changes are staged there'),
+      }),
+    });
+    expect(git(repo, 'status', '--porcelain').split('\n')).toEqual([
+      'A  src/burst.ts',
+      'M  src/limiter.ts',
+    ]);
+    expect([first, second].filter((job) => existsSync(job.worktree!.path))).toHaveLength(1);
+  });
+
   it('leaves it as a branch when asked, the one of the worktree or one that is named', async () => {
     const bridge = await start({ limits: { worktreesPerProject: 5 } });
     const first = await reported(bridge);

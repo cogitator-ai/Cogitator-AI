@@ -404,6 +404,8 @@ export class BridgeDispatcher
   private readonly checkRuns = new Map<number, AbortController>();
   /** The checks of one job after those of another: they build and test, and memory is short */
   private checkQueue: Promise<void> = Promise.resolve();
+  /** The last work on each checkout something is being brought into, see `oneAtATimeIn` */
+  private readonly checkouts = new Map<string, Promise<void>>();
   /** Jobs whose worktree is being taken, dropped or put away right now */
   private readonly taking = new Set<number>();
   /** Whether what a dispatcher before this one left unfinished was picked up */
@@ -1997,33 +1999,35 @@ export class BridgeDispatcher
           { job: job.number, cwd: agent.cwd }
         );
       }
-      const busy = await busyWith(into).catch((error: unknown) => {
-        throw gitRefusal(error, `Git could not look at ${into}`);
-      });
-      if (busy) {
-        throw new BridgeError(
-          'invalid_input',
-          `Nothing can be brought into ${into} right now: ${busy}. Taking the work of a job stages it, so commit or stash what is there first, then take the work again`,
-          { job: job.number, into }
-        );
-      }
-      const conflicts = await conflictsOf(into, commit).catch((error: unknown) => {
-        throw gitRefusal(error, `Git could not tell whether job ${job.number} merges into ${into}`);
+      const conflicts = await this.oneAtATimeIn(into, async () => {
+        const busy = await busyWith(into).catch((error: unknown) => {
+          throw gitRefusal(error, `Git could not look at ${into}`);
+        });
+        if (busy) {
+          throw new BridgeError(
+            'invalid_input',
+            `Nothing can be brought into ${into} right now: ${busy}. Taking the work of a job stages it, so commit or stash what is there first, then take the work again`,
+            { job: job.number, into }
+          );
+        }
+        const inConflict = await conflictsOf(into, commit).catch((error: unknown) => {
+          throw gitRefusal(
+            error,
+            `Git could not tell whether job ${job.number} merges into ${into}`
+          );
+        });
+        if (inConflict.length > 0) return inConflict;
+        await squashInto(into, commit).catch((error: unknown) => {
+          throw gitRefusal(
+            error,
+            `Git refused to bring the changes of job ${job.number} into ${into}, which is as it was. Commit or stash what is in the way there, then take the work again`
+          );
+        });
+        return [];
       });
       if (conflicts.length > 0) {
-        return {
-          state: 'conflict',
-          job,
-          into,
-          files: conflicts.map(shownPath),
-        };
+        return { state: 'conflict', job, into, files: conflicts.map(shownPath) };
       }
-      await squashInto(into, commit).catch((error: unknown) => {
-        throw gitRefusal(
-          error,
-          `Git refused to bring the changes of job ${job.number} into ${into}, which is as it was. Commit or stash what is in the way there, then take the work again`
-        );
-      });
       await removeJobWorktree(job.project, worktree.path, worktree.branch).catch((error: unknown) =>
         this.onError(asError(error))
       );
@@ -2062,6 +2066,25 @@ export class BridgeDispatcher
         ...(request.reason && { reason: request.reason }),
       });
     });
+  }
+
+  /**
+   * Work on one checkout after the other work on it: looking whether it is free, merging into
+   * it and taking a failed merge back are one step, and two jobs taken into the same checkout
+   * at once would each undo what the other staged.
+   */
+  private oneAtATimeIn<T>(checkout: string, work: () => Promise<T>): Promise<T> {
+    const run = (this.checkouts.get(checkout) ?? Promise.resolve()).then(work, work);
+    const settled: Promise<void> = run
+      .then(
+        () => undefined,
+        () => undefined
+      )
+      .finally(() => {
+        if (this.checkouts.get(checkout) === settled) this.checkouts.delete(checkout);
+      });
+    this.checkouts.set(checkout, settled);
+    return run;
   }
 
   /** The worktree of a job whose work is still in it, or why there is none. */
