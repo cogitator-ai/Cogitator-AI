@@ -21,6 +21,8 @@ import {
   type VerdictResult,
   type WaitInput,
   type WaitResult,
+  type WithdrawInput,
+  type WithdrawResult,
 } from './inputs.js';
 import {
   BRIDGE_METHODS,
@@ -210,6 +212,14 @@ export class BridgeClient {
   verdict(input: VerdictInput): Promise<VerdictResult> {
     const waitMs = input.timeoutMs ?? DEFAULT_VERDICT_WAIT_MS;
     return this.call(BRIDGE_METHODS.verdict, input, waitMs + this.timeoutMs);
+  }
+
+  /**
+   * Takes back a permission request the session sent and waits on no more, see
+   * `BridgeDispatcher.withdraw`
+   */
+  withdraw(input: WithdrawInput): Promise<WithdrawResult> {
+    return this.call(BRIDGE_METHODS.withdraw, input);
   }
 
   /**

@@ -73,6 +73,8 @@ export type {
   WaitEnd,
   WaitInput,
   WaitResult,
+  WithdrawInput,
+  WithdrawResult,
 } from './inputs.js';
 export { personRoutes } from './person.js';
 export type {

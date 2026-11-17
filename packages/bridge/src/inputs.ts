@@ -207,6 +207,19 @@ export type VerdictResult =
       by: string;
     };
 
+export const WithdrawInputSchema = z.strictObject({ letter: LetterIdSchema });
+
+export interface WithdrawInput {
+  /** The permission request the caller sent and waits on no more */
+  letter: string;
+}
+
+/**
+ * How taking a permission request back ended: `withdrawn`, or the decision that was there
+ * before the caller gave up, which still holds.
+ */
+export type WithdrawResult = { state: 'withdrawn' } | Extract<VerdictResult, { state: 'decided' }>;
+
 /** How many letters one call to the inbox returns when it names no limit. */
 export const DEFAULT_INBOX_LIMIT = 20;
 

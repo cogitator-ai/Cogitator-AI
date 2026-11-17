@@ -22,6 +22,7 @@ export const BRIDGE_METHODS = {
   delivered: 'letters/delivered',
   escalate: 'letters/escalate',
   verdict: 'letters/verdict',
+  withdraw: 'letters/withdraw',
   listLetters: 'letters/list',
   forPerson: 'person/letters',
   personAnswer: 'person/answer',

@@ -368,6 +368,7 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
         ? { approved: true }
         : { approved: false, reason: `Refused by ${decision.by}: ${decision.reason}` };
     }
+    await bridge.withdraw(hosted.agentName, { letter }).catch(() => undefined);
     return { approved: false, reason: 'The turn is over' };
   }
 
