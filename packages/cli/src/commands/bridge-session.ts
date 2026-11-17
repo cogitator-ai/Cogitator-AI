@@ -9,6 +9,7 @@ import {
   BridgeClient,
   bridgePaths,
   callerFromEnv,
+  factLine,
   isBridgeError,
   mailText,
   shellQuote,
@@ -16,7 +17,9 @@ import {
   type BridgeAdapter,
   type BridgePaths,
   type CallerIdentity,
+  type ContextFile,
   type HealthCheck,
+  type JobContext,
   type LetterKind,
   type PersonLetter,
   type Verdict,
@@ -142,6 +145,37 @@ async function asPerson<T>(
   }
 }
 
+/**
+ * A call about the board of facts, made as the session the command runs in, or as the person
+ * when it runs in a terminal of their own: `work` gets the project the person is in then, which
+ * an agent's own project stands for otherwise.
+ */
+async function onBoard<T>(
+  flags: HomeFlags,
+  context: BridgeSessionContext,
+  work: (client: BridgeClient, project: string | undefined) => Promise<T>
+): Promise<T> {
+  const caller = callerFromEnv(context.env, context.cwd);
+  const client = await connect(flags, context, caller);
+  try {
+    return await work(client, caller ? undefined : context.cwd);
+  } finally {
+    await client.close();
+  }
+}
+
+/** A file of `delegate --file`: `path`, `path:120-180`, and after `=` what is there. */
+export function contextFile(value: string): ContextFile {
+  const [named, ...why] = value.split('=');
+  const said = why.join('=').trim();
+  const match = /^(.*):(\d+(?:-\d+)?)$/.exec(named.trim());
+  return {
+    path: match ? match[1] : named.trim(),
+    ...(match && { lines: match[2] }),
+    ...(said && { why: said }),
+  };
+}
+
 /** The text of a command: its words, or what is piped in when there are none or they are `-` */
 async function bodyOf(words: readonly string[], context: BridgeSessionContext): Promise<string> {
   const typed = words.join(' ');
@@ -156,6 +190,11 @@ export interface BridgeDelegateFlags extends HomeFlags {
   cwd?: string;
   check?: string[];
   worktree?: boolean;
+  done?: string[];
+  constraint?: string[];
+  decision?: string[];
+  file?: string[];
+  contextTokens?: number;
   parent?: number;
   json?: boolean;
 }
@@ -169,6 +208,13 @@ export async function runBridgeDelegate(
 ): Promise<number> {
   try {
     const body = await bodyOf(words, context);
+    const named: JobContext = {
+      ...(flags.done?.length && { done: flags.done }),
+      ...(flags.constraint?.length && { constraints: flags.constraint }),
+      ...(flags.decision?.length && { decisions: flags.decision }),
+      ...(flags.file?.length && { files: flags.file.map(contextFile) }),
+    };
+    const context_ = Object.keys(named).length > 0 ? named : undefined;
     const { job } = await asSession(flags, context, (client) =>
       client.createJob({
         to,
@@ -177,6 +223,8 @@ export async function runBridgeDelegate(
         ...(flags.cwd && { cwd: flags.cwd }),
         ...(flags.check?.length && { checks: flags.check.map((command) => ({ command })) }),
         ...(flags.worktree && { worktree: true }),
+        ...(context_ && { context: context_ }),
+        ...(flags.contextTokens !== undefined && { contextTokens: flags.contextTokens }),
         ...(flags.parent !== undefined && { parent: flags.parent }),
       })
     );
@@ -205,6 +253,8 @@ export interface BridgeSendFlags extends HomeFlags {
   job: number;
   kind: Exclude<LetterKind, 'task'>;
   failed?: boolean;
+  /** Of a report: what the job taught, for the board of the project */
+  lesson?: string[];
   replyTo?: string;
   /** Of an answer: the decision of a permission request, or `person` to leave it to the user */
   decision?: (typeof DECISIONS)[number];
@@ -248,6 +298,7 @@ export async function runBridgeSend(
         ...(decision && { verdict: decision }),
         ...(flags.replyTo && { inReplyTo: flags.replyTo }),
         ...(flags.failed && { outcome: 'failed' as const }),
+        ...(flags.lesson?.length && { lessons: flags.lesson }),
       })
     );
     if (flags.json) printJson(sent);
@@ -455,6 +506,111 @@ export async function runBridgeCancel(
     );
     if (flags.json) printJson(canceled);
     else context.print(`Job #${canceled.number} is ${canceled.state}, ${canceled.to} is told`);
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+export interface BridgeRememberFlags extends HomeFlags {
+  lesson?: boolean;
+  job?: number;
+  jobOnly?: boolean;
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge remember <text>: puts a note on the board of the project. From a session it
+ * is the note of that agent, from a terminal of your own it is yours, for the project the
+ * command runs in.
+ */
+export async function runBridgeRemember(
+  words: readonly string[],
+  flags: BridgeRememberFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const text = await bodyOf(words, context);
+    const kept = await onBoard(flags, context, (client, project) =>
+      client.remember({
+        text,
+        ...(flags.lesson && { kind: 'lesson' as const }),
+        ...(flags.job !== undefined && { job: flags.job }),
+        ...(flags.jobOnly && { jobOnly: true }),
+        ...(project && { project }),
+      })
+    );
+    if (flags.json) printJson(kept);
+    else {
+      context.print(
+        `Kept as ${kept.id}, for ${kept.job === undefined ? `every agent of ${kept.project}` : `the two agents of job #${kept.job}`}`
+      );
+    }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+export interface BridgeRecallFlags extends HomeFlags {
+  kind?: 'fact' | 'lesson' | 'outcome';
+  limit?: number;
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge recall [words]: the notes on the board of the project that fit the words
+ * best, or the newest, each with who said it and when.
+ */
+export async function runBridgeRecall(
+  words: readonly string[],
+  flags: BridgeRecallFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const text = words.join(' ').trim();
+    const found = await onBoard(flags, context, (client, project) =>
+      client.recall({
+        ...(text && { text }),
+        ...(flags.kind && { kinds: [flags.kind] }),
+        ...(flags.limit !== undefined && { limit: flags.limit }),
+        ...(project && { project }),
+      })
+    );
+    if (flags.json) {
+      printJson(found);
+      return 0;
+    }
+    if (found.length === 0) {
+      context.print(text ? 'Nothing on the board fits that' : 'The board of this project is empty');
+      return 0;
+    }
+    for (const fact of found) context.print(`${fact.id}  ${factLine(fact)}`);
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+export interface BridgeForgetFlags extends HomeFlags {
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge forget <id>: takes a note off the board. A session takes off what it said
+ * itself, you any note of the project the command runs in.
+ */
+export async function runBridgeForget(
+  id: string,
+  flags: BridgeForgetFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const gone = await onBoard(flags, context, (client, project) =>
+      client.forget({ id, ...(project && { project }) })
+    );
+    if (flags.json) printJson(gone);
+    else context.print(`The note ${gone.id} is off the board: ${gone.text}`);
     return 0;
   } catch (error) {
     return reportFailure(error, { json: flags.json ?? false });

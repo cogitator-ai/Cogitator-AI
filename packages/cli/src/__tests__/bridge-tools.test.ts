@@ -86,6 +86,9 @@ describe('bridge mcp', () => {
       'diff',
       'accept',
       'reject',
+      'remember',
+      'recall',
+      'forget',
       'agents',
     ]);
     expect(BRIDGE_SERVER_NAME).toBe('cogitator-bridge');

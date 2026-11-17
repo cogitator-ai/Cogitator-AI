@@ -14,6 +14,7 @@ import {
   type AgentRecord,
   type BridgeAdapter,
   type BridgeHost,
+  type FactBoard,
   type BridgeJob,
   type BridgePaths,
   type BridgeStatus,
@@ -48,7 +49,10 @@ import {
   runBridgeAccept,
   runBridgeCancel,
   runBridgeDiff,
+  runBridgeForget,
+  runBridgeRecall,
   runBridgeReject,
+  runBridgeRemember,
   runBridgeInbox,
   runBridgeReply,
   runBridgeSend,
@@ -58,7 +62,10 @@ import {
   type BridgeAcceptFlags,
   type BridgeCancelFlags,
   type BridgeDiffFlags,
+  type BridgeForgetFlags,
+  type BridgeRecallFlags,
   type BridgeRejectFlags,
+  type BridgeRememberFlags,
   type BridgeInboxFlags,
   type BridgePersonFlags,
   type BridgeSendFlags,
@@ -83,6 +90,8 @@ export interface BridgeContext {
   adapters?: readonly BridgeAdapter[];
   /** How `serve` reaches the person and reads rights, `bridgePerson` of the environment by default */
   person?: BridgePerson;
+  /** The board of facts, for tests: the one in the folder of the bridge otherwise */
+  board?: FactBoard;
 }
 
 const defaultContext = (): BridgeContext => ({
@@ -178,6 +187,10 @@ export function describeJournalEntry(raw: JournalEntry): string {
       return `job is ${text(data.to)} (was ${text(data.from)})`;
     case 'job.verified':
       return `checks ${data.verified ? 'confirmed the result' : 'did not confirm the result'}${data.summary ? `: ${preview(text(data.summary))}` : ''}`;
+    case 'fact.remembered':
+      return `${entry.agent === 'person' ? 'the person' : entry.agent} put a ${text(data.kind)} on the board: ${preview(text(data.text))}`;
+    case 'fact.forgotten':
+      return `${entry.agent === 'person' ? 'the person' : entry.agent} took the note ${text(data.id)} off the board`;
     case 'job.worktree':
       return `works in a worktree of its own: ${text(data.path)} (branch ${text(data.branch)})`;
     case 'job.accepted':
@@ -403,15 +416,20 @@ export async function runBridgeServe(
 ): Promise<number> {
   let host: BridgeHost;
   let reach: BridgePerson;
+  let board: FactBoard | undefined;
   try {
     const onError = (error: Error): void =>
       context.io.warn(`${chalk.yellow('!')} ${error.message}`);
+    const wiring = await import('../utils/bridge-person.js');
     reach =
       context.person ??
-      (await import('../utils/bridge-person.js')).bridgePerson(context.env, {
+      wiring.bridgePerson(context.env, {
         ...(flags.home && { home: flags.home }),
         onError,
       });
+    board =
+      context.board ??
+      (await wiring.bridgeBoard(context.env, { ...(flags.home && { home: flags.home }), onError }));
     host = await hostBridge({
       ...(flags.home && { home: flags.home }),
       env: context.env,
@@ -425,6 +443,7 @@ export async function runBridgeServe(
         }),
       rights: reach.rights,
       person: reach.person,
+      ...(board && { board }),
       onError,
     });
     await reach.start().catch(async (error: unknown) => {
@@ -432,6 +451,7 @@ export async function runBridgeServe(
       throw error;
     });
   } catch (error) {
+    await board?.close?.().catch(() => undefined);
     if (isBridgeError(error) && error.code === 'already_running') {
       return reportFailure(
         new CommandError(error.message, { hints: ['See it: cogitator bridge status'] }),
@@ -454,6 +474,7 @@ export async function runBridgeServe(
     await reach.stop().catch(() => undefined);
     if (reason === 'asked') {
       await host.close();
+      await board?.close?.().catch(() => undefined);
       context.io.print('Bridge dispatcher stopped');
       return 0;
     }
@@ -479,6 +500,9 @@ function positiveInt(value: string): number {
 const DASH_HINT =
   '(A text that starts with a dash goes after "--", or is piped in with "-" in its place)';
 
+/** An option that may be given several times: each value is added to those before it. */
+const collect = (value: string, all: string[]): string[] => [...all, value];
+
 const homeOption = [
   '--home <dir>',
   'the folder of the bridge files (default: COGITATOR_BRIDGE_HOME, else ~/.cogitator/bridge)',
@@ -502,6 +526,8 @@ export const bridgeCommand = new Command('bridge')
       ['cogitator bridge cancel 12 "Not needed any more"', 'from a session: take a job back'],
       ['cogitator bridge diff 12 --stat', 'from a session: what a job changed in its worktree'],
       ['cogitator bridge accept 12', 'from a session: take the work of a job into this checkout'],
+      ['cogitator bridge remember "CI runs on Node 22"', 'put a note on the board of the project'],
+      ['cogitator bridge recall deploy', 'the notes of the board that fit a word'],
     ])
   );
 
@@ -571,12 +597,26 @@ bridgeCommand
   .option(
     '--check <command>',
     'a command that shows the job is done, repeatable',
-    (value: string, all: string[]) => [...all, value],
+    collect,
     [] as string[]
   )
   .option(
     '--worktree',
     'give the job a git worktree of its own, off the last commit here, and a fresh session'
+  )
+  .option('--done <text>', 'what done looks like, repeatable', collect, [] as string[])
+  .option('--constraint <text>', 'what must hold or stay untouched, repeatable', collect, [])
+  .option('--decision <text>', 'what was decided already, repeatable', collect, [] as string[])
+  .option(
+    '--file <path[:lines][=why]>',
+    'a file to start from, such as src/a.ts:120-180=the retry loop, repeatable',
+    collect,
+    [] as string[]
+  )
+  .option(
+    '--context-tokens <number>',
+    'how many tokens the context the bridge adds may take (default: 6000)',
+    positiveInt
   )
   .option('--parent <number>', 'the job this one is part of', positiveInt)
   .option(...homeOption)
@@ -596,6 +636,12 @@ bridgeCommand
     new Option('--kind <kind>', 'what the letter is').choices(SENDABLE_KINDS).makeOptionMandatory()
   )
   .option('--failed', 'with --kind report: the job could not be done')
+  .option(
+    '--lesson <text>',
+    'with --kind report: what the job taught, for the board of the project, repeatable',
+    collect,
+    [] as string[]
+  )
   .option('--reply-to <letter>', 'the letter this one answers')
   .addOption(
     new Option(
@@ -669,6 +715,44 @@ bridgeCommand
   .option('--json', 'print the job as JSON')
   .action(async (job: number, reason: string[], flags: BridgeCancelFlags) => {
     process.exitCode = await runBridgeCancel(job, reason, flags);
+  });
+
+bridgeCommand
+  .command('remember [text...]')
+  .description(
+    "Put a note on the board of the project: yours from a terminal, the agent's from a session"
+  )
+  .option('--lesson', 'it is what a job taught, not a fact of the project')
+  .option('--job <number>', 'the job it was learned on', positiveInt)
+  .option('--job-only', 'keep it to the two agents of that job')
+  .option(...homeOption)
+  .option('--json', 'print the note as JSON')
+  .showHelpAfterError(DASH_HINT)
+  .action(async (text: string[], flags: BridgeRememberFlags) => {
+    process.exitCode = await runBridgeRemember(text, flags);
+  });
+
+bridgeCommand
+  .command('recall [words...]')
+  .description('Look at the board of the project: the notes that fit the words, or the newest')
+  .addOption(
+    new Option('--kind <kind>', 'only notes of this kind').choices(['fact', 'lesson', 'outcome'])
+  )
+  .option('--limit <number>', 'how many (default: 10)', positiveInt)
+  .option(...homeOption)
+  .option('--json', 'print the notes as JSON')
+  .action(async (words: string[], flags: BridgeRecallFlags) => {
+    process.exitCode = await runBridgeRecall(words, flags);
+  });
+
+bridgeCommand
+  .command('forget')
+  .description('Take a note off the board: any note from a terminal, its own from a session')
+  .argument('<id>', 'the id of the note, as recall shows it, or the start of it')
+  .option(...homeOption)
+  .option('--json', 'print the note as JSON')
+  .action(async (id: string, flags: BridgeForgetFlags) => {
+    process.exitCode = await runBridgeForget(id, flags);
   });
 
 bridgeCommand
