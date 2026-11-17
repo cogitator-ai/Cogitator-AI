@@ -75,6 +75,8 @@ describe('bridge mcp', () => {
 
     expect(server.getRegisteredTools()).toEqual([
       'delegate',
+      'build',
+      'review',
       'ask',
       'answer',
       'report',

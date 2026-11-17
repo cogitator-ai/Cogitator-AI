@@ -43,6 +43,7 @@ import {
   DECISIONS,
   SENDABLE_KINDS,
   runBridgeAsks,
+  runBridgeBuild,
   runBridgeDecide,
   runBridgeDelegate,
   runBridgeDoctor,
@@ -51,12 +52,15 @@ import {
   runBridgeDiff,
   runBridgeForget,
   runBridgeRecall,
+  runBridgeRecipe,
   runBridgeReject,
   runBridgeRemember,
   runBridgeInbox,
   runBridgeReply,
+  runBridgeReview,
   runBridgeSend,
   runBridgeWait,
+  type BridgeBuildFlags,
   type BridgeDelegateFlags,
   type BridgeDoctorFlags,
   type BridgeAcceptFlags,
@@ -64,7 +68,9 @@ import {
   type BridgeDiffFlags,
   type BridgeForgetFlags,
   type BridgeRecallFlags,
+  type BridgeRecipeFlags,
   type BridgeRejectFlags,
+  type BridgeReviewFlags,
   type BridgeRememberFlags,
   type BridgeInboxFlags,
   type BridgePersonFlags,
@@ -331,7 +337,8 @@ function agentLine(agent: AgentRecord, waiting: boolean): string {
 }
 
 function jobLine(job: BridgeJob): string {
-  return `  #${String(job.number).padEnd(4)} ${job.state.padEnd(14)} ${job.from} -> ${job.to}  ${preview(job.title)}`;
+  const recipe = job.recipe ? chalk.dim(` (recipe ${plain(job.recipe.name)})`) : '';
+  return `  #${String(job.number).padEnd(4)} ${job.state.padEnd(14)} ${job.from} -> ${job.to}  ${preview(job.title)}${recipe}`;
 }
 
 async function lastLease(paths: BridgePaths): Promise<Lease | undefined> {
@@ -430,17 +437,21 @@ export async function runBridgeServe(
     board =
       context.board ??
       (await wiring.bridgeBoard(context.env, { ...(flags.home && { home: flags.home }), onError }));
+    const conductor = context.adapters
+      ? undefined
+      : wiring.bridgeConductor(context.env, { ...(flags.home && { home: flags.home }), onError });
     host = await hostBridge({
       ...(flags.home && { home: flags.home }),
       env: context.env,
-      adapters:
-        context.adapters ??
-        bridgeAdapters(context.env, {
+      adapters: context.adapters ?? [
+        ...bridgeAdapters(context.env, {
           ...(flags.home && { home: flags.home }),
           ...(flags.codexSandbox && { codexSandbox: flags.codexSandbox }),
           ...(flags.claudeMode && { claudeMode: flags.claudeMode }),
           onError,
         }),
+        ...(conductor ? [conductor] : []),
+      ],
       rights: reach.rights,
       person: reach.person,
       ...(board && { board }),
@@ -493,6 +504,14 @@ function positiveInt(value: string): number {
   const number = Number(value);
   if (!Number.isInteger(number) || number <= 0) {
     throw new InvalidArgumentError('Expected a positive whole number.');
+  }
+  return number;
+}
+
+function wholeNumber(value: string): number {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 0) {
+    throw new InvalidArgumentError('Expected a whole number, 0 or more.');
   }
   return number;
 }
@@ -624,6 +643,84 @@ bridgeCommand
   .showHelpAfterError(DASH_HINT)
   .action(async (to: string, text: string[], flags: BridgeDelegateFlags) => {
     process.exitCode = await runBridgeDelegate(to, text, flags);
+  });
+
+const reviewOptions = (command: Command): Command =>
+  command
+    .option(
+      '--by <agent>',
+      'who reviews: an agent name, or codex or claude for a fresh session (default: a fresh session of another agent than the author)'
+    )
+    .option(
+      '--rounds <number>',
+      'how many times the author is sent back to fix what was found, 0 to only review (default: 2)',
+      wholeNumber
+    )
+    .option(
+      '--threshold <severity>',
+      'the lightest finding the author is sent back for: blocker, major, minor or nit (default: major)'
+    )
+    .option('--focus <text>', 'what the reviewer looks at above all');
+
+reviewOptions(
+  bridgeCommand
+    .command('build <to> [text...]')
+    .description(
+      'From a session: have a job done, checked and reviewed in one go, and the author fix what the review found'
+    )
+    .option('--title <title>', 'a short name of the job (default: the first line of the text)')
+    .option('--cwd <dir>', 'the folder the job is about (default: the current one)')
+    .option(
+      '--check <command>',
+      'a command that shows the job is done, run after the work and after every round of fixes, repeatable',
+      collect,
+      [] as string[]
+    )
+    .option('--no-worktree', 'do the work in this folder instead of a git worktree of its own')
+    .option('--done <text>', 'what done looks like, repeatable', collect, [] as string[])
+    .option('--constraint <text>', 'what must hold or stay untouched, repeatable', collect, [])
+    .option('--decision <text>', 'what was decided already, repeatable', collect, [] as string[])
+    .option(
+      '--file <path[:lines][=why]>',
+      'a file to start from, such as src/a.ts:120-180=the retry loop, repeatable',
+      collect,
+      [] as string[]
+    )
+)
+  .option(...homeOption)
+  .option('--json', 'print the job as JSON')
+  .showHelpAfterError(DASH_HINT)
+  .action(async (to: string, text: string[], flags: BridgeBuildFlags) => {
+    process.exitCode = await runBridgeBuild(to, text, flags);
+  });
+
+reviewOptions(
+  bridgeCommand
+    .command('review')
+    .description(
+      'From a session: have another agent review the work of a job that is done, and its author fix what was found'
+    )
+    .argument('<job>', 'the number of the job', positiveInt)
+)
+  .option(...homeOption)
+  .option('--json', 'print the job as JSON')
+  .action(async (job: number, flags: BridgeReviewFlags) => {
+    process.exitCode = await runBridgeReview(job, flags);
+  });
+
+bridgeCommand
+  .command('recipe <name> [text...]')
+  .description(
+    'From a session: start a recipe the dispatcher knows by its name, with its input as JSON'
+  )
+  .option('--input <json>', `what the recipe is started with, such as '{"to":"codex"}'`)
+  .option('--title <title>', 'a short name of the job (default: the first line of the text)')
+  .option('--cwd <dir>', 'the folder the job is about (default: the current one)')
+  .option(...homeOption)
+  .option('--json', 'print the job as JSON')
+  .showHelpAfterError(DASH_HINT)
+  .action(async (name: string, text: string[], flags: BridgeRecipeFlags) => {
+    process.exitCode = await runBridgeRecipe(name, text, flags);
   });
 
 bridgeCommand

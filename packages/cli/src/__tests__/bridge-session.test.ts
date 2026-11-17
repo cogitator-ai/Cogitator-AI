@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,15 +25,19 @@ import {
   type HealthCheck,
 } from '@cogitator-ai/bridge';
 import { memoryBoard } from '@cogitator-ai/bridge/memory';
+import { recipeAdapter } from '@cogitator-ai/bridge/recipes';
 import {
   contextFile,
   replyHint,
   runBridgeAccept,
+  runBridgeBuild,
   runBridgeDelegate,
   runBridgeDiff,
   runBridgeForget,
   runBridgeRecall,
+  runBridgeRecipe,
   runBridgeReject,
+  runBridgeReview,
   runBridgeRemember,
   runBridgeDoctor,
   runBridgeInbox,
@@ -47,6 +52,7 @@ import {
   claudeModeOf,
   codexSandboxOf,
 } from '../utils/bridge-adapters.js';
+import { bridgeConductor } from '../utils/bridge-person.js';
 import { UsageError, exitCodeFor } from '../utils/cli.js';
 import { createProgram } from '../program.js';
 
@@ -920,6 +926,153 @@ describe('how a hook reaches the command line', () => {
       'dontAsk',
       'bypassPermissions',
     ]);
+  });
+});
+
+describe('bridge build, review and recipe', () => {
+  function starting(): { adapter: BridgeAdapter; started: string[] } {
+    const started: string[] = [];
+    const adapter: BridgeAdapter = {
+      harness: 'codex',
+      delivery: 'test',
+      capabilities: { createSession: true, push: true, steer: false, nativeWindow: true },
+      createSession: async (request) => {
+        started.push(request.firstLetter.text);
+        return { sessionId: `thread-${started.length}`, deliveredFirstLetter: true };
+      },
+      deliver: async () => undefined,
+    };
+    return { adapter, started };
+  }
+  const worker = (thread: number) => session(CODEX_ENV, `thread-${thread}`);
+
+  it('start a recipe of the conductor, and its report comes back as a letter', async () => {
+    mkdirSync(join(project, '.git'));
+    const { adapter, started } = starting();
+    hosts.push(
+      await hostBridge({ home, tickMs: 25, adapters: [adapter, recipeAdapter({ pollMs: 20 })] })
+    );
+    const watch = await watcher();
+    const done = (job: number) =>
+      until(async () => (await watch.job(job)).state === 'completed', `job #${job} to end`);
+
+    expect(
+      await runBridgeBuild(
+        'codex',
+        ['Fix the limiter'],
+        { worktree: false, by: 'codex', rounds: 0, done: ['The burst test passes'] },
+        claude()
+      )
+    ).toBe(0);
+    expect(output()).toBe(
+      'Job #1 is the build (submitted): codex does the work, then it is checked and reviewed. The bridge hands its steps to the agents itself. Its report arrives as a letter: nothing to wait for here'
+    );
+    await until(() => started.length === 1, 'the session of the work');
+    expect(started[0]).toContain('Fix the limiter');
+    expect(started[0]).toContain('Done when:\n- The burst test passes');
+    await runBridgeSend(['Fixed'], { job: 2, kind: 'report' }, worker(1));
+    await until(() => started.length === 2, 'the session of the review');
+    expect(started[1]).toContain('Review the work of job #2');
+    await runBridgeSend(['[none]'], { job: 3, kind: 'report' }, worker(2));
+    await done(1);
+    lines = [];
+    await runBridgeInbox({}, claude());
+    expect(output()).toContain('The work of job #2 by ');
+    expect(output()).toContain('passed the review of ');
+
+    lines = [];
+    expect(
+      await runBridgeReview(2, { rounds: 0, threshold: 'minor', focus: 'The names' }, claude())
+    ).toBe(0);
+    expect(output()).toContain('Job #4 is the review of job #2 (submitted).');
+    await until(() => started.length === 3, 'the session of the second review');
+    expect(started[2]).toContain('Look at this above all:\n> The names');
+    await runBridgeSend(
+      ['[minor] src/limiter.ts:3 - The name says nothing'],
+      { job: 5, kind: 'report' },
+      worker(3)
+    );
+    await done(4);
+    lines = [];
+    await runBridgeInbox({}, claude());
+    expect(output()).toContain(
+      'The review of job #2 is not clean: 1 minor at or above minor is still open.'
+    );
+    expect(output()).toContain('[minor] src/limiter.ts:3 - The name says nothing');
+
+    lines = [];
+    expect(
+      await runBridgeRecipe(
+        'review',
+        ['Look again'],
+        { input: '{"job":2,"rounds":0,"by":"codex"}' },
+        claude()
+      )
+    ).toBe(0);
+    expect(output()).toContain('Job #6 is the recipe review (submitted).');
+  });
+
+  it('say why a recipe cannot start', async () => {
+    mkdirSync(join(project, '.git'));
+    const { adapter } = starting();
+    hosts.push(
+      await hostBridge({ home, tickMs: 25, adapters: [adapter, recipeAdapter({ pollMs: 20 })] })
+    );
+
+    expect(await runBridgeRecipe('waltz', ['Go'], {}, claude())).not.toBe(0);
+    expect(failed()).toContain(
+      'There is no recipe "waltz". The recipes of this bridge: review, build'
+    );
+
+    failures = [];
+    expect(await runBridgeRecipe('build', ['Go'], { input: '{to:codex}' }, claude())).not.toBe(0);
+    expect(failed()).toContain('--input is not JSON');
+
+    failures = [];
+    expect(
+      await runBridgeBuild('codex', ['Go'], { threshold: 'huge' as 'major' }, claude())
+    ).not.toBe(0);
+    expect(failed()).toContain('--threshold is one of: blocker, major, minor, nit');
+
+    failures = [];
+    expect(await runBridgeReview(7, {}, claude())).toBe(0);
+    const watch = await watcher();
+    await until(async () => (await watch.job(1)).state === 'failed', 'the review to fail');
+    lines = [];
+    await runBridgeInbox({}, claude());
+    expect(output()).toContain('There is no job 7');
+  });
+
+  it('are refused by a dispatcher that was given no conductor', async () => {
+    mkdirSync(join(project, '.git'));
+    await startHost();
+    expect(await runBridgeBuild('codex', ['Go'], {}, claude())).not.toBe(0);
+    expect(failed()).toContain('This bridge carries out no recipes');
+  });
+
+  it('keep the place of every run in the folder of the bridge', () => {
+    const conductor = bridgeConductor({ COGITATOR_BRIDGE_HOME: home });
+    expect(conductor?.harness).toBe('recipe');
+    expect(conductor?.recipeProblem?.({ name: 'build', input: { to: 'codex' } })).toBeUndefined();
+    const folder = join(home, 'recipes');
+    expect(existsSync(folder)).toBe(true);
+    if (process.platform !== 'win32') expect(statSync(folder).mode & 0o777).toBe(0o700);
+  });
+
+  it('take the options of a review as flags', async () => {
+    const bridge = (await createProgram()).commands.find((command) => command.name() === 'bridge');
+    const options = (name: string) =>
+      bridge?.commands.find((command) => command.name() === name)?.options.map((o) => o.long);
+    expect(options('review')).toEqual([
+      '--by',
+      '--rounds',
+      '--threshold',
+      '--focus',
+      '--home',
+      '--json',
+    ]);
+    expect(options('build')).toEqual(expect.arrayContaining(['--no-worktree', '--check', '--by']));
+    expect(options('recipe')).toEqual(['--input', '--title', '--cwd', '--home', '--json']);
   });
 });
 
