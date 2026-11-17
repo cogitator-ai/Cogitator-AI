@@ -390,6 +390,31 @@ describe('taking the work of a job', () => {
     expect(existsSync(job.worktree!.path)).toBe(true);
   });
 
+  it('is refused while changes are staged in the checkout, and what is staged there stays', async () => {
+    const bridge = await start({ limits: { worktreesPerProject: 5 } });
+    await reported(bridge);
+    const second = await reported(bridge);
+    await bridge.accept(claude.name, { job: 1 });
+    const staged = git(repo, 'status', '--porcelain');
+
+    await expect(bridge.accept(claude.name, { job: second.number })).rejects.toThrow(
+      expect.objectContaining({
+        code: 'invalid_input',
+        message: `Nothing can be brought into ${repo} right now: changes are staged there. Taking the work of a job stages it, so commit or stash what is there first, then take the work again`,
+      })
+    );
+
+    expect(git(repo, 'status', '--porcelain')).toBe(staged);
+    expect(read(repo, 'src/burst.ts')).toBe('export const burst = 3;\n');
+    expect(existsSync(second.worktree!.path)).toBe(true);
+
+    git(repo, 'commit', '-q', '-m', 'the work of job 1');
+    expect(await bridge.accept(claude.name, { job: second.number })).toMatchObject({
+      state: 'accepted',
+    });
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
   it('leaves it as a branch when asked, the one of the worktree or one that is named', async () => {
     const bridge = await start({ limits: { worktreesPerProject: 5 } });
     const first = await reported(bridge);
@@ -464,6 +489,49 @@ describe('taking the work of a job', () => {
   });
 });
 
+describe('the session started in a worktree', () => {
+  it("is its job's alone: a later job for the harness gets a session of its own", async () => {
+    const bridge = await start();
+    const { job, worker } = await handOver(bridge, { worktree: true });
+
+    const later = await bridge.createJob(claude.name, { to: 'codex', body: 'Something else' });
+    await bridge.idle();
+
+    expect(later.job.to).not.toBe(worker);
+    expect(codex.sessions).toHaveLength(2);
+    expect(codex.sessions[1].cwd).toBe(repo);
+
+    await bridge.send(worker, { job: job.number, kind: 'report', body: 'Done' });
+    await bridge.reject(claude.name, { job: job.number });
+
+    expect((await bridge.agents({})).find((agent) => agent.name === worker)?.status).toBe('gone');
+    await expect(
+      bridge.createJob(claude.name, { to: worker, body: 'One more for you' })
+    ).rejects.toThrow(code('unknown_agent'));
+  });
+
+  it('cannot be asked for in a repository of its own inside the project', async () => {
+    const nested = join(repo, 'vendor', 'lib');
+    mkdirSync(nested, { recursive: true });
+    git(nested, 'init', '-q');
+    const bridge = await start();
+
+    await expect(
+      bridge.createJob(claude.name, {
+        to: 'codex',
+        body: 'Fix the library',
+        cwd: nested,
+        worktree: true,
+      })
+    ).rejects.toThrow(
+      expect.objectContaining({
+        code: 'no_worktree',
+        message: expect.stringContaining('is in a repository of its own inside the project'),
+      })
+    );
+  });
+});
+
 describe('a worktree nobody came for', () => {
   it('is put away after a while, with its work kept under a ref and a word to whoever handed the job over', async () => {
     const bridge = await start();
@@ -490,6 +558,51 @@ describe('a worktree nobody came for', () => {
     expect(note).toMatchObject({ kind: 'note', from: BRIDGE_SENDER });
     expect(note.body).toContain(`look at it with git show ${ref}`);
     expect(errors).toEqual([]);
+  });
+});
+
+describe('a worktree that cannot be put away as it is', () => {
+  const overdue = async (bridge: BridgeDispatcher): Promise<void> => {
+    clock.advance(DEFAULT_LIMITS.worktreeKeepMs + 3_600_000);
+    await bridge.sweep();
+    await bridge.idle();
+  };
+
+  it('keeps the commits of its branch when its folder was removed by hand', async () => {
+    const bridge = await start();
+    const { job, worker } = await handOver(bridge, { worktree: true });
+    write(job.worktree!.path, 'kept.txt', 'committed\n');
+    git(job.worktree!.path, 'add', '-A');
+    git(job.worktree!.path, 'commit', '-q', '-m', 'kept');
+    await bridge.send(worker, { job: 1, kind: 'report', body: 'Done' });
+    rmSync(job.worktree!.path, { recursive: true, force: true });
+
+    await overdue(bridge);
+
+    const ref = `${DISCARDED_REFS}/job-1`;
+    expect(git(repo, 'show', `${ref}:kept.txt`)).toBe('committed');
+    expect((await bridge.job(1)).worktree?.end).toMatchObject({ how: 'discarded', ref });
+    expect(git(repo, 'branch', '--list', 'cogitator/*')).toBe('');
+    expect(errors).toEqual([]);
+  });
+
+  it('stays, with its work, when git cannot read it', async () => {
+    const bridge = await start();
+    const { job, worker } = await handOver(bridge, { worktree: true });
+    write(job.worktree!.path, 'kept.txt', 'not committed\n');
+    mkdirSync(join(job.worktree!.path, 'nested'));
+    git(join(job.worktree!.path, 'nested'), 'init', '-q');
+    await bridge.send(worker, { job: 1, kind: 'report', body: 'Done' });
+
+    await overdue(bridge);
+
+    expect(read(job.worktree!.path, 'kept.txt')).toBe('not committed\n');
+    expect((await bridge.job(1)).worktree?.end).toBeUndefined();
+    expect(errors.map((error) => error.message)).toEqual([
+      expect.stringMatching(/^git add failed: /),
+      expect.stringMatching(/^The worktree of job 1, .+, could not be put away and stays: /),
+    ]);
+    errors.length = 0;
   });
 });
 
@@ -628,6 +741,44 @@ describe('the checks of a job', () => {
     });
     const [report] = await bridge.inbox(claude.name);
     expect(report.text).toMatch(/- failed: slow: did not end in time \(/);
+  });
+
+  it('run for a job handed over from a linked worktree outside the main checkout', async () => {
+    const linked = join(scratch, 'feature');
+    git(repo, 'worktree', 'add', '-q', '-b', 'feature', linked);
+    const bridge = await start();
+    const there = await bridge.register({
+      harness: 'claude-code',
+      sessionId: 'session-feature',
+      cwd: linked,
+      project: repo,
+    });
+    const created = await bridge.createJob(there.name, {
+      to: 'codex',
+      body: 'Check the feature',
+      checks: [{ command: 'pwd' }],
+    });
+    await bridge.idle();
+    await bridge.inbox(created.job.to);
+
+    await bridge.send(created.job.to, { job: 1, kind: 'report', body: 'Done' });
+    await bridge.idle();
+
+    expect((await bridge.job(1)).verification).toMatchObject({
+      verified: true,
+      checks: [{ ok: true, output: linked }],
+    });
+  });
+
+  it('refuses a command with a NUL character when the job is handed over', async () => {
+    const bridge = await start();
+    await expect(
+      bridge.createJob(claude.name, {
+        to: 'codex',
+        body: 'Anything',
+        checks: [{ command: 'true\0false' }],
+      })
+    ).rejects.toThrow(code('invalid_input'));
   });
 
   it('are not run for a job that was reported as failed', async () => {

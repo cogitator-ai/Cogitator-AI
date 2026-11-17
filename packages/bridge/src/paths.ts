@@ -144,6 +144,12 @@ export function findCheckoutRoot(cwd: string): string {
   }
 }
 
+/**
+ * Where the worktrees of jobs go, under the main checkout of a project: the folder the runtime
+ * keeps the worktrees of its isolated subagents in, so one `.gitignore` there covers both.
+ */
+export const JOB_WORKTREES_DIR = join('.cogitator', 'worktrees');
+
 /** Whether `cwd` is inside a git checkout, the main one of a repository or a linked worktree. */
 export function inCheckout(cwd: string): boolean {
   return gitEntry(findCheckoutRoot(cwd)) !== undefined;

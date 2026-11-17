@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import type { z } from 'zod';
 import { TaskManager, textPart, toMessage, type A2ATask } from '@cogitator-ai/a2a';
@@ -74,6 +75,8 @@ import {
   DISCARDED_REFS,
   GitError,
   addJobWorktree,
+  branchTip,
+  busyWith,
   changesOf,
   checkoutOf,
   conflictsOf,
@@ -1708,6 +1711,13 @@ export class BridgeDispatcher
         { cwd }
       );
     }
+    if (canonicalPath(findProjectRoot(cwd)) !== canonicalPath(from.project)) {
+      throw new BridgeError(
+        'no_worktree',
+        `${cwd} is in a repository of its own inside the project, such as a submodule, and the bridge makes worktrees of the project only`,
+        { cwd }
+      );
+    }
     if (resolution.kind === 'agent') {
       throw new BridgeError(
         'no_worktree',
@@ -1755,7 +1765,7 @@ export class BridgeDispatcher
         cause: error,
       });
     }
-    return this.mutate(async (tx) => {
+    const record = async (tx: Transaction) => {
       await this.patchRecord(job.taskId, {
         worktree: { path: made.path, branch: made.branch, base: made.base },
         cwd: made.cwd,
@@ -1773,7 +1783,13 @@ export class BridgeDispatcher
       if (!letter)
         throw new BridgeError('storage', `The first letter of job ${job.number} is lost`);
       return { job: fresh, letter: renderLetter(letter, fresh) };
-    });
+    };
+    try {
+      return await this.mutate(record);
+    } catch (error) {
+      await removeJobWorktree(job.project, made.path, made.branch).catch(() => undefined);
+      throw error;
+    }
   }
 
   /** The worktree of a job while its work is still in it. */
@@ -1819,40 +1835,45 @@ export class BridgeDispatcher
   private async runChecks(number: number, signal: AbortSignal): Promise<void> {
     const job = await this.enqueue(async () => this.jobIfAny(number));
     if (!job?.checking) return;
-    const top = this.liveWorktree(job)?.path;
+    const places = [job.project, findCheckoutRoot(job.cwd), this.liveWorktree(job)?.path];
     const results: JobCheckResult[] = [];
     for (const check of job.checks) {
-      const cwd = check.cwd ? canonicalPath(resolvePath(job.cwd, check.cwd)) : job.cwd;
-      if (!isInside(job.project, cwd) && !(top && isInside(top, cwd))) {
-        results.push(skippedCheck(check, `it would run in ${cwd}, outside the project`));
-        continue;
-      }
-      const rights = await this.rightsFor(number, {
-        tool: 'Bash',
-        access: 'command',
-        command: check.command,
-        cwd,
-      });
-      if (rights !== 'allow') {
-        results.push(
-          skippedCheck(
-            check,
-            !this.rights
-              ? 'this bridge has no rules to judge a command by, and runs none without them'
-              : rights === 'deny'
-                ? `the rules of ${job.from} forbid the command`
-                : `the rules of ${job.from} do not allow the command without asking. Allow it in the settings of the project, or run it yourself`
-          )
-        );
-        continue;
-      }
-      results.push(
-        await runCheck(check, {
+      try {
+        const cwd = check.cwd ? canonicalPath(resolvePath(job.cwd, check.cwd)) : job.cwd;
+        if (!places.some((place) => place !== undefined && isInside(place, cwd))) {
+          results.push(skippedCheck(check, `it would run in ${cwd}, outside the project`));
+          continue;
+        }
+        const rights = await this.rightsFor(number, {
+          tool: 'Bash',
+          access: 'command',
+          command: check.command,
           cwd,
-          timeoutMs: check.timeoutMs ?? this.limits.checkTimeoutMs,
-          signal,
-        })
-      );
+        });
+        if (rights !== 'allow') {
+          results.push(
+            skippedCheck(
+              check,
+              !this.rights
+                ? 'this bridge has no rules to judge a command by, and runs none without them'
+                : rights === 'deny'
+                  ? `the rules of ${job.from} forbid the command`
+                  : `the rules of ${job.from} do not allow the command without asking. Allow it in the settings of the project, or run it yourself`
+            )
+          );
+          continue;
+        }
+        results.push(
+          await runCheck(check, {
+            cwd,
+            timeoutMs: check.timeoutMs ?? this.limits.checkTimeoutMs,
+            signal,
+          })
+        );
+      } catch (error) {
+        this.onError(asError(error));
+        results.push(skippedCheck(check, `the bridge failed to run it: ${asError(error).message}`));
+      }
       if (signal.aborted) return;
     }
     if (this.closing) return;
@@ -1976,6 +1997,16 @@ export class BridgeDispatcher
           { job: job.number, cwd: agent.cwd }
         );
       }
+      const busy = await busyWith(into).catch((error: unknown) => {
+        throw gitRefusal(error, `Git could not look at ${into}`);
+      });
+      if (busy) {
+        throw new BridgeError(
+          'invalid_input',
+          `Nothing can be brought into ${into} right now: ${busy}. Taking the work of a job stages it, so commit or stash what is there first, then take the work again`,
+          { job: job.number, into }
+        );
+      }
       const conflicts = await conflictsOf(into, commit).catch((error: unknown) => {
         throw gitRefusal(error, `Git could not tell whether job ${job.number} merges into ${into}`);
       });
@@ -1993,7 +2024,9 @@ export class BridgeDispatcher
           `Git refused to bring the changes of job ${job.number} into ${into}, which is as it was. Commit or stash what is in the way there, then take the work again`
         );
       });
-      await removeJobWorktree(job.project, worktree.path, worktree.branch);
+      await removeJobWorktree(job.project, worktree.path, worktree.branch).catch((error: unknown) =>
+        this.onError(asError(error))
+      );
       const ended = await this.endWorktree(
         job.number,
         { how: 'accepted', commit, into },
@@ -2107,7 +2140,10 @@ export class BridgeDispatcher
     }
   }
 
-  /** Removes a worktree and leaves its work as the branch `branch`, at `commit`. */
+  /**
+   * Leaves the work of a worktree as the branch `branch`, at `commit`, and removes the worktree.
+   * The branch is set first: whatever goes wrong after that, the work is on it.
+   */
   private async leaveBranch(
     job: BridgeJob,
     worktree: JobWorktreeRecord,
@@ -2115,15 +2151,9 @@ export class BridgeDispatcher
     commit: string
   ): Promise<void> {
     try {
-      if (branch !== worktree.branch) {
-        await pointRef(job.project, `refs/heads/${branch}`, commit, { fresh: true });
-      }
-      await removeJobWorktree(
-        job.project,
-        worktree.path,
-        branch === worktree.branch ? undefined : worktree.branch
-      );
-      if (branch === worktree.branch) await pointRef(job.project, `refs/heads/${branch}`, commit);
+      const own = branch === worktree.branch;
+      await pointRef(job.project, `refs/heads/${branch}`, commit, { fresh: !own });
+      await removeJobWorktree(job.project, worktree.path, own ? undefined : worktree.branch);
     } catch (error) {
       throw gitRefusal(error, `Git could not leave the work of job ${job.number} as ${branch}`);
     }
@@ -2142,9 +2172,25 @@ export class BridgeDispatcher
         await this.patchRecord(job.taskId, {
           worktree: { ...job.worktree, end: { ...end, at: this.iso() } },
         });
+        this.retireFrom(tx, job, job.worktree.path);
       }
       this.journal(tx, { type, job: number, data: { how: end.how, ...data } });
       return this.requireJob(number).job;
+    });
+  }
+
+  /**
+   * Takes the session that was started in a worktree for gone once the worktree is: the folder
+   * it works in is not there any more, so it is no session to hand another job to.
+   */
+  private retireFrom(tx: Transaction, job: BridgeJob, worktree: string): void {
+    const agent = this.store.getAgent(job.to);
+    if (!agent || agent.status === 'gone' || !isInside(worktree, agent.cwd)) return;
+    this.store.putAgent({ ...agent, status: 'gone' });
+    this.journal(tx, {
+      type: 'agent.gone',
+      agent: agent.name,
+      data: { error: `the worktree of job #${job.number}, where it worked, was removed` },
     });
   }
 
@@ -2172,28 +2218,52 @@ export class BridgeDispatcher
     }
   }
 
+  /**
+   * Puts the worktree of a job away. Nothing is removed before its work is kept: when git
+   * cannot read the worktree because its folder is gone, the commits on its branch are kept,
+   * and when it cannot for another reason, the worktree stays and the next look tries again.
+   */
   private async putAway(job: BridgeJob): Promise<void> {
     const worktree = this.liveWorktree(job);
     if (!worktree) return;
+    const ref = `${DISCARDED_REFS}/job-${job.number}`;
     let kept: { commit: string; ref: string } | undefined;
     try {
-      const changes = await changesOf(worktree.path, worktree.base);
-      if (changes.files.length > 0 || changes.commits > 0) {
-        const commit = await snapshotOf(worktree.path, changes, `job #${job.number}: ${job.title}`);
-        const ref = `${DISCARDED_REFS}/job-${job.number}`;
-        await pointRef(job.project, ref, commit);
-        kept = { commit, ref };
+      if (existsSync(worktree.path)) {
+        const changes = await changesOf(worktree.path, worktree.base);
+        if (changes.files.length > 0 || changes.commits > 0) {
+          const commit = await snapshotOf(
+            worktree.path,
+            changes,
+            `job #${job.number}: ${job.title}`
+          );
+          await pointRef(job.project, ref, commit);
+          kept = { commit, ref };
+        }
+      } else {
+        const tip = await branchTip(job.project, worktree.branch);
+        if (tip && tip !== worktree.base) {
+          await pointRef(job.project, ref, tip);
+          kept = { commit: tip, ref };
+        }
       }
+      await removeJobWorktree(job.project, worktree.path, worktree.branch);
     } catch (error) {
-      this.onError(asError(error));
+      this.onError(
+        new Error(
+          `The worktree of job ${job.number}, ${worktree.path}, could not be put away and stays: ${asError(error).message}`,
+          { cause: error }
+        )
+      );
+      return;
     }
-    await removeJobWorktree(job.project, worktree.path, worktree.branch);
     await this.mutate(async (tx) => {
       const { job: fresh } = this.requireJob(job.number);
       if (!fresh.worktree) return;
       await this.patchRecord(fresh.taskId, {
         worktree: { ...fresh.worktree, end: { how: 'discarded', at: this.iso(), ...kept } },
       });
+      this.retireFrom(tx, fresh, fresh.worktree.path);
       this.journal(tx, {
         type: 'job.discarded',
         job: job.number,

@@ -15,6 +15,8 @@ import {
   DISCARDED_REFS,
   GitError,
   addJobWorktree,
+  branchTip,
+  busyWith,
   changesOf,
   checkoutOf,
   conflictsOf,
@@ -275,6 +277,32 @@ describe('taking the work of a worktree', () => {
     expect(read(repo, 'src/limiter.ts')).toBe('export const limit = 1; // mine\n');
   });
 
+  it('is not brought into a checkout with staged changes or git in the middle of something, and what is staged there stays', async () => {
+    const made = await addJobWorktree({ project: repo, from: repo, number: 1, title: 'work' });
+    write(made.path, 'added.txt', 'new\n');
+    const snapshot = await snapshotOf(made.path, await changesOf(made.path, made.base), 'job #1');
+    expect(await busyWith(repo)).toBeUndefined();
+    write(repo, 'mine.txt', 'staged by me\n');
+    git(repo, 'add', 'mine.txt');
+    write(repo, 'README.md', 'my own edit\n');
+
+    expect(await busyWith(repo)).toBe('changes are staged there');
+    await expect(squashInto(repo, snapshot)).rejects.toThrow(/changes are staged there/);
+
+    expect(git(repo, 'status', '--porcelain').split('\n')).toEqual([' M README.md', 'A  mine.txt']);
+    expect(read(repo, 'mine.txt')).toBe('staged by me\n');
+
+    git(repo, 'commit', '-q', '-m', 'mine');
+    git(repo, 'checkout', '-q', '-b', 'other', 'HEAD~1');
+    write(repo, 'mine.txt', 'another\n');
+    git(repo, 'add', 'mine.txt');
+    git(repo, 'commit', '-q', '-m', 'other');
+    expect(() => git(repo, 'merge', '-q', 'main')).toThrow();
+    expect(await busyWith(repo)).toBe('a merge is in progress there');
+    await expect(squashInto(repo, snapshot)).rejects.toThrow(/a merge is in progress there/);
+    expect(read(repo, 'mine.txt')).toContain('<<<<<<<');
+  });
+
   it('is kept under a ref of its own when its worktree goes', async () => {
     const made = await addJobWorktree({ project: repo, from: repo, number: 4, title: 'work' });
     write(made.path, 'kept.txt', 'do not lose me\n');
@@ -285,5 +313,21 @@ describe('taking the work of a worktree', () => {
     git(repo, 'gc', '--prune=now', '-q');
 
     expect(git(repo, 'show', `${DISCARDED_REFS}/job-4:kept.txt`)).toBe('do not lose me');
+  });
+
+  it('forgets a worktree whose folder is gone without its branch, when asked to keep that', async () => {
+    const made = await addJobWorktree({ project: repo, from: repo, number: 5, title: 'work' });
+    write(made.path, 'a.txt', 'committed\n');
+    git(made.path, 'add', '-A');
+    git(made.path, 'commit', '-q', '-m', 'a');
+    const tip = git(made.path, 'rev-parse', 'HEAD');
+    rmSync(made.path, { recursive: true, force: true });
+
+    expect(await branchTip(repo, made.branch)).toBe(tip);
+    expect(await branchTip(repo, 'no-such-branch')).toBeUndefined();
+    await removeJobWorktree(repo, made.path);
+
+    expect(git(repo, 'worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1);
+    expect(await branchTip(repo, made.branch)).toBe(tip);
   });
 });

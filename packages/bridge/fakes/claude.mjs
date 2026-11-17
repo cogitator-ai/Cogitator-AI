@@ -515,8 +515,9 @@ function gitSays(cwd, args) {
 }
 
 /**
- * Moves a background session into a git worktree of its own before its first edit, the way
- * Claude Code does: `.claude/worktrees/<name>` under the top of the repository, on a branch
+ * Moves a background session into a git worktree of its own before its first edit. Claude Code
+ * refuses the edit and has the model enter a worktree, which comes to the same for a model that
+ * does as it is told: `.claude/worktrees/<name>` under the top of the repository, on a branch
  * `worktree-<name>`. Not when its settings say `worktree.bgIsolation: "none"`, not outside a git
  * repository, and not when it is in a linked worktree already. The settings of the project it
  * was started in stay the ones it reads.
@@ -535,7 +536,7 @@ function isolate(session, file) {
   const name = `session-${record.id}`;
   const path = join(top, '.claude', 'worktrees', name);
   if (gitSays(top, ['worktree', 'add', '-b', `worktree-${name}`, path, 'HEAD']) === undefined) {
-    return undefined;
+    throw new Error(`fake claude could not make the worktree ${path}`);
   }
   const into = (place) =>
     isWithin(place, top) ? join(path, relative(canonical(top), canonical(place))) : place;
