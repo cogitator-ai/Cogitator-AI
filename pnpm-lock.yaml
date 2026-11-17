@@ -447,6 +447,9 @@ importers:
       '@cogitator-ai/memory':
         specifier: workspace:*
         version: link:../memory
+      '@cogitator-ai/workflows':
+        specifier: workspace:*
+        version: link:../workflows
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
@@ -626,6 +629,9 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      '@cogitator-ai/workflows':
+        specifier: workspace:*
+        version: link:../workflows
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
