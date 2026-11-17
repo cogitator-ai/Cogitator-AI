@@ -27,7 +27,7 @@ import type {
   RecoveredRuns,
 } from '@cogitator-ai/types';
 import type { Cogitator } from '@cogitator-ai/core';
-import { WorkflowExecutor } from '../executor';
+import { WorkflowExecutor, resumePoint, type ResumePoint } from '../executor';
 import { WorkflowScheduler } from '../scheduler';
 import { type CronJob, type JobScheduler, createJobScheduler } from './scheduler';
 import { InMemoryRunStore } from './run-store';
@@ -60,14 +60,6 @@ interface ActiveRun {
   stopReason?: StopReason;
   /** The store write of the stop, which the run's final write must not overtake */
   stopWrite?: Promise<void>;
-}
-
-/** Where a run continues from instead of the workflow's entry point */
-interface ResumePoint {
-  workflowId: string;
-  skipNodes: Set<string>;
-  nodeResults: Record<string, unknown>;
-  nodeVisits?: Record<string, number>;
 }
 
 interface RunLaunch<S extends WorkflowState> {
@@ -363,12 +355,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       ...(checkpoint
         ? {
             input: checkpoint.state,
-            resumeFrom: {
-              workflowId: checkpoint.workflowId,
-              skipNodes: new Set(checkpoint.completedNodes),
-              nodeResults: checkpoint.nodeResults,
-              ...(checkpoint.nodeVisits && { nodeVisits: checkpoint.nodeVisits }),
-            },
+            resumeFrom: resumePoint(checkpoint),
           }
         : { input: run.input as Partial<WorkflowState> | undefined }),
     }).catch(() => {});

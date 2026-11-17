@@ -57,6 +57,8 @@ interface WorkflowExecuteOptions {
   checkpoint?: boolean;
   checkpointStrategy?: 'per-iteration' | 'per-node';
   workflowId?: string;
+  frontier?: { current: string[]; next: string[] };
+  completedNodes?: string[];
   skipNodes?: Set<string>;
   nodeResults?: Record<string, unknown>;
   onNodeStart?: (nodeName: string) => void;
@@ -66,15 +68,17 @@ interface WorkflowExecuteOptions {
 }
 ```
 
-| Option               | Default           | Description                                                                    |
-| -------------------- | ----------------- | ------------------------------------------------------------------------------ |
-| `maxConcurrency`     | `4`               | Max parallel node executions                                                   |
-| `maxIterations`      | `100`             | Safety limit for loop iterations                                               |
-| `checkpoint`         | `false`           | Enable checkpoint saving                                                       |
-| `checkpointStrategy` | `'per-iteration'` | When to save checkpoints                                                       |
-| `workflowId`         | generated `wf_…`  | Id of the run (nodes see it as `ctx.workflowId`)                               |
-| `skipNodes`          | —                 | Nodes that already ran: they are passed over, not run again (used by `resume`) |
-| `nodeResults`        | —                 | Outputs of the `skipNodes`, so the nodes after them get their inputs           |
+| Option               | Default           | Description                                                                                                                                                   |
+| -------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxConcurrency`     | `4`               | Max parallel node executions                                                                                                                                  |
+| `maxIterations`      | `100`             | Safety limit for loop iterations                                                                                                                              |
+| `checkpoint`         | `false`           | Enable checkpoint saving                                                                                                                                      |
+| `checkpointStrategy` | `'per-iteration'` | When to save checkpoints                                                                                                                                      |
+| `workflowId`         | generated `wf_…`  | Id of the run (nodes see it as `ctx.workflowId`)                                                                                                              |
+| `frontier`           | -                 | Where a resumed run goes on, taken from a checkpoint (used by `resume`): the run starts there instead of at the entry point                                   |
+| `completedNodes`     | -                 | With `frontier`: the nodes that completed before the run stopped, kept in its checkpoints and compensated if it fails                                         |
+| `skipNodes`          | -                 | Nodes passed over by name for the whole run, not run again. A loop cannot pass through them again, `resume` uses them only for checkpoints without a frontier |
+| `nodeResults`        | -                 | Outputs of the nodes that already ran, so the nodes after them get their inputs                                                                               |
 
 `WorkflowExecutor.execute` additionally accepts (`ExecutorExecuteOptions`):
 
@@ -284,7 +288,11 @@ const result = await executor.resume(workflow, checkpointId, {
 });
 ```
 
-The executor loads the checkpoint, restores state and completed node set, then continues execution from where it left off.
+The executor loads the checkpoint, restores the state and the node outputs, and goes on from the frontier the checkpoint recorded: the nodes of the step in flight that had not completed run, the nodes queued behind them run after, and nothing before them runs again.
+
+A run that stopped inside a loop goes on in the round it stopped in. With `draft -> review -> loop(back: draft, exit: publish)` stopped at `review` of round 2, the resumed run starts at `review`, runs the remaining rounds once each and reaches `publish`. Every node keeps its visit count, so the node that runs again gets the idempotency key it had before the stop (`workflow:<workflowId>:node:review:visit:2`).
+
+A checkpoint saved before the frontier was recorded has none. It is resumed the old way, by passing over its `completedNodes` by name, which is right for a workflow without cycles but cannot tell the rounds of a loop apart. Run a workflow with a loop again from its input rather than from such a checkpoint.
 
 ### Over HTTP
 
@@ -301,10 +309,13 @@ interface WorkflowCheckpoint {
   completedNodes: string[];
   nodeResults: Record<string, unknown>;
   nodeVisits?: Record<string, number>;
+  frontier?: { current: string[]; next: string[] };
   timestamp: number;
   owner?: string; // the user the checkpoint belongs to, set by servers
 }
 ```
+
+`completedNodes` lists every node that completed at least once, and `nodeVisits` counts how many times. `frontier` is where the run stood: `current` are the nodes of the step in flight that had not completed, `next` the nodes already queued for the step after it. Both are empty in the last checkpoint of a finished run.
 
 ## Error Handling
 

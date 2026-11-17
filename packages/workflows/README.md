@@ -274,7 +274,7 @@ new PostgresCheckpointStore({ client: pool, table: 'workflow_checkpoints' }); //
 new RedisCheckpointStore({ client: redis, keyPrefix: 'myapp:checkpoints', ttl: 7 * 24 * 3600 });
 ```
 
-Resuming runs only the nodes that did not finish, and the nodes after them get the finished nodes' outputs as input.
+Resuming runs only the nodes that did not finish, and the nodes after them get the finished nodes' outputs as input. Each checkpoint records where the run stood (`frontier`), so a run that stopped inside a loop goes on in the round it stopped in: the remaining rounds run once each, the exit node is reached, and the node that runs again keeps the idempotency key of its visit. A checkpoint saved before the frontier was recorded is resumed by passing over its completed nodes by name, which cannot tell the rounds of a loop apart, so run a workflow with a loop again from its input instead.
 
 Runs, approvals and timers have the same kind of durable stores:
 
