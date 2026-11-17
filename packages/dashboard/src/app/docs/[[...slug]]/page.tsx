@@ -9,6 +9,8 @@ import { notFound } from 'next/navigation';
 import { getMDXComponents } from '../../../../mdx-components';
 import type { Metadata } from 'next';
 
+export const dynamicParams = false;
+
 interface PageProps {
   params: Promise<{ slug?: string[] }>;
 }

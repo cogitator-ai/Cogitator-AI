@@ -3,6 +3,7 @@ import { source } from '@/lib/source';
 import { MARKDOWN_HEADERS, renderPageMarkdown } from '@/lib/llms';
 
 export const revalidate = false;
+export const dynamicParams = false;
 
 interface RouteProps {
   params: Promise<{ slug?: string[] }>;

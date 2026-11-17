@@ -8,6 +8,9 @@ const monorepoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..
 const nextConfig = {
   output: 'standalone',
   outputFileTracingRoot: monorepoRoot,
+  experimental: {
+    isrFlushToDisk: false,
+  },
   turbopack: {
     root: monorepoRoot,
   },
