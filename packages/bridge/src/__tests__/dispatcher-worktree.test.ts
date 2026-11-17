@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BridgeDispatcher, type BridgeDispatcherOptions } from '../dispatcher';
+import { recipeAdapter } from '../recipes';
 import type { RightsJudge } from '../person';
 import { SqliteBridgeStore } from '../store/sqlite';
 import { BRIDGE_SENDER, DEFAULT_LIMITS, type AgentRecord, type BridgeJob } from '../types';
@@ -109,6 +110,80 @@ afterEach(async () => {
   for (const bridge of bridges) await bridge.close();
   store.close();
   rmSync(scratch, { recursive: true, force: true });
+});
+
+describe('the worktree of a job a recipe works on', () => {
+  const until = async (look: () => Promise<boolean> | boolean, what: string): Promise<void> => {
+    const deadline = Date.now() + 5_000;
+    while (!(await look())) {
+      if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  };
+
+  it('keeps the folder the job was done in for the review and the fixes, and stays while they run', async () => {
+    write(repo, 'pkg/parser.ts', 'export const parse = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'pkg');
+    const bridge = await start({
+      adapters: [codex, recipeAdapter({ pollMs: 20 })],
+      limits: { worktreeKeepMs: 60_000 },
+    });
+
+    await bridge.createJob(claude.name, {
+      to: 'recipe',
+      title: 'Fix the parser',
+      body: 'Fix the parser',
+      cwd: 'pkg',
+      recipe: { name: 'build', input: { to: 'codex', rounds: 1 } },
+    });
+    await until(() => codex.sessions.length === 1, 'the session of the work');
+    const root = join(repo, '.cogitator', 'worktrees', 'job-2-fix-the-parser');
+    expect(codex.sessions[0].cwd).toBe(join(root, 'pkg'));
+    const author = codex.sessions[0].agentName;
+    await bridge.send(author, { job: 2, kind: 'report', body: 'Fixed' });
+
+    await until(() => codex.sessions.length === 2, 'the session of the review');
+    const review = codex.sessions[1];
+    expect(review.cwd).toBe(join(root, 'pkg'));
+    expect(review.firstLetter.text).toContain(`The work is in ${root}, a git worktree made from`);
+    expect(review.firstLetter.text).toContain(`The job was done in ${join(root, 'pkg')}.`);
+    await expect(bridge.accept(claude.name, { job: 2 })).rejects.toThrow(
+      'is a step of the recipe of job 1, which still runs'
+    );
+    await bridge.send(review.agentName, {
+      job: 3,
+      kind: 'report',
+      body: '[major] pkg/parser.ts:1 - It parses nothing',
+    });
+    await until(async () => (await bridge.jobs({ parent: 1 })).length === 3, 'the fixes');
+    expect((await bridge.job(4)).cwd).toBe(join(root, 'pkg'));
+    await bridge.cancel(claude.name, 1);
+
+    await bridge.createJob(claude.name, {
+      to: 'recipe',
+      body: 'Review the parser',
+      recipe: { name: 'review', input: { job: 2, rounds: 0 } },
+    });
+    await until(async () => (await bridge.jobs({ parent: 5 })).length === 1, 'the second review');
+    for (const take of [
+      () => bridge.accept(claude.name, { job: 2 }),
+      () => bridge.reject(claude.name, { job: 2 }),
+    ]) {
+      await expect(take()).rejects.toThrow(/Job \d still works on what job 2 left in its worktree/);
+    }
+    clock.advance(120_000);
+    await bridge.sweep();
+    await bridge.idle();
+    expect(existsSync(root)).toBe(true);
+
+    await bridge.cancel(claude.name, 5);
+    write(root, 'pkg/fixed.ts', 'export const fixed = true;\n');
+    expect((await bridge.accept(claude.name, { job: 2 })).state).toBe('accepted');
+    expect(read(repo, 'pkg/fixed.ts')).toBe('export const fixed = true;\n');
+    expect(existsSync(root)).toBe(false);
+    expect(errors).toEqual([]);
+  });
 });
 
 describe('a job in a worktree of its own', () => {

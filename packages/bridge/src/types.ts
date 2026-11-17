@@ -204,6 +204,10 @@ export const JobBudgetSchema = z.object({
 });
 
 /** The recipe a job is carried out by, and what it was started with. */
+/**
+ * The recipe a job is carried out by. A field `job` in its input names the job the recipe works
+ * on: the bridge keeps the worktree of that job while the recipe runs.
+ */
 export interface JobRecipe {
   /** The name of the recipe, such as `review` or `build` */
   name: string;

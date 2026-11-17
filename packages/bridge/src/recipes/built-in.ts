@@ -1,3 +1,4 @@
+import { isAbsolute, join, relative } from 'node:path';
 import type { Workflow } from '@cogitator-ai/types';
 import { WorkflowBuilder } from '@cogitator-ai/workflows';
 import { z } from 'zod';
@@ -55,8 +56,10 @@ interface Work {
   author: string;
   /** The harness of the author, to start a session of when the author is gone */
   harness: string;
-  /** Where the work lies: the worktree of the job, or the folder it was done in */
+  /** The folder the job was done in, where the review and the fixes are done too */
   cwd: string;
+  /** The top of the worktree of the job, while its work is still there */
+  root?: string;
   /** The commit the worktree of the job was made from */
   base?: string;
   /** What the job was, in the words of whoever handed it over */
@@ -131,13 +134,16 @@ function over(job: BridgeJob): string {
 async function workOf(run: RecipeRun, job: BridgeJob, report?: string): Promise<Work> {
   const author = await run.agent(job.to);
   const worktree = job.worktree && !job.worktree.end ? job.worktree : undefined;
-  const taken = job.worktree?.end?.how === 'accepted' ? job.worktree.end.into : undefined;
+  const end = job.worktree?.end;
+  const below = job.worktree ? relative(job.worktree.path, job.cwd) : '';
+  const inside = below.startsWith('..') || isAbsolute(below) ? '' : below;
+  const taken = end?.how === 'accepted' && end.into ? join(end.into, inside) : undefined;
   return {
     job: job.number,
     author: job.to,
     harness: author?.harness ?? '',
-    cwd: worktree?.path ?? taken ?? (job.worktree ? run.job.cwd : job.cwd),
-    ...(worktree && { base: worktree.base }),
+    cwd: worktree ? job.cwd : (taken ?? (job.worktree ? run.job.cwd : job.cwd)),
+    ...(worktree && { root: worktree.path, base: worktree.base }),
     task: await run.taskOf(job),
     checks: job.checks,
     ...(report && { report }),
@@ -215,7 +221,7 @@ async function handBack(
 
 function whereText(work: Work): string {
   return work.base
-    ? `The work is in ${work.cwd}, a git worktree made from commit ${work.base.slice(0, 10)}: \`git diff ${work.base.slice(0, 10)}\` there shows what the job changed, committed or not, and \`git status\` the files it added.`
+    ? `The work is in ${work.root ?? work.cwd}, a git worktree made from commit ${work.base.slice(0, 10)}: \`git diff ${work.base.slice(0, 10)}\` there shows what the job changed, committed or not, and \`git status\` the files it added.${work.root && work.root !== work.cwd ? ` The job was done in ${work.cwd}.` : ''}`
     : `The work is in ${work.cwd}, where the job was done: \`git status\` and \`git diff\` there show what is not committed yet.`;
 }
 
