@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
@@ -24,9 +24,11 @@ import {
 import { describeJournalEntry, runBridgeServe } from '../commands/bridge.js';
 import {
   BRIDGE_INBOX_FILE,
+  BRIDGE_MEMORY_FILE,
   BRIDGE_TELEGRAM_CHAT_ENV,
   BRIDGE_TELEGRAM_TOKEN_ENV,
   BRIDGE_TELEGRAM_USERS_ENV,
+  bridgeBoard,
   bridgePerson,
 } from '../utils/bridge-person.js';
 import { UsageError } from '../utils/cli.js';
@@ -380,6 +382,50 @@ describe('how the command line reaches the person', () => {
       'What needs you: cogitator bridge asks, Telegram chat 4242'
     );
     expect(fake.state.stopped).toBe(1);
+  });
+});
+
+describe('the board the command line keeps', () => {
+  it.skipIf(process.platform === 'win32')(
+    'is a file of the bridge folder that only its owner reads',
+    async () => {
+      const errors: Error[] = [];
+      const board = await bridgeBoard(
+        { COGITATOR_BRIDGE_HOME: home },
+        { onError: (error) => errors.push(error) }
+      );
+
+      expect(errors).toEqual([]);
+      const kept = await board?.remember({
+        kind: 'fact',
+        text: 'CI runs on Node 22',
+        project,
+        source: { by: 'person', at: new Date().toISOString() },
+      });
+      expect(await board?.recall({ project })).toEqual([kept]);
+      const file = join(home, BRIDGE_MEMORY_FILE);
+      for (const path of [file, `${file}-wal`, `${file}-shm`]) {
+        if (existsSync(path)) expect(statSync(path).mode & 0o777).toBe(0o600);
+      }
+      expect(existsSync(file)).toBe(true);
+      await board?.close?.();
+    }
+  );
+
+  it('is left out, with a word why, when it cannot be opened', async () => {
+    const errors: Error[] = [];
+    const blocked = join(home, 'a-file');
+    writeFileSync(blocked, '');
+
+    const board = await bridgeBoard(
+      { COGITATOR_BRIDGE_HOME: join(blocked, 'inside') },
+      { onError: (error) => errors.push(error) }
+    );
+
+    expect(board).toBeUndefined();
+    expect(errors.map((error) => error.message)).toEqual([
+      expect.stringMatching(/^The board of facts could not be opened, so nothing is remembered: /),
+    ]);
   });
 });
 

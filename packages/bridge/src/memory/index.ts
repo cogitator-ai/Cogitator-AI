@@ -1,4 +1,10 @@
-import { BM25Index, MemoryItems, SQLiteAdapter, isMemoryItemAdapter } from '@cogitator-ai/memory';
+import {
+  BM25Index,
+  MemoryItems,
+  SQLiteAdapter,
+  isMemoryItemAdapter,
+  tokenize,
+} from '@cogitator-ai/memory';
 import type {
   MemoryItem,
   MemoryItemAdapter,
@@ -39,6 +45,15 @@ const KIND_ON_BOARD: Partial<Record<MemoryItemKind, FactKind>> = {
   lesson: 'lesson',
   event: 'outcome',
 };
+
+/**
+ * How many words a note shares with what is asked for, at least, to count as fitting: one word
+ * in common, such as a verb every job uses, says nothing. A look with fewer words needs them all.
+ */
+const MIN_SHARED_WORDS = 2;
+
+/** A note fits when it scores at least this share of the best one. */
+const MIN_SCORE_SHARE = 0.3;
 
 /** The shortest start of an id `find` takes for the id. */
 const MIN_ID_PREFIX = 6;
@@ -84,7 +99,8 @@ function toFact(item: MemoryItem): BoardFact | undefined {
  * rewritten or deleted: one that is forgotten is closed and found no more. What an agent said
  * is kept as the words of a model and what the person said as the person's, which is how the
  * rest of the runtime tells them apart too. A look with words ranks the notes by those words
- * (BM25), newest first among equals.
+ * (BM25) and leaves out those that share too few of them. A note said again, in the same words
+ * for the same project or job, stays the one note it was, under the name of who said it first.
  *
  * @example
  * ```ts
@@ -116,24 +132,30 @@ export async function memoryBoard(options: MemoryBoardOptions): Promise<FactBoar
   const gone = (item: MemoryItem): boolean =>
     item.expiredAt !== undefined && item.expiredAt.getTime() <= now().getTime();
 
-  /** The notes a look may see: those of the project, and those kept to each job it names */
+  /**
+   * The notes a look may see: those of the project, and those kept to each job it names. One
+   * reading of the store, however many jobs are named.
+   */
   async function visible(query: BoardQuery): Promise<BoardFact[]> {
     const kinds = (query.kinds ?? (Object.keys(KIND_IN_MEMORY) as FactKind[])).map(
       (kind) => KIND_IN_MEMORY[kind]
     );
-    const scopes = [
-      scopeOf(query.project),
-      ...(query.jobs ?? []).map((job) => scopeOf(query.project, job)),
-    ];
-    const looks = await Promise.all(
-      scopes.map((scope) => items.query({ scope, kinds, statuses: ['suggested', 'active'] }))
-    );
-    const found = new Map<string, BoardFact>();
-    for (const item of looks.flat()) {
-      const fact = toFact(item);
-      if (fact) found.set(fact.id, fact);
-    }
-    return [...found.values()].sort((a, b) => b.source.at.localeCompare(a.source.at));
+    if (kinds.length === 0) return [];
+    const result = await adapter.findItems({
+      agentId: BOARD_AGENT,
+      kinds,
+      statuses: ['suggested', 'active'],
+    });
+    if (!result.success) throw new Error(`The board could not be read: ${result.error}`);
+    const jobs = new Set(query.jobs ?? []);
+    return result.data
+      .filter((item) => item.scope.projectId === query.project && !gone(item))
+      .sort(
+        (a, b) =>
+          b.saidAt.getTime() - a.saidAt.getTime() || b.recordedAt.getTime() - a.recordedAt.getTime()
+      )
+      .flatMap((item) => toFact(item) ?? [])
+      .filter((fact) => fact.job === undefined || jobs.has(fact.job));
   }
 
   return {
@@ -170,17 +192,26 @@ export async function memoryBoard(options: MemoryBoardOptions): Promise<FactBoar
       const all = await visible(query);
       const words = query.text?.trim();
       if (!words) return all.slice(0, limit);
+      const asked = new Set(tokenize(words));
+      const enough = Math.min(asked.size, MIN_SHARED_WORDS);
+      const fitting = all.filter(
+        (fact) => tokenize(fact.text).filter((word) => asked.has(word)).length >= enough
+      );
       const index = new BM25Index();
-      index.addDocuments(all.map((fact) => ({ id: fact.id, content: fact.text })));
-      const byId = new Map(all.map((fact) => [fact.id, fact]));
-      return index.search(words, limit).flatMap((hit) => byId.get(hit.id) ?? []);
+      index.addDocuments(fitting.map((fact) => ({ id: fact.id, content: fact.text })));
+      const byId = new Map(fitting.map((fact) => [fact.id, fact]));
+      const hits = index.search(words, limit);
+      const best = hits[0]?.score ?? 0;
+      return hits
+        .filter((hit) => hit.score >= best * MIN_SCORE_SHARE)
+        .flatMap((hit) => byId.get(hit.id) ?? []);
     },
 
     async find(id: string): Promise<BoardFact | undefined> {
       const wanted = id.trim();
       if (!wanted) return undefined;
       const exact = await items.get(wanted);
-      if (exact && exact.scope.agentId === BOARD_AGENT && !gone(exact)) return toFact(exact);
+      if (exact?.scope.agentId === BOARD_AGENT && !gone(exact)) return toFact(exact);
       if (wanted.length < MIN_ID_PREFIX) return undefined;
       const result = await adapter.findItems({
         agentId: BOARD_AGENT,
@@ -194,7 +225,7 @@ export async function memoryBoard(options: MemoryBoardOptions): Promise<FactBoar
 
     async forget(id: string): Promise<boolean> {
       const item = await items.get(id);
-      if (!item || item.scope.agentId !== BOARD_AGENT || gone(item)) return false;
+      if (item?.scope.agentId !== BOARD_AGENT || gone(item)) return false;
       await items.expire([id]);
       return true;
     },

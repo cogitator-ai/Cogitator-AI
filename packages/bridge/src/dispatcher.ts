@@ -65,7 +65,7 @@ import {
   type WithdrawInput,
   type WithdrawResult,
 } from './inputs.js';
-import { HANDOVER_GAP, buildHandover, withoutHandover } from './handover.js';
+import { HANDOVER_GAP, buildHandover } from './handover.js';
 import { isFinishedJobState, jobOf, jobRecordOf } from './job-record.js';
 import {
   expectationOf,
@@ -236,6 +236,9 @@ function jobFolder(from: Pick<AgentRecord, 'cwd'>, named: string | undefined): s
   return canonicalPath(isAbsolute(named) ? named : resolvePath(from.cwd, named));
 }
 
+/** How much of a job's text the board is asked about. */
+const ABOUT_CHARS = 4_000;
+
 /** How many notes of earlier jobs the handover of a job looks at. */
 const EARLIER_NOTES = 6;
 
@@ -279,11 +282,12 @@ function outcomeText(job: BridgeJob, reported: string | undefined): string {
     job.state === 'completed'
       ? `completed${checked}`
       : `${job.state}${job.reason ? ` (${oneLine(job.reason)})` : ''}`;
-  const said = reported ? oneLine(reported) : '';
+  const quote = (text: string): string => oneLine(text).replaceAll('"', "'");
+  const said = reported ? quote(reported) : '';
   const report = said
-    ? ` It reported: ${said.length > REPORT_NOTED ? `${said.slice(0, REPORT_NOTED)}...` : said}`
+    ? ` Its report began: "${said.length > REPORT_NOTED ? `${said.slice(0, REPORT_NOTED)}...` : said}"`
     : '';
-  return `Job #${job.number} "${oneLine(job.title)}", done by ${job.to} for ${job.from}: ${how}.${report}`;
+  return `Job #${job.number} "${quote(job.title)}", done by ${job.to} for ${job.from}: ${how}.${report}`;
 }
 
 /** What git said when it refused, as an error an agent can act on. */
@@ -631,8 +635,8 @@ export class BridgeDispatcher
     const request = parse(CreateJobInputSchema, input, 'Cannot create the job');
     this.checkBody(request.body);
     const handover = await this.handoverFor(caller, request);
-    const body = handover ? `${request.body}${HANDOVER_GAP}${handover}` : request.body;
-    this.checkBody(body);
+    const withContext = handover ? `${request.body}${HANDOVER_GAP}${handover}` : request.body;
+    const body = withContext.length <= this.limits.maxBodyLength ? withContext : request.body;
     const outcome = await this.asCaller(caller, async (tx): Promise<CreateJobResult | Refusal> => {
       const from = this.requireCaller(caller);
 
@@ -642,7 +646,7 @@ export class BridgeDispatcher
           if (
             sent.kind !== 'task' ||
             sent.from !== from.name ||
-            withoutHandover(sent.body) !== request.body
+            this.taskText(sent) !== request.body
           ) {
             throw new BridgeError(
               'invalid_letter',
@@ -753,6 +757,7 @@ export class BridgeDispatcher
         to: to.name,
         project: from.project,
         cwd,
+        ...(body !== request.body && { taskLength: request.body.length }),
         ...(request.worktree && { isolation: 'worktree' as const }),
         checks: request.checks ?? [],
         budget,
@@ -2435,14 +2440,13 @@ export class BridgeDispatcher
     const board = this.requireBoard();
     const fact = await this.enqueue(async (): Promise<NewBoardFact> => {
       const agent = caller === null ? undefined : this.requireCaller(caller);
-      const project = this.boardProject(agent, request.project);
+      let project = this.boardProject(agent, request.project);
       let job = request.job;
       if (job !== undefined) {
         const found = this.requireJob(job).job;
-        if (
-          found.project !== project ||
-          (agent && agent.name !== found.from && agent.name !== found.to)
-        ) {
+        const party = agent ? agent.name === found.from || agent.name === found.to : undefined;
+        if (party) project = found.project;
+        if (found.project !== project || party === false) {
           throw new BridgeError(
             'not_a_party',
             `Job ${found.number} is between ${found.from} and ${found.to}, so a note cannot be said on it from here`,
@@ -2468,18 +2472,27 @@ export class BridgeDispatcher
       };
     });
     const kept = await board.remember(fact);
-    await this.journalNote(kept);
+    await this.journalNote(kept, fact.source.by);
     return kept;
   }
 
-  /** Writes down that a note went on the board, with who said it. */
-  private async journalNote(kept: BoardFact): Promise<void> {
+  /**
+   * Writes down that a note went on the board, and who said it this time. Everybody can read
+   * the journal, so the text of a note kept to one job is left out of it.
+   */
+  private async journalNote(kept: BoardFact, by: string): Promise<void> {
     await this.mutate(async (tx) => {
       this.journal(tx, {
         type: 'fact.remembered',
-        agent: kept.source.by,
+        agent: by,
         ...(kept.source.job !== undefined && { job: kept.source.job }),
-        data: { id: kept.id, kind: kept.kind, project: kept.project, text: kept.text },
+        data: {
+          id: kept.id,
+          kind: kept.kind,
+          project: kept.project,
+          ...(kept.job === undefined && { text: kept.text }),
+          ...(kept.source.by !== by && { saidBefore: kept.source.by }),
+        },
       });
     });
   }
@@ -2551,11 +2564,65 @@ export class BridgeDispatcher
     return fact;
   }
 
+  /** The text of a job as its caller wrote it: its first letter without what the bridge added. */
+  private taskText(first: Pick<Letter, 'job' | 'body'>, job?: BridgeJob): string {
+    const length = (job ?? this.jobIfAny(first.job))?.taskLength;
+    return length === undefined ? first.body : first.body.slice(0, length);
+  }
+
+  /**
+   * Whether the rules of an agent let it read a file without asking: its own, and those of every
+   * agent up the chain of the jobs it carries out. True on a bridge that was given no judge:
+   * what an agent names in its own project it could read itself.
+   */
+  private async mayRead(from: AgentRecord, cwd: string, path: string): Promise<boolean> {
+    if (!this.rights) return true;
+    const ask: PermissionAsk = { tool: 'Read', access: 'read', paths: [path], cwd };
+    try {
+      const now = this.iso();
+      const own = await this.rights({
+        job: {
+          number: 0,
+          taskId: '',
+          title: '',
+          from: from.name,
+          to: from.name,
+          project: from.project,
+          cwd,
+          checks: [],
+          budget: this.limits.budget,
+          lettersUsed: 0,
+          depth: 1,
+          createdAt: now,
+          deadlineAt: now,
+          state: 'submitted',
+          updatedAt: now,
+        },
+        delegator: from,
+        ask,
+      });
+      if (own !== 'allow') return false;
+      const carried = await this.enqueue(async () =>
+        this.store
+          .jobTasks({ to: from.name, states: ACTIVE_JOB_STATES })
+          .flatMap((task) => jobOf(task) ?? [])
+      );
+      for (const job of carried) {
+        if ((await this.rightsFor(job.number, ask)) !== 'allow') return false;
+      }
+      return true;
+    } catch (error) {
+      this.onError(asError(error));
+      return false;
+    }
+  }
+
   /**
    * The block the bridge puts under the text of a job, see `buildHandover`: what the caller
    * named, the lines of the files it pointed at, and the notes of the board that fit the job.
-   * Undefined when there is nothing to add. Never fails the hand-over: what cannot be read or
-   * found is left out.
+   * Undefined when there is nothing to add. It never fails the hand-over and never holds it up
+   * for long: what cannot be read or found in time is left out, and the block is kept small
+   * enough for the letter to take it.
    */
   private async handoverFor(
     caller: string,
@@ -2563,9 +2630,14 @@ export class BridgeDispatcher
   ): Promise<string | undefined> {
     const from = await this.enqueue(async () => this.store.getAgent(caller));
     if (!from) return undefined;
-    try {
+    const room = Math.floor(
+      (this.limits.maxBodyLength - request.body.length - HANDOVER_GAP.length) / 4
+    );
+    const budget = Math.min(request.contextTokens ?? this.limits.contextTokens, room);
+    if (budget <= 0) return undefined;
+    const build = async (): Promise<string | undefined> => {
       const cwd = jobFolder(from, request.cwd);
-      const about = `${request.title ?? ''}\n${request.body}`;
+      const about = `${request.title ?? ''}\n${request.body}`.slice(0, ABOUT_CHARS);
       const board = this.board;
       const [facts, earlier] = board
         ? await Promise.all([
@@ -2573,17 +2645,25 @@ export class BridgeDispatcher
             earlierLike(board, from.project, about),
           ])
         : [[], []];
-      return await buildHandover(
+      return buildHandover(
         request.context,
         {
           from: from.name,
           cwd,
           roots: [from.project, findCheckoutRoot(from.cwd)],
           top: findCheckoutRoot(cwd),
+          mayRead: (path) => this.mayRead(from, cwd, path),
           facts,
           earlier,
         },
-        request.contextTokens ?? this.limits.contextTokens
+        budget
+      );
+    };
+    try {
+      return await within(
+        build(),
+        this.limits.contextTimeoutMs,
+        'Putting the context of the job together'
       );
     } catch (error) {
       this.onError(asError(error));
@@ -2614,8 +2694,12 @@ export class BridgeDispatcher
     this.track(
       (async () => {
         for (const note of notes) {
-          const kept = await board.remember(note);
-          if (kept.kind !== 'outcome') await this.journalNote(kept);
+          try {
+            const kept = await board.remember(note);
+            if (kept.kind !== 'outcome') await this.journalNote(kept, note.source.by);
+          } catch (error) {
+            this.onError(asError(error));
+          }
         }
       })()
     );
@@ -3008,7 +3092,7 @@ export class BridgeDispatcher
     for (const agent of tx.wake) this.wake(agent);
     for (const letter of tx.decided) this.announce(letter);
     if (!this.closing) for (const number of tx.checks) this.startChecks(number);
-    if (!this.closing) this.keepNotes(tx.notes);
+    this.keepNotes(tx.notes);
     this.tellPerson(tx);
     return result;
   }
@@ -3225,7 +3309,7 @@ export class BridgeDispatcher
     const same = open.find((job) => {
       if (job.cwd !== cwd || !sameAgent(job)) return false;
       const first = this.store.listLetters({ job: job.number, kinds: ['task'], limit: 1 })[0];
-      return first !== undefined && normalizeBody(withoutHandover(first.body)) === wanted;
+      return first !== undefined && normalizeBody(this.taskText(first, job)) === wanted;
     });
     if (same) {
       return new BridgeError(

@@ -251,6 +251,26 @@ describe('bridge remember, recall and forget', () => {
     });
   });
 
+  it('do not speak for the person from a session the bridge started that names no session', async () => {
+    const board = await memoryBoard({ store: ':memory:' });
+    hosts.push(await hostBridge({ home, tickMs: 25, board }));
+    const unnamed: BridgeSessionContext = {
+      print: (line) => lines.push(line),
+      wake: (text) => woken.push(text),
+      env: { COGITATOR_BRIDGE_HOME: home, COGITATOR_BRIDGE_AGENT: 'codex@demo' },
+      cwd: project,
+      stdin: async () => undefined,
+      adapters: [],
+    };
+
+    expect(await runBridgeRemember(['Written as the person?'], {}, unnamed)).toBe(1);
+    expect(await runBridgeRecall([], {}, unnamed)).toBe(1);
+    expect(await runBridgeForget('mem_whatever', {}, unnamed)).toBe(1);
+    expect(failed()).toContain('an agent does not speak for the person');
+    expect(await board.recall({ project: realpathSync(project) })).toEqual([]);
+    await board.close?.();
+  });
+
   it('say so when the dispatcher keeps no board', async () => {
     await startHost();
     expect(await runBridgeRemember(['Anything'], {}, claude())).toBe(1);

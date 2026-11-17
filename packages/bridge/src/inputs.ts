@@ -51,7 +51,7 @@ export const CreateJobInputSchema = z.strictObject({
   checks: z.array(JobCheckSchema).max(50).optional(),
   worktree: z.boolean().optional(),
   context: JobContextSchema.optional(),
-  contextTokens: z.number().int().min(200).max(200_000).optional(),
+  contextTokens: z.number().int().min(200).max(50_000).optional(),
   budget: JobBudgetSchema.partial().optional(),
   parent: JobNumberSchema.optional(),
   letterId: LetterIdSchema.optional(),
@@ -96,13 +96,15 @@ export interface CreateJobInput {
   letterId?: string;
 }
 
-/** The text of a note for the board: one thought, short enough to be read among others. */
+/**
+ * The text of a note for the board: one thought on one line, short enough to be read among
+ * others. Line breaks become spaces, so a note cannot pass for several lines where it is shown.
+ */
 const FactTextSchema = z
   .string()
-  .trim()
-  .min(1)
-  .max(MAX_FACT_LENGTH)
-  .refine(withoutNul, NUL_REFUSED);
+  .refine(withoutNul, NUL_REFUSED)
+  .transform((text) => text.replace(/\s+/gu, ' ').trim())
+  .pipe(z.string().min(1).max(MAX_FACT_LENGTH));
 
 const SENDABLE_KINDS = LETTER_KINDS.filter((kind) => kind !== 'task') as [
   Exclude<LetterKind, 'task'>,
