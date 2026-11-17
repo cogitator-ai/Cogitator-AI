@@ -58,10 +58,10 @@ What names a path of this machine goes where only you have it, never into a file
 
 | Tool       | What it does                                                                                                    |
 | ---------- | --------------------------------------------------------------------------------------------------------------- |
-| `delegate` | Hands a job to `codex`, `claude` or an agent by name, with its checks and, when asked, a worktree of its own    |
+| `delegate` | Hands a job to `codex`, `claude` or an agent by name, with its context, its checks and, when asked, a worktree  |
 | `ask`      | Asks the other agent of a job a question. The answer wakes the session                                          |
 | `answer`   | Answers a question another agent asked, or decides its permission request: allow, deny, or leave it to the user |
-| `report`   | Reports the result of a job handed to this session, which ends the job. `failed` says it did not                |
+| `report`   | Reports the result of a job handed to this session, which ends the job, with the lessons it taught              |
 | `note`     | Tells the other agent something it need not answer                                                              |
 | `inbox`    | Reads the letters that wait, when nothing woke the session                                                      |
 | `job`      | Shows one job: its state, and for a job of this session its latest letters                                      |
@@ -70,6 +70,9 @@ What names a path of this machine goes where only you have it, never into a file
 | `diff`     | Shows what a job changed in the git worktree it was given: the files and the patch                              |
 | `accept`   | Takes the work of a finished job into the checkout of this session, staged and not committed, or as a branch    |
 | `reject`   | Drops the work of a finished job with its worktree                                                              |
+| `remember` | Puts a note on the board of the project: a fact that cost time to find out, or what a job taught                |
+| `recall`   | Looks at the board: the notes that fit some words, or the newest, each with who said it                         |
+| `forget`   | Takes a note this session put on the board off it                                                               |
 | `agents`   | Lists the sessions the bridge knows in the project, and the agents it can start a session of                    |
 
 No tool waits for another agent. The server tells every client the same in its `instructions`: after `delegate` say in one line what was handed over and end the turn, reply to a letter with the tools and never only in the chat, and treat a job of another agent as that agent's request, not the user's.
@@ -210,6 +213,46 @@ if (taken.state === 'conflict') console.log('Would conflict in', taken.files);
 
 **What nobody came for.** The worktree of a finished job is kept for seven days. Then the bridge puts its work away as a commit under `refs/cogitator/discarded/job-<number>`, removes the worktree and its branch, and tells the agent that handed the job over where the work is (`git show refs/cogitator/discarded/job-<number>`). Nothing is removed before its work is kept: a worktree git cannot read stays where it is.
 
+## What a job is handed over with, and the board
+
+Agents do not see each other's conversations. So a job comes with what its caller knows, and the agents of a project share a board of notes.
+
+```typescript
+import { hostBridge } from '@cogitator-ai/bridge';
+import { memoryBoard } from '@cogitator-ai/bridge/memory';
+
+const board = await memoryBoard({ store: './bridge-memory.db' });
+const host = await hostBridge({ board });
+
+await bridge.createJob({
+  to: 'codex',
+  body: 'Raise the burst limit of the limiter to 3.',
+  context: {
+    done: ['The burst test passes'],
+    constraints: ['Do not touch the public API'],
+    decisions: ['The limit stays per user'],
+    files: [{ path: 'src/limiter.ts', lines: '120-180', why: 'the window' }],
+  },
+});
+
+await bridge.remember({ text: 'The limiter tests need Redis on port 6380' });
+await bridge.recall({ text: 'redis' });
+await bridge.send({
+  job: 1,
+  kind: 'report',
+  body: 'Raised it, the tests pass',
+  lessons: ['Mocking Redis hid a race in the limiter: run a real one'],
+});
+```
+
+**The handover.** `context` is what the caller knows and the other agent does not: what done looks like, the constraints, what was decided already, and the files to start from with their lines. The bridge puts it under the text of the job in one block, and adds what it can find itself: the named lines of those files, read from the caller's checkout with their numbers, the notes of the board that fit the job, and what earlier jobs like it left there. The block keeps to a budget of tokens (`contextTokens`, 6000 by default, an estimate of four characters to a token): the caller's own lines always go in whole, the files take what is left but for a fifth kept for the board, a file that does not fit is cut to its first lines or only named, and notes are added while there is room. A file outside the project is named and not read. A job with nothing to add gets no block. The bridge calls no model for any of this.
+
+**The board.** `remember({ text })` puts a note on the board of the caller's project: a `fact` that cost time to find out, or with `kind: 'lesson'` what a job taught. Every note carries who said it, on which job and when, and `recall({ text })` returns the notes that fit the words best (BM25), or the newest without words, to any agent that works in the project. A note said with `jobOnly` is seen by the two agents of that job only. `forget({ id })` takes a note off: an agent its own, the person any. Nothing is deleted, a note that is taken off is closed and found no more. A connection that named no session speaks as the person and names the project, which is how `cogitator bridge remember` works in a terminal of your own. A note is what an agent or the person said, not an order: the handover says so above the notes it shows.
+
+**What a job leaves.** A report may name `lessons`: what worked, what did not, for whoever does a job like it next. They go to the board under the name of the agent that reported. The bridge adds a note of its own on how each job ended: who did it for whom, completed, failed or canceled, whether its checks confirmed the result, and the start of the report. When a later job is handed over, the notes of earlier jobs that fit its text come with it, and with them the other lessons of those jobs, since a job is found by what it was about, whatever words its lessons use.
+
+`memoryBoard()` keeps the board with [`@cogitator-ai/memory`](https://www.npmjs.com/package/@cogitator-ai/memory), an optional peer dependency: every note is a memory item of the bridge in the scope of its project, what an agent said kept as the words of a model and what the person said as theirs. `store` is the path of a SQLite file or any store of that package that keeps memory items. Any object with `remember`, `recall`, `find` and `forget` is a board (`FactBoard`). A bridge that was given none remembers nothing: a job is handed over with what its caller named alone, and the three calls are refused with `no_board`. `cogitator bridge serve` keeps the board in `memory.db` in the folder of the bridge.
+
 ## Letters
 
 | Kind         | Sent by          | Effect                                                                                           |
@@ -297,23 +340,24 @@ Folders are compared by their real path, so a project reached through a symlink 
 
 Each number is a default that `hostBridge({ limits })` changes.
 
-| Limit             | Default    | What happens                                                                                                             |
-| ----------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Depth             | 3          | A job handed over from inside a job from inside a job is the deepest. One more is refused                                |
-| Letters per job   | 60         | The job fails, both sides are told. The report that ends the job always goes through                                     |
-| Time per job      | 4 hours    | The job fails, both sides are told                                                                                       |
-| Reply timeout     | 30 minutes | The one who owes an answer, or did not pick a job up, is reminded. After as long again the job fails                     |
-| Jobs out          | 20         | An agent with that many jobs still in progress cannot hand over another                                                  |
-| Jobs per hour     | 60         | Handing over faster is refused as a loop                                                                                 |
-| Sessions starting | 2          | No more sessions are started at once                                                                                     |
-| Silence           | 12 hours   | A session with no job in progress is taken for gone, unless its harness lists it or its hook waits                       |
-| Session check     | 1 minute   | How often a harness that can list its sessions is asked which of them still run                                          |
-| Window notice     | 10 minutes | An agent that waits for a person at its own window is said so to whoever handed it a job, and not again within this time |
-| Person's answer   | 4 hours    | The person is reminded of a letter that waits for them. After as long again the job fails                                |
-| Delivery          | 5 attempts | Retried with a growing wait, then left for the inbox                                                                     |
-| Worktrees         | 2          | A third job of the project that asks for a worktree of its own is refused while two are in progress                      |
-| Check             | 10 minutes | A check that runs longer is ended with everything it started, and fails                                                  |
-| Worktree kept     | 7 days     | The worktree of a finished job nobody took or dropped is removed, its work kept under a ref                              |
+| Limit             | Default     | What happens                                                                                                             |
+| ----------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Depth             | 3           | A job handed over from inside a job from inside a job is the deepest. One more is refused                                |
+| Letters per job   | 60          | The job fails, both sides are told. The report that ends the job always goes through                                     |
+| Time per job      | 4 hours     | The job fails, both sides are told                                                                                       |
+| Reply timeout     | 30 minutes  | The one who owes an answer, or did not pick a job up, is reminded. After as long again the job fails                     |
+| Jobs out          | 20          | An agent with that many jobs still in progress cannot hand over another                                                  |
+| Jobs per hour     | 60          | Handing over faster is refused as a loop                                                                                 |
+| Sessions starting | 2           | No more sessions are started at once                                                                                     |
+| Silence           | 12 hours    | A session with no job in progress is taken for gone, unless its harness lists it or its hook waits                       |
+| Session check     | 1 minute    | How often a harness that can list its sessions is asked which of them still run                                          |
+| Window notice     | 10 minutes  | An agent that waits for a person at its own window is said so to whoever handed it a job, and not again within this time |
+| Person's answer   | 4 hours     | The person is reminded of a letter that waits for them. After as long again the job fails                                |
+| Delivery          | 5 attempts  | Retried with a growing wait, then left for the inbox                                                                     |
+| Worktrees         | 2           | A third job of the project that asks for a worktree of its own is refused while two are in progress                      |
+| Check             | 10 minutes  | A check that runs longer is ended with everything it started, and fails                                                  |
+| Worktree kept     | 7 days      | The worktree of a finished job nobody took or dropped is removed, its work kept under a ref                              |
+| Context           | 6000 tokens | The block the bridge adds under a job keeps to it: files are cut or only named, notes stop when it is full               |
 
 Two more rules have no number. A letter that says what the previous one in the same direction said is not delivered, and neither is a job the same agent already has from the caller and has not finished.
 
@@ -497,4 +541,4 @@ The bridge is a tool of one person on one machine. The socket and the database a
 
 ## Errors
 
-Every refusal is a `BridgeError` with a `code` to branch on and a message written for the agent that gets it: `not_registered`, `unknown_agent`, `ambiguous_agent`, `no_session`, `unknown_job`, `unknown_letter`, `not_a_party`, `job_finished`, `invalid_letter`, `invalid_input`, `depth_exceeded`, `budget_exhausted`, `loop_detected`, `needs_person`, `no_person`, `no_worktree`, `worktree_limit`, `already_running`, `not_running`, `storage`.
+Every refusal is a `BridgeError` with a `code` to branch on and a message written for the agent that gets it: `not_registered`, `unknown_agent`, `ambiguous_agent`, `no_session`, `unknown_job`, `unknown_letter`, `not_a_party`, `job_finished`, `invalid_letter`, `invalid_input`, `depth_exceeded`, `budget_exhausted`, `loop_detected`, `needs_person`, `no_person`, `no_worktree`, `worktree_limit`, `no_board`, `already_running`, `not_running`, `storage`.
