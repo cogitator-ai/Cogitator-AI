@@ -261,6 +261,23 @@ describe('the handover of a job', () => {
     expect(task.text).toContain('Files to start from:');
   });
 
+  it('reads the files from the folder of the caller, wherever the job is done', async () => {
+    await start();
+
+    const created = await bridge.createJob(claude.name, {
+      to: codex.name,
+      body: 'Work in the src folder',
+      cwd: 'src',
+      context: { files: [{ path: 'src/limiter.ts', lines: '1' }] },
+    });
+
+    expect(created.job.cwd).toBe(join(project, 'src'));
+    expect(created.letter.body.split('\n').slice(4)).toEqual([
+      '- src/limiter.ts lines 1-1 of 2',
+      '  1| export const limit = 1;',
+    ]);
+  });
+
   it('reads no file the rules of the caller keep from it', async () => {
     await start({
       rights: ({ ask }) => (ask.paths?.[0]?.endsWith('limiter.ts') ? 'deny' : 'allow'),
