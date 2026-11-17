@@ -53,6 +53,12 @@ const DEFAULT_STOP_GRACE_MS = 5_000;
 
 const ACTIVE: readonly JobState[] = ['submitted', 'working', 'input-required'];
 
+/**
+ * How many looks a hand-over that was refused for now waits before it is tried again, at most:
+ * every try puts the context of the job together anew, so a long wait tries less and less often.
+ */
+const MAX_LOOKS_BETWEEN_TRIES = 6;
+
 /** A step of a run, as the id of the letter that hands its job over carries it. */
 const STEP = /^[a-z0-9][a-z0-9.-]{0,63}$/;
 
@@ -217,26 +223,30 @@ export function recipeAdapter(options: RecipeAdapterOptions = {}): BridgeAdapter
 
   /**
    * Hands a job of a run over. A refusal that passes by itself is waited out: the bridge starts
-   * only so many sessions at once, and a step is not lost to another job that happened to start
-   * at the same moment. The wait ends with the job of the recipe.
+   * only so many sessions at once and keeps only so many worktrees of a project in progress, and
+   * a step is not lost to another job that happened to be there first. The wait ends with the
+   * job of the recipe.
    */
   async function handedTo(
     running: Running,
     job: Parameters<BridgeCalls['createJob']>[1]
   ): Promise<BridgeJob> {
-    for (;;) {
+    for (let waited = 1; ; waited += 1) {
       running.stop.signal.throwIfAborted();
       try {
         return (await calls().createJob(running.agentName, job)).job;
       } catch (error) {
         const busy =
           isBridgeError(error) &&
-          error.code === 'no_session' &&
-          typeof error.data?.starting === 'number';
+          (error.code === 'worktree_limit' ||
+            (error.code === 'no_session' && typeof error.data?.starting === 'number'));
         if (!busy) throw error;
       }
-      await nextLook(running, running.job);
-      if (isFinishedJobState((await calls().job(running.job)).state)) halt(running, 'over');
+      for (let looks = Math.min(waited, MAX_LOOKS_BETWEEN_TRIES); looks > 0; looks -= 1) {
+        await nextLook(running, running.job);
+        if (isFinishedJobState((await calls().job(running.job)).state)) halt(running, 'over');
+        running.stop.signal.throwIfAborted();
+      }
     }
   }
 
