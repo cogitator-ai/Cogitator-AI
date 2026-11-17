@@ -17,6 +17,8 @@ import {
   type ReportOutcome,
   type Verdict,
 } from './types.js';
+import { FACT_KINDS, MAX_FACT_LENGTH, MAX_RECALL_LIMIT, type FactKind } from './board.js';
+import { JobContextSchema, type JobContext } from './handover.js';
 import type { ChangedFile } from './worktree.js';
 
 /** An id a sender may give its letter, so sending it again does not deliver it twice. */
@@ -48,6 +50,8 @@ export const CreateJobInputSchema = z.strictObject({
   cwd: z.string().min(1).max(4096).optional(),
   checks: z.array(JobCheckSchema).max(50).optional(),
   worktree: z.boolean().optional(),
+  context: JobContextSchema.optional(),
+  contextTokens: z.number().int().min(200).max(200_000).optional(),
   budget: JobBudgetSchema.partial().optional(),
   parent: JobNumberSchema.optional(),
   letterId: LetterIdSchema.optional(),
@@ -77,12 +81,28 @@ export interface CreateJobInput {
    * work comes back with `accept`
    */
   worktree?: boolean;
+  /**
+   * What the caller knows and the agent that gets the job does not: what done looks like, the
+   * constraints, the decisions, the files to start from. The bridge puts it under the job in
+   * one block, with the lines of those files and the notes of the board that fit
+   */
+  context?: JobContext;
+  /** How many tokens that block may take, `limits.contextTokens` by default */
+  contextTokens?: number;
   budget?: Partial<JobBudget>;
   /** The job this one is part of, when the caller carries out several */
   parent?: number;
   /** The id of the job's first letter: creating a job with the same id again changes nothing */
   letterId?: string;
 }
+
+/** The text of a note for the board: one thought, short enough to be read among others. */
+const FactTextSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_FACT_LENGTH)
+  .refine(withoutNul, NUL_REFUSED);
 
 const SENDABLE_KINDS = LETTER_KINDS.filter((kind) => kind !== 'task') as [
   Exclude<LetterKind, 'task'>,
@@ -102,6 +122,11 @@ export const SendLetterInputSchema = z
     outcome: z.enum(['completed', 'failed']).optional(),
     ask: PermissionAskSchema.optional(),
     verdict: z.enum(['allow', 'deny']).optional(),
+    lessons: z.array(FactTextSchema).max(10).optional(),
+  })
+  .refine((input) => input.lessons === undefined || input.kind === 'report', {
+    message: 'Only a report carries lessons',
+    path: ['lessons'],
   })
   .refine((input) => input.outcome === undefined || input.kind === 'report', {
     message: 'Only a report has an outcome',
@@ -132,6 +157,11 @@ export interface SendLetterInput {
    * answer, and the answer comes through `verdict` rather than as mail
    */
   ask?: PermissionAsk;
+  /**
+   * What the job taught, for whoever does one like it next: what worked, what did not. Only on a
+   * report. Each goes to the board of the project as a lesson of the caller
+   */
+  lessons?: string[];
   /** Of an answer to a permission request that names its call: whether it may go ahead */
   verdict?: Verdict;
 }
@@ -231,6 +261,62 @@ export interface WithdrawInput {
  * before the caller gave up, which still holds.
  */
 export type WithdrawResult = { state: 'withdrawn' } | Extract<VerdictResult, { state: 'decided' }>;
+
+const ProjectSchema = z.string().min(1).max(4096);
+
+export const RememberInputSchema = z
+  .strictObject({
+    text: FactTextSchema,
+    kind: z.enum(['fact', 'lesson']).optional(),
+    job: JobNumberSchema.optional(),
+    jobOnly: z.boolean().optional(),
+    project: ProjectSchema.optional(),
+  })
+  .refine((input) => !input.jobOnly || input.job !== undefined, {
+    message: 'A note kept to a job names the job',
+    path: ['jobOnly'],
+  });
+
+export interface RememberInput {
+  /** What to remember: one thought, as a whole sentence */
+  text: string;
+  /** `fact` by default, `lesson` for what a job taught */
+  kind?: 'fact' | 'lesson';
+  /** The job it was learned on. The one job the caller carries out by default, when it is one */
+  job?: number;
+  /** Keep the note to the two agents of `job` instead of the whole project */
+  jobOnly?: boolean;
+  /** The project the note is for, when the person says it: an agent's own project otherwise */
+  project?: string;
+}
+
+export const RecallInputSchema = z.strictObject({
+  text: z.string().trim().max(2_000).optional(),
+  kinds: z.array(z.enum(FACT_KINDS as [FactKind, ...FactKind[]])).optional(),
+  limit: z.number().int().positive().max(MAX_RECALL_LIMIT).optional(),
+  project: ProjectSchema.optional(),
+});
+
+export interface RecallInput {
+  /** Words to look for. The newest notes without it */
+  text?: string;
+  kinds?: FactKind[];
+  /** 10 by default, 50 at most */
+  limit?: number;
+  /** The project to look in, when the person asks: an agent's own project otherwise */
+  project?: string;
+}
+
+export const ForgetInputSchema = z.strictObject({
+  id: z.string().trim().min(1).max(200),
+  project: ProjectSchema.optional(),
+});
+
+export interface ForgetInput {
+  /** The id of the note, or the start of it */
+  id: string;
+  project?: string;
+}
 
 export const DiffInputSchema = z.strictObject({
   job: JobNumberSchema,

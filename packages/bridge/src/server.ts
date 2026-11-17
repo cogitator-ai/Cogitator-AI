@@ -236,6 +236,18 @@ class Connection {
     on(BRIDGE_METHODS.stuck, (value) =>
       dispatcher.stuck(this.caller(), value as Parameters<BridgeDispatcher['stuck']>[1])
     );
+    on(BRIDGE_METHODS.remember, (value) =>
+      dispatcher.remember(this.agent ?? null, value as Parameters<BridgeDispatcher['remember']>[1])
+    );
+    on(BRIDGE_METHODS.recall, (value) =>
+      dispatcher.recall(
+        this.agent ?? null,
+        (value ?? {}) as Parameters<BridgeDispatcher['recall']>[1]
+      )
+    );
+    on(BRIDGE_METHODS.forget, (value) =>
+      dispatcher.forget(this.agent ?? null, value as Parameters<BridgeDispatcher['forget']>[1])
+    );
     on(BRIDGE_METHODS.listAgents, (value) =>
       dispatcher.agents((value ?? {}) as Parameters<BridgeDispatcher['agents']>[0])
     );

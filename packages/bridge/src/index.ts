@@ -67,8 +67,11 @@ export type {
   CreateJobInput,
   DiffInput,
   EscalateInput,
+  ForgetInput,
   JobDiff,
+  RecallInput,
   RejectInput,
+  RememberInput,
   InboxInput,
   PersonAnswerInput,
   SendLetterInput,
@@ -257,3 +260,25 @@ export {
   type ChangeKind,
   type ChangedFile,
 } from './worktree.js';
+export {
+  DEFAULT_RECALL_LIMIT,
+  FACT_KINDS,
+  MAX_FACT_LENGTH,
+  MAX_RECALL_LIMIT,
+  factLine,
+  type BoardFact,
+  type BoardQuery,
+  type FactBoard,
+  type FactKind,
+  type FactSource,
+  type NewBoardFact,
+} from './board.js';
+export {
+  JobContextSchema,
+  buildHandover,
+  tokensOf,
+  withoutHandover,
+  type ContextFile,
+  type HandoverSources,
+  type JobContext,
+} from './handover.js';

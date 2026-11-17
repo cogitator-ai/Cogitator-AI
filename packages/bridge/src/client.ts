@@ -5,6 +5,7 @@ import {
   readNdjson,
   type JsonRpcMessage,
 } from '@cogitator-ai/server-shared';
+import type { BoardFact } from './board.js';
 import { BridgeError } from './errors.js';
 import {
   DEFAULT_VERDICT_WAIT_MS,
@@ -15,10 +16,13 @@ import {
   type CreateJobResult,
   type DiffInput,
   type EscalateInput,
+  type ForgetInput,
   type InboxInput,
   type JobDiff,
   type PersonAnswerInput,
+  type RecallInput,
   type RejectInput,
+  type RememberInput,
   type SendLetterInput,
   type SendLetterResult,
   type StuckInput,
@@ -253,6 +257,24 @@ export class BridgeClient {
 
   cancel(job: number, reason?: string): Promise<BridgeJob> {
     return this.call(BRIDGE_METHODS.cancelJob, { job, ...(reason !== undefined && { reason }) });
+  }
+
+  /**
+   * Puts a note on the board of a project, see `BridgeDispatcher.remember`. A connection that
+   * named no session speaks as the person, and names the project
+   */
+  remember(input: RememberInput): Promise<BoardFact> {
+    return this.call(BRIDGE_METHODS.remember, input);
+  }
+
+  /** Looks at the board of a project, see `BridgeDispatcher.recall` */
+  recall(input: RecallInput = {}): Promise<BoardFact[]> {
+    return this.call(BRIDGE_METHODS.recall, input);
+  }
+
+  /** Lets a note of the board go, see `BridgeDispatcher.forget` */
+  forget(input: ForgetInput): Promise<BoardFact> {
+    return this.call(BRIDGE_METHODS.forget, input);
   }
 
   /** What a job changed in its worktree so far, see `BridgeDispatcher.diff` */

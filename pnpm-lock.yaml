@@ -444,6 +444,9 @@ importers:
       '@cogitator-ai/mcp':
         specifier: workspace:*
         version: link:../mcp
+      '@cogitator-ai/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
