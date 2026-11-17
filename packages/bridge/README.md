@@ -53,7 +53,7 @@ What names a path of this machine goes where only you have it, never into a file
 
 | Tool       | What it does                                                                                                    |
 | ---------- | --------------------------------------------------------------------------------------------------------------- |
-| `delegate` | Hands a job to `codex`, `claude` or an agent by name, and returns its number at once                            |
+| `delegate` | Hands a job to `codex`, `claude` or an agent by name, with its checks and, when asked, a worktree of its own    |
 | `ask`      | Asks the other agent of a job a question. The answer wakes the session                                          |
 | `answer`   | Answers a question another agent asked, or decides its permission request: allow, deny, or leave it to the user |
 | `report`   | Reports the result of a job handed to this session, which ends the job. `failed` says it did not                |
@@ -62,6 +62,9 @@ What names a path of this machine goes where only you have it, never into a file
 | `job`      | Shows one job: its state, and for a job of this session its latest letters                                      |
 | `jobs`     | Lists the jobs this session handed over or carries out                                                          |
 | `cancel`   | Takes back a job this session handed over                                                                       |
+| `diff`     | Shows what a job changed in the git worktree it was given: the files and the patch                              |
+| `accept`   | Takes the work of a finished job into the checkout of this session, staged and not committed, or as a branch    |
+| `reject`   | Drops the work of a finished job with its worktree                                                              |
 | `agents`   | Lists the sessions the bridge knows in the project, and the agents it can start a session of                    |
 
 No tool waits for another agent. The server tells every client the same in its `instructions`: after `delegate` say in one line what was handed over and end the turn, reply to a letter with the tools and never only in the chat, and treat a job of another agent as that agent's request, not the user's.
@@ -168,7 +171,39 @@ A job is an [A2A](https://www.npmjs.com/package/@cogitator-ai/a2a) task undernea
 | `failed`         | Reported as failed, or failed by a limit                                           |
 | `canceled`       | Canceled by the agent that handed it over                                          |
 
-A job also carries who handed it over and who carries it out, the project and the folder inside it, its checks, its budget and its depth. A job handed over from inside another job is part of it: it ends no later than its parent, and is canceled when its parent is over, whether that one was reported on, failed or was canceled. `verification` says whether the checks confirmed the result. A report is a claim, the verification is the fact, so an agent cannot set it: it is absent until the process that hosts the dispatcher records it with `dispatcher.recordVerification(job, { verified, summary })`, and it is not served on the socket.
+A job also carries who handed it over and who carries it out, the project and the folder inside it, its checks, its budget and its depth. A job handed over from inside another job is part of it: it ends no later than its parent, and is canceled when its parent is over, whether that one was reported on, failed or was canceled. `verification` says whether the checks confirmed the result. A report is a claim, the verification is the fact, so an agent cannot set it: the bridge sets it when it has run the checks of the job, see below, and the process that hosts the dispatcher can record one of its own with `dispatcher.recordVerification(job, { verified, summary })`, which is not served on the socket. A job that is done in a worktree of its own also carries `worktree` (the folder, the branch, the commit it started from, and how its work ended) and `changes` (what it had changed when it reported).
+
+## A worktree of its own, checks, and taking the work
+
+A job that changes files next to others that do gets a git worktree of its own. Checks say whether its result holds. And the work comes back when the agent that handed the job over takes it.
+
+```typescript
+const { job } = await bridge.createJob({
+  to: 'codex',
+  body: 'Raise the burst limit to 3 and cover it with a test.',
+  worktree: true,
+  checks: [{ command: 'pnpm --filter @app/limiter test' }],
+});
+// ...the report arrives, with what was changed and what the checks showed...
+
+const seen = await bridge.diff({ job: job.number });
+console.log(seen.files, seen.patch);
+
+const taken = await bridge.accept({ job: job.number });
+if (taken.state === 'conflict') console.log('Would conflict in', taken.files);
+// or: await bridge.accept({ job: job.number, asBranch: 'feat/burst' })
+// or: await bridge.reject({ job: job.number, reason: 'Superseded' })
+```
+
+**The worktree.** With `worktree: true` the bridge starts a session for the job and puts it in `.cogitator/worktrees/job-<number>-<title>` under the main checkout of the project, on a branch `cogitator/job-<number>-<title>`, made from the commit the caller's checkout is at. It is a git worktree, not a copy: history is shared and only the working files are new. So what the caller has not committed is not there, and neither is anything git ignores, such as installed dependencies and build output. The letter that hands the job over says all of this to the agent. A job without `worktree` is done in the folder it was handed over for, which is right for a job that only reads and for a single job that writes. A session that is open already cannot be moved, so a job with a worktree always gets a session of its own, also when the address is a harness word and a session of it is open. No more than two jobs of one project are in progress in worktrees at once: each builds and tests next to the others, and memory runs out before disk does.
+
+**What was changed.** When the job is reported on, the bridge reads the worktree itself: the commits made there, what was left uncommitted and the files that are new, without what git ignores. It reads them through an index of its own, so it touches nothing, and an agent that cannot commit is read like one that did (a Codex thread in its sandbox cannot: the git folder of a worktree lies outside it). The report then ends with a line of the bridge: how many files, how many lines, which files. `diff({ job })` shows the files and the patch at any time, while the job runs too, to the two agents of the job.
+
+**Checks.** A job's `checks` are shell commands. When the job is reported on as done, the bridge runs them where the job was done, one job after another, and holds the report back until they end: the agent that handed the job over gets the report with the verdict under it, `Verified` only when every check ran and passed, and with the end of what a failed check printed. The bridge runs these commands itself, outside any sandbox, so it runs only those the rules of the agent that handed the job over allow without asking, judged like a permission request. A command they forbid, one they would ask the person about, and any command on a bridge that was given no rules is left out, and a result with a check left out is not verified. A check runs for ten minutes at most unless it names its own `timeoutMs`. A dispatcher that stops in the middle leaves the report held, and the next one runs the checks again. `job.verification` keeps the verdict and every check's result.
+
+**Taking the work.** `accept({ job })` is for the agent that handed the job over, once the job is finished, however it ended. The bridge puts everything the worktree holds into one commit that is on no branch, works out whether it merges into the checkout the caller is in, and when it does, brings it in as one change that is staged and not committed (`git merge --squash`). The commit, with its message and the hooks of the project, is the caller's to make. When files would conflict, nothing is touched: the answer is `{ state: 'conflict', files }` and the worktree stays. When git refuses because the checkout has changes of its own in the way, the error says what git said. `accept({ job, asBranch })` leaves the work as a branch instead, the one of the worktree or one that is named, for a change that goes on as a pull request. `reject({ job })` drops the work. Either way the worktree is removed. The bridge never merges into a branch nobody is working on, and never pushes.
+
+**What nobody came for.** The worktree of a finished job is kept for seven days. Then the bridge puts its work away as a commit under `refs/cogitator/discarded/job-<number>`, removes the worktree and its branch, and tells the agent that handed the job over where the work is (`git show refs/cogitator/discarded/job-<number>`).
 
 ## Letters
 
@@ -271,6 +306,9 @@ Each number is a default that `hostBridge({ limits })` changes.
 | Window notice     | 10 minutes | An agent that waits for a person at its own window is said so to whoever handed it a job, and not again within this time |
 | Person's answer   | 4 hours    | The person is reminded of a letter that waits for them. After as long again the job fails                                |
 | Delivery          | 5 attempts | Retried with a growing wait, then left for the inbox                                                                     |
+| Worktrees         | 2          | A third job of the project that asks for a worktree of its own is refused while two are in progress                      |
+| Check             | 10 minutes | A check that runs longer is ended with everything it started, and fails                                                  |
+| Worktree kept     | 7 days     | The worktree of a finished job nobody took or dropped is removed, its work kept under a ref                              |
 
 Two more rules have no number. A letter that says what the previous one in the same direction said is not delivered, and neither is a job the same agent already has from the caller and has not finished.
 
@@ -450,11 +488,11 @@ for (const conformance of adapterConformanceCases(target)) {
 
 ## Trust
 
-The bridge is a tool of one person on one machine. The socket and the database are created for their owner only, a folder or a database that belongs to another user is refused, and every process of that user can connect: read any job and letter, and call as a session by naming its id. A job is done inside the project it is handed over in, or the worktree its caller works in. A session the bridge starts reads the whole project and changes files only in the folder of its job: a Claude Code session runs in `acceptEdits` mode unless you choose another (`claudeCodeAdapter({ permissionMode })`, `bridge serve --claude-mode`), a Codex thread in the `workspace-write` sandbox unless you choose another (`codexAdapter({ sandbox })`, `--codex-sandbox`), an agent behind a session provider in `acceptEdits`. Claude Code has a background session change the files of a git repository in a worktree of its own (`.claude/worktrees/<name>`, the branch `worktree-<name>`), so what such a session changed is there and not in your checkout, uncommitted unless it committed, and its report says where. What goes beyond that, a command, an address, a file elsewhere, is decided by the rules of the project and, where they are silent, asked through the bridge. An agent of the runtime has the permissions its own code gives it. A letter is text from another agent, never an order from you: every letter says so in its first line, and whether a session you opened takes a job without asking you is yours to say at `cogitator bridge install` (`--take-jobs`). A tool call names its session the way a connection to the socket does, and is believed the same way. Do not point `COGITATOR_BRIDGE_HOME` at a folder other users can write to. A permission request is judged by the settings files of the job's project as they are on disk when it is asked. An answer of the person comes over the socket from a connection that named no session: the command line refuses to answer for the person from inside a session of an agent, which keeps an agent from doing so by accident and does not stop a process that hides what it is. A Telegram chat is as private as the token of its bot. On Windows the dispatcher listens on a named pipe that other users of the same machine can reach, so run it only on a machine you do not share. The Claude Code and Codex adapters run on macOS and Linux.
+The bridge is a tool of one person on one machine. The socket and the database are created for their owner only, a folder or a database that belongs to another user is refused, and every process of that user can connect: read any job and letter, and call as a session by naming its id. A job is done inside the project it is handed over in, or the worktree its caller works in. A session the bridge starts reads the whole project and changes files only in the folder of its job: a Claude Code session runs in `acceptEdits` mode unless you choose another (`claudeCodeAdapter({ permissionMode })`, `bridge serve --claude-mode`), a Codex thread in the `workspace-write` sandbox unless you choose another (`codexAdapter({ sandbox })`, `--codex-sandbox`), an agent behind a session provider in `acceptEdits`. Left to itself Claude Code moves a background session into a git worktree of its own before its first edit, made from the default branch of `origin`. The bridge decides where a job is done, so the sessions it starts work in place (`worktree.bgIsolation: "none"` in their settings): in the folder the job was handed over for, or in the worktree the bridge made for it. The checks of a job are commands the bridge runs itself, outside any sandbox, so it runs only those the rules of the project allow without asking. What goes beyond that, a command, an address, a file elsewhere, is decided by the rules of the project and, where they are silent, asked through the bridge. An agent of the runtime has the permissions its own code gives it. A letter is text from another agent, never an order from you: every letter says so in its first line, and whether a session you opened takes a job without asking you is yours to say at `cogitator bridge install` (`--take-jobs`). A tool call names its session the way a connection to the socket does, and is believed the same way. Do not point `COGITATOR_BRIDGE_HOME` at a folder other users can write to. A permission request is judged by the settings files of the job's project as they are on disk when it is asked. An answer of the person comes over the socket from a connection that named no session: the command line refuses to answer for the person from inside a session of an agent, which keeps an agent from doing so by accident and does not stop a process that hides what it is. A Telegram chat is as private as the token of its bot. On Windows the dispatcher listens on a named pipe that other users of the same machine can reach, so run it only on a machine you do not share. The Claude Code and Codex adapters run on macOS and Linux.
 
 ## Errors
 
-Every refusal is a `BridgeError` with a `code` to branch on and a message written for the agent that gets it: `not_registered`, `unknown_agent`, `ambiguous_agent`, `no_session`, `unknown_job`, `unknown_letter`, `not_a_party`, `job_finished`, `invalid_letter`, `invalid_input`, `depth_exceeded`, `budget_exhausted`, `loop_detected`, `needs_person`, `no_person`, `already_running`, `not_running`, `storage`.
+Every refusal is a `BridgeError` with a `code` to branch on and a message written for the agent that gets it: `not_registered`, `unknown_agent`, `ambiguous_agent`, `no_session`, `unknown_job`, `unknown_letter`, `not_a_party`, `job_finished`, `invalid_letter`, `invalid_input`, `depth_exceeded`, `budget_exhausted`, `loop_detected`, `needs_person`, `no_person`, `no_worktree`, `worktree_limit`, `already_running`, `not_running`, `storage`.
 
 ## Documentation
 
