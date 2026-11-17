@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -1094,6 +1094,84 @@ describe('fake claude permission dialogs', () => {
 
     expect((await first(sessionId))[0]).toMatchObject({ command: 'echo quick', code: 0 });
     expect(existsSync(join(work, 'told'))).toBe(false);
+  });
+});
+
+describe('fake claude background isolation', () => {
+  const git = (cwd: string, ...args: string[]): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf8' }).trimEnd();
+  const repository = (): void => {
+    git(work, 'init', '-q', '-b', 'main');
+    git(work, 'config', 'user.name', 'Test');
+    git(work, 'config', 'user.email', 'test@example.com');
+    mkdirSync(join(work, 'src'), { recursive: true });
+    writeFileSync(join(work, 'src', 'a.txt'), 'first\n');
+    git(work, 'add', '-A');
+    git(work, 'commit', '-q', '-m', 'init');
+    fakes.trustFolder(work);
+  };
+  const edits = async (id: string) =>
+    (await fakes.waitForTurn('claude', (await sessionOf(id)).sessionId, () => true)).ran;
+
+  it('moves a background session into a worktree of its own before its first edit', async () => {
+    repository();
+
+    const id = await background('run: pwd\nedit: a.txt\nrun: pwd', {
+      args: ['--permission-mode', 'acceptEdits'],
+      cwd: join(work, 'src'),
+    });
+    const ran = await edits(id);
+
+    const worktree = join(realpathSync(work), '.claude', 'worktrees', `session-${id}`);
+    expect(ran.map((run) => [run.command, run.code, run.stdout.trim()])).toEqual([
+      ['pwd', 0, join(realpathSync(work), 'src')],
+      ['edit a.txt', 0, ''],
+      ['pwd', 0, join(worktree, 'src')],
+    ]);
+    expect(readText('src', 'a.txt')).toBe('first\n');
+    expect(readFileSync(join(worktree, 'src', 'a.txt'), 'utf8')).toBe('first\nedited\n');
+    expect(git(worktree, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(`worktree-session-${id}`);
+    expect((await sessionOf(id)).cwd).toBe(join(worktree, 'src'));
+  });
+
+  it('leaves it where it is when its settings say so, in a linked worktree, outside git, and in a window', async () => {
+    repository();
+    const inPlace = await background('edit: src/a.txt', {
+      args: [
+        '--permission-mode',
+        'acceptEdits',
+        '--settings',
+        JSON.stringify({ worktree: { bgIsolation: 'none' } }),
+      ],
+    });
+    await edits(inPlace);
+    expect(readText('src', 'a.txt')).toBe('first\nedited\n');
+
+    const linked = join(fakes.home, 'linked');
+    git(work, 'worktree', 'add', '-q', '-b', 'linked', linked);
+    fakes.trustFolder(linked);
+    const there = await background('edit: b.txt', {
+      args: ['--permission-mode', 'acceptEdits'],
+      cwd: linked,
+    });
+    await edits(there);
+    expect(readFileSync(join(linked, 'b.txt'), 'utf8')).toBe('edited\n');
+
+    const plain = folder('plain');
+    fakes.trustFolder(plain);
+    const outside = await background('edit: c.txt', {
+      args: ['--permission-mode', 'acceptEdits'],
+      cwd: plain,
+    });
+    await edits(outside);
+    expect(readFileSync(join(plain, 'c.txt'), 'utf8')).toBe('edited\n');
+
+    const window = await fakes.openClaudeWindow({ cwd: work });
+    await fakes.say(window, 'edit: src/window.txt');
+    await fakes.answerPermission(window, 'allow');
+    await fakes.waitForTurn('claude', window, () => true);
+    expect(readText('src', 'window.txt')).toBe('edited\n');
+    expect(existsSync(join(work, '.claude', 'worktrees'))).toBe(false);
   });
 });
 

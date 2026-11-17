@@ -236,6 +236,16 @@ const HookInputSchema = z.object({
   cwd: z.string().min(1).optional(),
 });
 
+/**
+ * The setting that keeps a background session of Claude Code in the folder it was started in.
+ * Left to itself such a session moves into a git worktree of Claude Code's own before its first
+ * edit, made from the default branch of `origin`: not the commit of whoever handed the job
+ * over, and not a place the bridge knows of. The bridge decides where a job is done, in the
+ * folder it was handed over for or in the worktree the bridge made for it, so the sessions it
+ * starts work in place.
+ */
+export const CLAUDE_WORKS_IN_PLACE = { worktree: { bgIsolation: 'none' } } as const;
+
 export interface ClaudePermitHookOptions {
   /** How the bridge's command line is run, `cogitator bridge` by default */
   bridgeCommand?: string;
@@ -702,10 +712,11 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     const permit = claudePermitHook({ ...hook, agentName: request.agentName });
     const settings = tools
       ? {
+          ...CLAUDE_WORKS_IN_PLACE,
           hooks: { ...waits.hooks, ...claudeToolsHook(hook).hooks, ...permit.hooks },
           permissions: { allow: [CLAUDE_TOOLS_PERMISSION] },
         }
-      : { hooks: { ...waits.hooks, ...permit.hooks } };
+      : { ...CLAUDE_WORKS_IN_PLACE, hooks: { ...waits.hooks, ...permit.hooks } };
     const servers = tools && {
       mcpServers: {
         [BRIDGE_TOOLS_SERVER]: {

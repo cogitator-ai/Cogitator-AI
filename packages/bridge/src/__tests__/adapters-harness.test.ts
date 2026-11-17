@@ -6,6 +6,7 @@ import {
   realpathSync,
   writeFileSync,
 } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -57,6 +58,17 @@ function folder(): string {
 /** The environment of the harness commands: the fakes, and the bridge their hooks call back */
 function env(bridgeHome = home): NodeJS.ProcessEnv {
   return fakes.env({ ...process.env, COGITATOR_BRIDGE_HOME: bridgeHome });
+}
+
+/** Makes `dir` a git repository with one commit. */
+function gitInit(dir: string): void {
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.name', 'Test');
+  git('config', 'user.email', 'test@example.com');
+  writeFileSync(join(dir, 'README.md'), 'demo\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'init');
 }
 
 function claudeAdapter(options: Parameters<typeof claudeCodeAdapter>[0] = {}): BridgeAdapter {
@@ -683,6 +695,76 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
     expect((await conductor.agents({ harness: 'claude-code' }))[0].permissionMode).toBe(
       'acceptEdits'
     );
+    expect(errors).toEqual([]);
+  });
+
+  it('has a session it starts change the files of the job in place, not in a worktree of Claude Code', async () => {
+    gitInit(project);
+    fakes.trustFolder(project);
+    await startHost([claudeAdapter()]);
+    const conductor = await orchestrator();
+
+    await conductor.createJob({ to: 'claude', body: 'Write the notes\nedit: notes/a.txt' });
+    const agent = await until(
+      async () => (await conductor.agents({ harness: 'claude-code', statuses: ['active'] }))[0],
+      'the session to start'
+    );
+    const turn = await fakes.waitForTurn('claude', agent.sessionId, () => true);
+
+    expect(turn.ran.map((run) => [run.command, run.code])).toEqual([['edit notes/a.txt', 0]]);
+    expect(readFileSync(join(project, 'notes', 'a.txt'), 'utf8')).toBe('edited\n');
+    expect(existsSync(join(project, '.claude', 'worktrees'))).toBe(false);
+    expect(errors).toEqual([]);
+  });
+
+  it('starts a session in the worktree of its job, and brings what it changed there back', async () => {
+    gitInit(project);
+    fakes.trustFolder(project);
+    await startHost([claudeAdapter({ toolsServer: toolsServer() })], { rights: () => 'allow' });
+    const conductor = await orchestrator();
+
+    const { job } = await conductor.createJob({
+      to: 'claude',
+      title: 'Write the notes',
+      body: 'Write the notes\nrun: pwd\nedit: notes/a.txt\ntool: bridge.report {"job":1,"result":"Written"}',
+      worktree: true,
+      checks: [{ command: 'test -f notes/a.txt' }],
+    });
+    const [report] = await until(async () => {
+      const inbox = await conductor.inbox();
+      return inbox.length > 0 ? inbox : undefined;
+    }, 'the report of the session');
+
+    const worktree = join(
+      realpathSync(project),
+      '.cogitator',
+      'worktrees',
+      'job-1-write-the-notes'
+    );
+    const done = await conductor.job(job.number);
+    expect(done).toMatchObject({
+      state: 'completed',
+      cwd: worktree,
+      worktree: { path: worktree, branch: 'cogitator/job-1-write-the-notes' },
+      changes: { files: 1, insertions: 1, paths: ['notes/a.txt'] },
+      verification: { verified: true },
+    });
+    const [agent] = await conductor.agents({ harness: 'claude-code' });
+    const turn = await fakes.waitForTurn('claude', agent.sessionId, () => true);
+    expect(turn.ran[0]).toMatchObject({ command: 'pwd', stdout: `${worktree}\n` });
+    expect(turn.input).toContain(
+      `[agent bridge] You work in a git worktree of your own: ${worktree}`
+    );
+    expect(report.text).toContain('[agent bridge] Changed in the worktree of the job');
+    expect(report.text).toContain('[agent bridge] Checks. Verified: the check passed.');
+    expect(existsSync(join(project, 'notes'))).toBe(false);
+    expect(existsSync(join(project, '.claude', 'worktrees'))).toBe(false);
+
+    const taken = await conductor.accept({ job: job.number });
+
+    expect(taken).toMatchObject({ state: 'accepted', files: 1 });
+    expect(readFileSync(join(project, 'notes', 'a.txt'), 'utf8')).toBe('edited\n');
+    expect(existsSync(worktree)).toBe(false);
     expect(errors).toEqual([]);
   });
 

@@ -549,26 +549,37 @@ async function runWithLeave(command, cwd, env, askLeave) {
  * An `edit:` directive: a file the session's own edit tool changes, by adding a line to it,
  * which the session needs leave for the way its harness decides. It is in the turn as a command
  * `edit <path>`, refused or done. A harness that imitates no edit tool of its own fails it.
+ * A harness may move the session before it edits, as Claude Code moves a background session
+ * into a worktree of its own: the leave then says where the session is now (`cwd`) and which
+ * file the edit means there (`file`).
  * @param {string} path as the model wrote it, relative to the folder of the session or absolute
  * @param {LeaveAsker | undefined} askLeave
- * @returns {Promise<CommandRun>}
+ * @returns {Promise<CommandRun & { movedTo?: string }>}
  */
 async function editWithLeave(path, cwd, askLeave) {
-  const file = resolve(cwd, path);
   const command = `edit ${path}`;
   if (!askLeave) {
     return { command, code: 1, stdout: '', stderr: 'this stand-in has no edit tool of its own' };
   }
-  const leave = await askLeave({ tool: 'Edit', input: { file_path: file } });
+  const leave = await askLeave({ tool: 'Edit', input: { file_path: resolve(cwd, path) } });
+  const moved = leave.cwd !== undefined && { movedTo: leave.cwd };
   if (!leave.allowed) {
-    return { command, code: null, stdout: '', stderr: leave.message ?? 'denied', denied: true };
+    return {
+      command,
+      code: null,
+      stdout: '',
+      stderr: leave.message ?? 'denied',
+      denied: true,
+      ...moved,
+    };
   }
+  const file = leave.file ?? resolve(cwd, path);
   try {
     mkdirSync(dirname(file), { recursive: true });
     appendFileSync(file, 'edited\n');
-    return { command, code: 0, stdout: '', stderr: '' };
+    return { command, code: 0, stdout: '', stderr: '', ...moved };
   } catch (error) {
-    return { command, code: 1, stdout: '', stderr: error.message };
+    return { command, code: 1, stdout: '', stderr: error.message, ...moved };
   }
 }
 
@@ -586,16 +597,20 @@ async function editWithLeave(path, cwd, askLeave) {
  * @param {LeaveAsker} [turn.askLeave] how the session gets leave for a call of its own tools
  * @returns {Promise<TurnOutcome>}
  */
-export async function performTurn({ input, cwd, env, callTool, askLeave }) {
+export async function performTurn({ input, cwd: startedIn, env, callTool, askLeave }) {
   const at = new Date().toISOString();
   const ran = [];
   const tools = [];
   let answer = 'ok';
+  let cwd = startedIn;
   for (const { kind, value } of directives(input)) {
     if (kind === 'run') ran.push(await runCommand(value, cwd, env));
     else if (kind === 'bash') ran.push(await runWithLeave(value, cwd, env, askLeave));
-    else if (kind === 'edit') ran.push(await editWithLeave(value, cwd, askLeave));
-    else if (kind === 'tool') tools.push(await runTool(value, callTool));
+    else if (kind === 'edit') {
+      const { movedTo, ...run } = await editWithLeave(value, cwd, askLeave);
+      if (movedTo !== undefined) cwd = movedTo;
+      ran.push(run);
+    } else if (kind === 'tool') tools.push(await runTool(value, callTool));
     else if (kind === 'sleep') await sleep(Number(value));
     else answer = value;
   }
