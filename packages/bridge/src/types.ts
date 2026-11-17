@@ -462,6 +462,8 @@ export type JournalEntryType =
   | 'job.accepted'
   | 'job.rejected'
   | 'job.discarded'
+  | 'fact.remembered'
+  | 'fact.forgotten'
   | 'letter.queued'
   | 'letter.delivered'
   | 'letter.read'
@@ -540,6 +542,12 @@ export interface BridgeLimits {
    * worktree
    */
   worktreeKeepMs: number;
+  /**
+   * How many tokens the block the bridge adds under a job may take when the job names no
+   * number: what the caller named, the parts of the files it pointed at and the notes of the
+   * board that fit
+   */
+  contextTokens: number;
 }
 
 export const BridgeLimitsSchema = z.strictObject({
@@ -574,6 +582,7 @@ export const BridgeLimitsSchema = z.strictObject({
     .int()
     .positive()
     .max(365 * 86_400_000),
+  contextTokens: z.number().int().positive().max(200_000),
 });
 
 export const DEFAULT_LIMITS: BridgeLimits = {
@@ -596,4 +605,5 @@ export const DEFAULT_LIMITS: BridgeLimits = {
   worktreesPerProject: 2,
   checkTimeoutMs: 10 * 60_000,
   worktreeKeepMs: 7 * 86_400_000,
+  contextTokens: 6_000,
 };

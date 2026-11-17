@@ -11,6 +11,7 @@ import { serveBridge, type BridgeServer } from './server.js';
 import { SqliteBridgeStore } from './store/sqlite.js';
 import type { Lease } from './store/store.js';
 import type { BridgeAdapter } from './adapter.js';
+import type { FactBoard } from './board.js';
 import type { PersonRoute, RightsJudge } from './person.js';
 
 export interface HostBridgeOptions {
@@ -27,6 +28,12 @@ export interface HostBridgeOptions {
   rights?: RightsJudge;
   /** How a letter that waits for the person reaches them. Without it nothing can wait for them */
   person?: PersonRoute;
+  /**
+   * The board of facts agents and the person share, `memoryBoard()` of
+   * `@cogitator-ai/bridge/memory` to keep it with `@cogitator-ai/memory`. The host that made it
+   * closes it. Without it nothing is remembered
+   */
+  board?: FactBoard;
   /** How often the dispatcher says it is alive and looks at what time did to jobs, 5 s by default */
   tickMs?: number;
   /**
@@ -139,6 +146,7 @@ export async function hostBridge(options: HostBridgeOptions = {}): Promise<Bridg
       ...(options.limits && { limits: options.limits }),
       ...(options.rights && { rights: options.rights }),
       ...(options.person && { person: options.person }),
+      ...(options.board && { board: options.board }),
       onError,
       assertWritable: () => {
         if (store.readLease()?.nonce === nonce) return;

@@ -16,6 +16,7 @@ export type BridgeErrorCode =
   | 'needs_person'
   | 'no_person'
   | 'no_worktree'
+  | 'no_board'
   | 'worktree_limit'
   | 'already_running'
   | 'not_running'

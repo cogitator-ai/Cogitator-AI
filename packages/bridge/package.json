@@ -37,6 +37,11 @@
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js",
       "default": "./dist/testing/index.js"
+    },
+    "./memory": {
+      "types": "./dist/memory/index.d.ts",
+      "import": "./dist/memory/index.js",
+      "default": "./dist/memory/index.js"
     }
   },
   "sideEffects": false,
@@ -63,6 +68,7 @@
   "devDependencies": {
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/mcp": "workspace:*",
+    "@cogitator-ai/memory": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.20.4",
     "better-sqlite3": "^13.0.3",
@@ -71,6 +77,7 @@
   },
   "peerDependencies": {
     "@cogitator-ai/core": "workspace:>=0.79.0",
+    "@cogitator-ai/memory": "workspace:>=0.29.7",
     "better-sqlite3": "^11.0.0 || ^12.0.0 || ^13.0.0"
   },
   "peerDependenciesMeta": {
@@ -78,6 +85,9 @@
       "optional": true
     },
     "better-sqlite3": {
+      "optional": true
+    },
+    "@cogitator-ai/memory": {
       "optional": true
     }
   },
