@@ -34,7 +34,8 @@ import {
   toWebRequest,
   type NodeMcpRequestHandler,
 } from '@modelcontextprotocol/node';
-import { Cogitator, withParsedArguments } from '@cogitator-ai/core';
+import type { Cogitator } from '@cogitator-ai/core';
+import { withParsedArguments } from '@cogitator-ai/core/tool';
 import type {
   Tool,
   ToolAppResource,
@@ -202,7 +203,7 @@ export class MCPServer {
   private prompts = new Map<string, MCPPromptConfig>();
   private apps = new Map<string, MCPAppConfig>();
   private started = false;
-  private ownInvoker?: Cogitator;
+  private ownInvoker?: Promise<Cogitator>;
   private httpServer?: HttpServer;
   private httpHandler?: McpHttpHandler;
   private readonly stateKey: string | Uint8Array;
@@ -456,10 +457,20 @@ export class MCPServer {
     return params instanceof z.ZodType ? params : PERMISSIVE_INPUT_SCHEMA;
   }
 
-  /** The invoker tool calls run through: `config.toolInvoker`, else a Cogitator of its own. */
-  private invoker(): ToolInvoker {
+  /**
+   * The invoker tool calls run through: `config.toolInvoker`, else a Cogitator of its own. The
+   * runtime is loaded by the first call that needs it, so a server answers `initialize` and
+   * lists its tools without it.
+   */
+  private async invoker(): Promise<ToolInvoker> {
     if (this.config.toolInvoker) return this.config.toolInvoker;
-    this.ownInvoker ??= new Cogitator();
+    if (!this.ownInvoker) {
+      const loading = import('@cogitator-ai/core').then(({ Cogitator }) => new Cogitator());
+      this.ownInvoker = loading;
+      loading.catch(() => {
+        if (this.ownInvoker === loading) this.ownInvoker = undefined;
+      });
+    }
     return this.ownInvoker;
   }
 
@@ -724,7 +735,8 @@ export class MCPServer {
         if (run.mode === 'round') pendingApproval = request;
         return undefined;
       };
-      const result = await this.invoker().invokeTool(withParsedArguments(tool), args ?? {}, {
+      const invoker = await this.invoker();
+      const result = await invoker.invokeTool(withParsedArguments(tool), args ?? {}, {
         runId: `mcp_${randomUUID()}`,
         agentId: 'mcp-server',
         signal: askers.signal,
@@ -1434,7 +1446,7 @@ export class MCPServer {
       if (stdio) {
         await stdio.close();
       }
-      await own?.close();
+      await (await own?.catch(() => undefined))?.close();
     }
 
     this.log('info', 'Server stopped');

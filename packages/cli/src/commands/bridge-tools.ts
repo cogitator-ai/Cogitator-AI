@@ -12,7 +12,7 @@ import {
   type BridgeAdapter,
 } from '@cogitator-ai/bridge';
 import { BRIDGE_INSTRUCTIONS, bridgeTools } from '@cogitator-ai/bridge/tools';
-import { MCPServer } from '@cogitator-ai/mcp';
+import { MCPServer } from '@cogitator-ai/mcp/server';
 import { bridgeAdapters } from '../utils/bridge-adapters.js';
 import { CommandError, EXIT, reportFailure } from '../utils/cli.js';
 

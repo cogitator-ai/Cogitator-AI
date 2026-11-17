@@ -329,11 +329,11 @@ describe('cogitator plugin eval', () => {
   it('exits 1, never 2, on command-line errors', async () => {
     for (const argv of [['--bogus'], ['--runs'], ['.', '--ablation']]) {
       await expect(
-        createProgram().parseAsync(['node', 'cogitator', 'plugin', 'eval', ...argv])
+        (await createProgram()).parseAsync(['node', 'cogitator', 'plugin', 'eval', ...argv])
       ).rejects.toMatchObject({ name: 'CommandError', exitCode: 1 });
     }
     await expect(
-      createProgram().parseAsync(['node', 'cogitator', 'plugin', 'eval', '--bogus'])
+      (await createProgram()).parseAsync(['node', 'cogitator', 'plugin', 'eval', '--bogus'])
     ).rejects.toThrow("unknown option '--bogus'");
   });
 

@@ -20,8 +20,8 @@ afterEach(async () => {
 });
 
 describe('cogitator acp', () => {
-  it('is a command of the CLI with its options', () => {
-    const acp = createProgram().commands.find((command) => command.name() === 'acp');
+  it('is a command of the CLI with its options', async () => {
+    const acp = (await createProgram()).commands.find((command) => command.name() === 'acp');
     expect(acp?.options.map((option) => option.long)).toEqual([
       '--config',
       '--model',

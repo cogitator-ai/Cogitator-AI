@@ -136,7 +136,7 @@ describe('cogitator rewind', () => {
     const point = await firstTurnEnd();
     await runRewind(project(), 'chat', point, { files: true, dryRun: true }, io());
     expect(printed[0]).toContain('not durable');
-    const command = createProgram().commands.find((each) => each.name() === 'rewind')!;
+    const command = (await createProgram()).commands.find((each) => each.name() === 'rewind')!;
     let help = '';
     command.configureOutput({ writeOut: (text) => (help += text) });
     command.outputHelp();
@@ -194,8 +194,8 @@ describe('cogitator rewind', () => {
     expect(JSON.parse(logs.join('\n'))).toMatchObject({ ok: true, warnings: [expect.any(String)] });
   });
 
-  it('is a command of the CLI', () => {
-    const command = createProgram().commands.find((each) => each.name() === 'rewind');
+  it('is a command of the CLI', async () => {
+    const command = (await createProgram()).commands.find((each) => each.name() === 'rewind');
     expect(command?.options.map((option) => option.long)).toEqual(
       expect.arrayContaining(['--files', '--no-memory', '--dry-run', '--yes', '--force'])
     );

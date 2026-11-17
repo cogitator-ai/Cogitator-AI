@@ -29,6 +29,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./assistant-config": {
+      "types": "./dist/assistant-config.d.ts",
+      "import": "./dist/assistant-config.js",
+      "default": "./dist/assistant-config.js"
     }
   },
   "sideEffects": false,

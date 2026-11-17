@@ -1,8 +1,8 @@
 import { Command } from 'commander';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { tool } from '@cogitator-ai/core';
-import { MCPServer } from '@cogitator-ai/mcp';
+import { tool } from '@cogitator-ai/core/tool';
+import { MCPServer } from '@cogitator-ai/mcp/server';
 import type { Tool } from '@cogitator-ai/types';
 import { z } from 'zod';
 import {

@@ -119,8 +119,8 @@ describe('help', () => {
     return text;
   }
 
-  it('shows examples on every command', () => {
-    const program = createProgram();
+  it('shows examples on every command', async () => {
+    const program = await createProgram();
     for (const command of program.commands) {
       expect(helpOf(command), command.name()).toContain('Examples:');
     }
