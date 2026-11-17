@@ -53,6 +53,7 @@ import { envPairs, toolServers } from './mcp.mjs';
 const SELF = fileURLToPath(import.meta.url);
 const VERSION = '2.1.292';
 const DEFAULT_HOOK_TIMEOUT_S = 600;
+const DEFAULT_NOTICE_MS = 100;
 const NOT_TRUSTED =
   'Workspace not trusted. Run claude once in this folder and accept the trust prompt';
 
@@ -491,9 +492,10 @@ function ruleCovers(rule, toolName, input) {
  * Gets leave for a call of one of the session's own tools, the way Claude Code decides: the
  * mode (`acceptEdits` takes an edit inside the folder of the session), the deny and allow rules,
  * the `PermissionRequest` hooks that match the tool, and when none of them settles it, the
- * dialog a person answers. While the dialog is open the session is
- * listed as blocked on a permission prompt, its `Notification` hooks are told, and it waits for
- * `__answer` as long as it takes.
+ * dialog a person answers with `__answer`, however long that takes. From the moment the call
+ * needs leave the session is listed as blocked on a permission prompt, also while a hook still
+ * decides, and when nothing has decided after `FAKE_CLAUDE_NOTIFY_MS` its `Notification` hooks
+ * are told (Claude Code takes about six seconds).
  */
 async function leaveFor(session, toolName, input) {
   const { record, files } = session;
@@ -517,6 +519,24 @@ async function leaveFor(session, toolName, input) {
     tool_name: toolName,
     tool_input: input,
   };
+  rmSync(files.answer, { force: true });
+  patchJson(files.record, {
+    status: 'waiting',
+    waitingFor: 'permission prompt',
+    ...(record.kind === 'background' && { state: 'blocked' }),
+  });
+  const notice = setTimeout(() => tellOfPrompt(session), noticeDelayMs());
+  const settled = (leave) => {
+    clearTimeout(notice);
+    patchJson(files.record, {
+      status: 'busy',
+      waitingFor: undefined,
+      dialog: undefined,
+      ...(record.kind === 'background' && { state: 'working' }),
+    });
+    return leave;
+  };
+
   let allowedByHook = false;
   for (const { matcher, hook } of eventHooks(record, 'PermissionRequest')) {
     if (!new RegExp(`^(?:${matcher})$`).test(toolName)) continue;
@@ -533,19 +553,36 @@ async function leaveFor(session, toolName, input) {
       continue;
     }
     if (decision?.behavior === 'deny') {
-      return refused(String(decision.message ?? `Permission to use ${toolName} has been denied.`));
+      return settled(
+        refused(String(decision.message ?? `Permission to use ${toolName} has been denied.`))
+      );
     }
     if (decision?.behavior === 'allow') allowedByHook = true;
   }
-  if (allowedByHook) return { allowed: true };
-  if (mode === 'dontAsk') return refused(`Permission to use ${toolName} has been denied.`);
+  if (allowedByHook) return settled({ allowed: true });
+  if (mode === 'dontAsk') {
+    return settled(refused(`Permission to use ${toolName} has been denied.`));
+  }
 
+  patchJson(files.record, { dialog: true });
+  let answer;
+  while ((answer = readJson(files.answer)) === undefined) await sleep(POLL_MS);
   rmSync(files.answer, { force: true });
-  patchJson(files.record, {
-    status: 'waiting',
-    waitingFor: 'permission prompt',
-    ...(record.kind === 'background' && { state: 'blocked' }),
-  });
+  return settled(
+    answer.allow === true
+      ? { allowed: true }
+      : refused(`The user doesn't want to proceed with this tool use.`)
+  );
+}
+
+function noticeDelayMs() {
+  const value = Number(process.env.FAKE_CLAUDE_NOTIFY_MS);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_NOTICE_MS;
+}
+
+/** Tells the `Notification` hooks for permission prompts that the session waits for leave */
+function tellOfPrompt(session) {
+  const { record, files } = session;
   for (const { matcher, hook } of eventHooks(record, 'Notification')) {
     if (matcher !== '.*' && !new RegExp(`^(?:${matcher})$`).test('permission_prompt')) continue;
     void runHook(
@@ -556,23 +593,12 @@ async function leaveFor(session, toolName, input) {
         transcript_path: files.transcript,
         cwd: record.cwd,
         hook_event_name: 'Notification',
-        message: `Claude needs your permission to use ${toolName}`,
+        message: 'Claude needs your permission',
         title: 'Permission needed',
         notification_type: 'permission_prompt',
       })
     );
   }
-  let answer;
-  while ((answer = readJson(files.answer)) === undefined) await sleep(POLL_MS);
-  rmSync(files.answer, { force: true });
-  patchJson(files.record, {
-    status: 'busy',
-    waitingFor: undefined,
-    ...(record.kind === 'background' && { state: 'working' }),
-  });
-  return answer.allow === true
-    ? { allowed: true }
-    : refused(`The user doesn't want to proceed with this tool use.`);
 }
 
 /** The command hooks of an event, each with the matcher of its group */
@@ -689,6 +715,7 @@ function endSession(recordFile) {
     pid: undefined,
     status: undefined,
     waitingFor: undefined,
+    dialog: undefined,
     hookPids: undefined,
     state: 'stopped',
   });
@@ -773,6 +800,7 @@ function current(record) {
     pid: undefined,
     status: undefined,
     waitingFor: undefined,
+    dialog: undefined,
     hookPids: undefined,
     state: 'stopped',
   };
@@ -837,7 +865,7 @@ async function answerPrompt(argv) {
   const [ref, word] = argv;
   if (argv.length !== 2 || (word !== 'allow' && word !== 'deny')) throw new Unsupported();
   const session = findSession([ref]);
-  if (session.waitingFor !== 'permission prompt') {
+  if (session.dialog !== true) {
     throw new CliError(`Session '${ref}' shows no permission dialog`);
   }
   writeJson(sessionFiles(session.sessionId).answer, { allow: word === 'allow' });

@@ -56,7 +56,10 @@ export interface FakeClaudeSession {
   kind: 'background' | 'interactive';
   status?: 'busy' | 'idle' | 'waiting';
   state?: string;
-  /** What a session that waits is waiting for: `permission prompt` while its dialog is open */
+  /**
+   * What a session that waits is waiting for: `permission prompt` from the moment a call of its
+   * needs leave, also while a hook still decides and no dialog is open yet
+   */
   waitingFor?: string;
   pid?: number;
 }
@@ -110,8 +113,9 @@ export interface FakeHarnesses {
   /** A person types into a Claude Code session */
   say(sessionId: string, text: string): Promise<void>;
   /**
-   * A person answers the permission dialog a Claude Code session shows. A `bash: <command>`
-   * line of a turn opens one, unless the mode, a rule or a `PermissionRequest` hook settles it
+   * A person answers the permission dialog a Claude Code session shows, waiting for it to open
+   * (up to 30 s). A `bash: <command>` line of a turn opens one, unless the mode, a rule or a
+   * `PermissionRequest` hook settles it
    */
   answerPermission(sessionId: string, answer: 'allow' | 'deny'): Promise<void>;
   claudeSessions(options?: { all?: boolean }): Promise<FakeClaudeSession[]>;
@@ -186,6 +190,8 @@ const STOP_GRACE_MS = 5_000;
  * that start alone took over ten seconds, so the wait leaves room for it
  */
 const DEFAULT_TURN_TIMEOUT_MS = 30_000;
+/** What the fake claude says of a session whose dialog is not open, or not open yet */
+const NO_DIALOG = 'shows no permission dialog';
 
 /**
  * Installs executable stand-ins of `claude` and `codex` for tests of code that drives the real
@@ -250,7 +256,17 @@ export function installFakeHarnesses(options: FakeHarnessOptions = {}): FakeHarn
       await succeed('claude', ['__say', sessionId, text]);
     },
     async answerPermission(sessionId, answer) {
-      await succeed('claude', ['__answer', sessionId, answer]);
+      const deadline = Date.now() + DEFAULT_TURN_TIMEOUT_MS;
+      for (;;) {
+        const { code, stderr } = await run('claude', ['__answer', sessionId, answer]);
+        if (code === 0) return;
+        if (!stderr.includes(NO_DIALOG) || Date.now() >= deadline) {
+          throw new Error(
+            `fake claude __answer ${sessionId} exited with ${code}: ${stderr.trim()}`
+          );
+        }
+        await sleep(POLL_MS);
+      }
     },
     async claudeSessions({ all = false } = {}) {
       const listing = await succeed('claude', ['agents', '--json', ...(all ? ['--all'] : [])]);
