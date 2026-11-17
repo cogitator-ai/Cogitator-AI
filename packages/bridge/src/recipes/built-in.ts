@@ -2,7 +2,6 @@ import { isAbsolute, join, relative } from 'node:path';
 import type { Workflow } from '@cogitator-ai/types';
 import { WorkflowBuilder } from '@cogitator-ai/workflows';
 import { z } from 'zod';
-import { isBridgeError } from '../errors.js';
 import {
   FINDING_SEVERITIES,
   atLeast,
@@ -15,30 +14,32 @@ import {
 import { JobContextSchema } from '../handover.js';
 import { oneLine, quoted } from '../letters.js';
 import { JobCheckSchema, type BridgeJob, type JobCheck } from '../types.js';
+import { debateRecipe } from './debate.js';
+import { raceRecipe } from './race.js';
 import {
   defineRecipe,
   type Recipe,
   type RecipeJob,
-  type RecipeOutcome,
   type RecipeRun,
   type RecipeState,
 } from './recipe.js';
+import {
+  Address,
+  TASK_LENGTH,
+  checkedOf,
+  clip,
+  endOf,
+  freshFor,
+  handBack,
+  plural,
+  type Checked,
+} from './steps.js';
 
 /** How many rounds of fixes a review goes through at most when its input names no number. */
 export const DEFAULT_REVIEW_ROUNDS = 2;
 
 /** The lightest finding the author is sent back to fix when the input names no threshold. */
 export const DEFAULT_REVIEW_THRESHOLD: FindingSeverity = 'major';
-
-/** How much of a report of one agent a letter to another quotes. */
-const QUOTE_LENGTH = 4_000;
-
-const Address = z
-  .string()
-  .trim()
-  .min(1)
-  .max(512)
-  .regex(/^[^\p{Cc}]*$/u, 'An address is one line');
 
 const Severity = z.enum(FINDING_SEVERITIES as [FindingSeverity, ...FindingSeverity[]]);
 
@@ -79,27 +80,6 @@ interface Round {
   fixReport?: string;
 }
 
-/** What the checks of a job showed. */
-interface Checked {
-  /** Every check ran and passed */
-  verified: boolean;
-  /** A check ran and did not pass. A check the bridge left out is no failure of the work */
-  failed: boolean;
-  summary?: string;
-}
-
-function checkedOf(job: BridgeJob): Checked | undefined {
-  const verification = job.verification;
-  if (!verification) return undefined;
-  return {
-    verified: verification.verified,
-    failed: verification.checks
-      ? verification.checks.some((check) => !check.ok && check.skipped === undefined)
-      : !verification.verified,
-    ...(verification.summary && { summary: verification.summary }),
-  };
-}
-
 /** Why no further round follows. */
 type Stopped = 'clean' | 'unreadable' | 'review-failed' | 'fix-failed' | 'no-work';
 
@@ -119,15 +99,6 @@ interface ReviewPlan {
   threshold: FindingSeverity;
   focus?: string;
   by?: string;
-}
-
-function clip(text: string): string {
-  const trimmed = text.trim();
-  return trimmed.length > QUOTE_LENGTH ? `${trimmed.slice(0, QUOTE_LENGTH)}\n...` : trimmed;
-}
-
-function over(job: BridgeJob): string {
-  return `job #${job.number} is ${job.state}${job.reason ? ` (${job.reason})` : ''}`;
 }
 
 /** The work of a job that is done, as a review needs it. */
@@ -174,7 +145,7 @@ async function mayHaveReviewed(run: RecipeRun, job: BridgeJob): Promise<boolean>
  * already may be the one that asked for the review.
  */
 async function reviewerFor(run: RecipeRun, plan: ReviewPlan, work: Work): Promise<string> {
-  if (plan.by) return /[@:]/.test(plan.by) ? plan.by : `${plan.by}:new`;
+  if (plan.by) return freshFor(plan.by);
   const startable = await run.startable();
   const other = startable.find((harness) => harness !== work.harness);
   const harness = other ?? (startable.includes(work.harness) ? work.harness : undefined);
@@ -184,39 +155,6 @@ async function reviewerFor(run: RecipeRun, plan: ReviewPlan, work: Work): Promis
     );
   }
   return `${harness}:new`;
-}
-
-/**
- * Hands a job back to an agent that worked on the run before, and to a fresh session of its
- * harness when the agent is gone or would not wake for the letter, such as a Codex thread that
- * is open nowhere while no local daemon runs. The fresh session knows nothing of what the agent
- * did, so it gets `background` too. A step that runs again goes the way it went the first time.
- */
-async function handBack(
-  run: RecipeRun,
-  step: string,
-  agent: { name: string; harness: string },
-  job: Omit<RecipeJob, 'to'>,
-  background: string
-): Promise<RecipeOutcome> {
-  const named = (): Promise<RecipeOutcome> => run.handOver(step, { ...job, to: agent.name });
-  const fresh = (): Promise<RecipeOutcome> =>
-    run.handOver(`${step}.fresh`, {
-      ...job,
-      to: `${agent.harness}:new`,
-      body: `${job.body}\n\n${background}`,
-    });
-  if (await run.handedOver(`${step}.fresh`)) return fresh();
-  if (await run.handedOver(step)) return named();
-  const startable = agent.harness !== '' && (await run.startable()).includes(agent.harness);
-  if (startable && !(await run.wakes(agent.name))) return fresh();
-  try {
-    return await named();
-  } catch (error) {
-    const gone = isBridgeError(error) && error.code === 'unknown_agent';
-    if (!gone || !startable) throw error;
-    return fresh();
-  }
 }
 
 function whereText(work: Work): string {
@@ -236,7 +174,7 @@ function reviewText(work: Work, plan: ReviewPlan, state: ReviewState, round: num
   const before = state.rounds.at(-1);
   const parts = [
     `Review the work of job #${work.job}, done by ${work.author}. Change no file: read, run what you need to check, and report.`,
-    `The job was:\n${quoted(clip(work.task))}`,
+    `The job was:\n${quoted(clip(work.task, TASK_LENGTH))}`,
     whereText(work),
   ];
   if (plan.focus) parts.push(`Look at this above all:\n${quoted(plan.focus)}`);
@@ -350,7 +288,7 @@ async function fix(
       checks: work.checks,
       body: fixText(work, plan, state),
     },
-    `You did not do that job yourself. It was:\n${quoted(clip(work.task))}\n\n${whereText(work)}`
+    `You did not do that job yourself. It was:\n${quoted(clip(work.task, TASK_LENGTH))}\n\n${whereText(work)}`
   );
   const rounds = [
     ...state.rounds.slice(0, -1),
@@ -363,10 +301,6 @@ async function fix(
   if (outcome.job.state !== 'completed') return { rounds, stopped: 'fix-failed' };
   const checked = checkedOf(outcome.job);
   return { rounds, ...(checked && { checked }) };
-}
-
-function plural(count: number, one: string): string {
-  return `${count} ${one}${count === 1 ? '' : 's'}`;
 }
 
 /** What the recipe tells whoever started it: how the review ended, round by round. */
@@ -522,7 +456,7 @@ export const reviewRecipe: Recipe = defineRecipe({
       }
       if (job.state !== 'completed' || job.checking) {
         return none(
-          `There is no finished work to review: ${over(job)}${job.checking ? ', and its checks still run' : ''}.`
+          `There is no finished work to review: ${endOf(job)}${job.checking ? ', and its checks still run' : ''}.`
         );
       }
       const end = job.worktree?.end;
@@ -581,7 +515,7 @@ export const buildRecipe: Recipe = defineRecipe({
           failed: true,
           stopped: 'no-work',
           report: [
-            `The work was not done: ${over(outcome.job)}.`,
+            `The work was not done: ${endOf(outcome.job)}.`,
             ...(outcome.report ? [quoted(clip(outcome.report))] : []),
           ].join('\n'),
         };
@@ -598,4 +532,9 @@ export const buildRecipe: Recipe = defineRecipe({
 });
 
 /** The recipes the conductor of the bridge knows unless its host names others. */
-export const BUILT_IN_RECIPES: readonly Recipe[] = [reviewRecipe, buildRecipe];
+export const BUILT_IN_RECIPES: readonly Recipe[] = [
+  reviewRecipe,
+  buildRecipe,
+  raceRecipe,
+  debateRecipe,
+];

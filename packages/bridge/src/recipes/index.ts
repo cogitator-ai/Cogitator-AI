@@ -7,6 +7,8 @@ export {
   buildRecipe,
   reviewRecipe,
 } from './built-in.js';
+export { DEFAULT_DEBATE_ROUNDS, debateRecipe } from './debate.js';
+export { raceRecipe } from './race.js';
 export {
   defineRecipe,
   type Recipe,

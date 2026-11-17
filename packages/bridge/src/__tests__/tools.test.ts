@@ -97,13 +97,15 @@ function jobNumber(text: string): number {
 }
 
 describe('bridgeTools', () => {
-  it('are the eighteen tools of the bridge, each saying what it does to the world', () => {
+  it('are the twenty tools of the bridge, each saying what it does to the world', () => {
     const tools = bridgeTools({ socketPath: bridgePaths({ home }).socket });
 
     expect(tools.map((tool) => tool.name)).toEqual([
       'delegate',
       'build',
       'review',
+      'race',
+      'debate',
       'ask',
       'answer',
       'report',
@@ -409,6 +411,53 @@ describe('bridgeTools', () => {
     expect(await orchestrator.call('inbox')).toContain('passed the review of codex-');
 
     await expect(orchestrator.call('review', { job: 2, threshold: 'huge' })).rejects.toThrow();
+  });
+
+  it('start a race and a debate of the conductor', async () => {
+    let started = 0;
+    const adapter = new FakeAdapter({
+      harness: 'codex',
+      createSession: async () => ({
+        sessionId: `thread-${(started += 1)}`,
+        deliveredFirstLetter: true,
+      }),
+    });
+    await startHost({ adapters: [adapter, recipeAdapter({ pollMs: 20 })] });
+    const orchestrator = claude();
+
+    const debated = await orchestrator.call('debate', {
+      question: 'Tabs or spaces?',
+      debaters: [{ to: 'codex', role: 'advocate' }, { to: 'codex' }],
+      rounds: 1,
+    });
+    expect(debated).toContain('Job #1 is the debate (submitted): codex, codex answer each other.');
+    await vi.waitFor(() => expect(adapter.sessions).toHaveLength(2));
+    expect(adapter.sessions[0].firstLetter.text).toContain('You argue in favor');
+    await codex('thread-1').call('report', { job: 2, result: 'Tabs.\nSTANCE: disagree' });
+    await codex('thread-2').call('report', { job: 3, result: 'Spaces.\nSTANCE: disagree' });
+    await vi.waitFor(async () =>
+      expect(await orchestrator.call('job', { job: 1 })).toContain('#1 completed')
+    );
+    expect(await orchestrator.call('inbox')).toContain(
+      'The debate of 2 agents ended after 1 round: the rounds ran out, and 0 of 2 said they agree at the end.'
+    );
+
+    const raced = await orchestrator.call('race', {
+      to: ['codex', 'codex'],
+      task: 'Fix the limiter',
+      checks: ['pnpm test'],
+      judge: 'codex',
+    });
+    expect(raced).toContain(
+      'Job #4 is the race (submitted): codex, codex do the job side by side.'
+    );
+    await vi.waitFor(async () =>
+      expect(await orchestrator.call('job', { job: 4 })).toContain('#4 failed')
+    );
+    expect(await orchestrator.call('inbox')).toContain(
+      '2 agents were asked to do the job, 0 finished it'
+    );
+    await expect(orchestrator.call('race', { to: ['codex'], task: 'x' })).rejects.toThrow();
   });
 
   it('say so when the bridge was given no conductor for its recipes', async () => {

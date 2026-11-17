@@ -465,6 +465,139 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
       }),
   });
 
+  const race = tool({
+    name: 'race',
+    title: 'Have several agents do the same job',
+    description:
+      'Hand the same job to two or more agents at the same time, each in a git worktree of its own, and get the results side by side: which finished, what the checks showed, how much each changed, and with a judge which one another agent would take. Nothing is taken for you: accept the attempt you want and reject the others. Returns a job number at once, and one report comes back at the end.',
+    parameters: z.looseObject({
+      to: z
+        .array(z.string().min(1))
+        .min(2)
+        .max(6)
+        .describe(
+          'Who does the job, two to six: such as ["codex", "claude"], or the same word twice for two sessions of one agent'
+        ),
+      task: z
+        .string()
+        .min(1)
+        .describe(
+          'The job: what to do, and what done looks like. The agents see nothing of this conversation, so name the files, the constraints and the decisions already made'
+        ),
+      title: z.string().optional().describe('A short name of the job, its first line by default'),
+      cwd: z
+        .string()
+        .optional()
+        .describe("The folder the job is about, inside this project. This session's by default"),
+      checks: z
+        .array(z.string().min(1))
+        .max(50)
+        .optional()
+        .describe(
+          'Shell commands that show the job is done. The bridge runs those your own rules allow without asking on every attempt, and the report says what they showed for each'
+        ),
+      context: ContextParam,
+      judge: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'Who compares the attempts and says which to take: "codex" or "claude" for a fresh session, or an agent name. Nobody by default'
+        ),
+    }),
+    annotations: WRITES,
+    sideEffects: ['process'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const { job, duplicate } = await bridge.createJob({
+          to: RECIPE_HARNESS,
+          body: args.task,
+          ...(args.title !== undefined && { title: args.title }),
+          ...(args.cwd !== undefined && { cwd: args.cwd }),
+          recipe: {
+            name: 'race',
+            input: {
+              to: args.to,
+              ...(args.checks !== undefined && {
+                checks: args.checks.map((command) => ({ command })),
+              }),
+              ...(args.context !== undefined && { context: contextOf(args.context) }),
+              ...(args.judge?.trim() && { judge: args.judge.trim() }),
+            },
+          },
+        });
+        return `Job #${job.number} is the race (${job.state})${duplicate ? ', started before: nothing was sent twice' : ''}: ${args.to.join(', ')} do the job side by side. ${AFTER_RECIPE}`;
+      }),
+  });
+
+  const debate = tool({
+    name: 'debate',
+    title: 'Have agents debate a question',
+    description:
+      'Put a question to two or more agents, who answer each other round by round until they agree or the rounds run out. For a decision worth more than one opinion before the work starts. No file is changed. Returns a job number at once, and one report comes back at the end: where they ended, and with a moderator its summary and what it recommends.',
+    parameters: z.looseObject({
+      question: z
+        .string()
+        .min(1)
+        .describe(
+          'The question, with what the agents have to know to answer it: they see nothing of this conversation'
+        ),
+      debaters: z
+        .array(
+          z.looseObject({
+            to: z
+              .string()
+              .min(1)
+              .describe('"codex" or "claude" for a fresh session, or an agent name'),
+            role: z
+              .string()
+              .optional()
+              .describe(
+                '"advocate" argues for, "critic" against. Any other role is told to the agent as it is. Its own view by default'
+              ),
+          })
+        )
+        .min(2)
+        .max(6)
+        .describe('Who debates, two to six'),
+      rounds: z
+        .number()
+        .int()
+        .min(1)
+        .max(10)
+        .optional()
+        .describe('How many rounds at most, 3 by default'),
+      moderator: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Who sums the debate up at the end and recommends. Nobody by default'),
+      title: z.string().optional().describe('A short name of the debate'),
+    }),
+    annotations: WRITES,
+    sideEffects: ['process'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const { job, duplicate } = await bridge.createJob({
+          to: RECIPE_HARNESS,
+          body: args.question,
+          ...(args.title !== undefined && { title: args.title }),
+          recipe: {
+            name: 'debate',
+            input: {
+              debaters: args.debaters.map((debater) => ({
+                to: debater.to,
+                ...(debater.role?.trim() && { role: debater.role.trim() }),
+              })),
+              ...(args.rounds !== undefined && { rounds: args.rounds }),
+              ...(args.moderator?.trim() && { moderator: args.moderator.trim() }),
+            },
+          },
+        });
+        return `Job #${job.number} is the debate (${job.state})${duplicate ? ', started before: nothing was sent twice' : ''}: ${args.debaters.map((debater) => debater.to).join(', ')} answer each other. ${AFTER_RECIPE}`;
+      }),
+  });
+
   const ask = tool({
     name: 'ask',
     title: 'Ask about a job',
@@ -943,6 +1076,8 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
     delegate,
     build,
     review,
+    race,
+    debate,
     ask,
     answer,
     report,
