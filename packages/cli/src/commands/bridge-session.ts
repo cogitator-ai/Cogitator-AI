@@ -375,6 +375,124 @@ export async function runBridgeReview(
   }
 }
 
+export interface BridgeRaceFlags
+  extends
+    HomeFlags,
+    Pick<
+      BridgeDelegateFlags,
+      'title' | 'cwd' | 'check' | 'done' | 'constraint' | 'decision' | 'file'
+    > {
+  /** Who does the job, two to six */
+  to?: string[];
+  judge?: string;
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge race --to <agent> --to <agent> <text>: the same job to several agents at
+ * once, each in a worktree of its own.
+ */
+export async function runBridgeRace(
+  words: readonly string[],
+  flags: BridgeRaceFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const to = flags.to ?? [];
+    if (to.length < 2) {
+      throw new CommandError('A race takes two agents or more: name each with --to', {
+        hints: ['Such as: cogitator bridge race --to codex --to claude "Fix the limiter"'],
+      });
+    }
+    const body = await bodyOf(words, context);
+    const named = contextOf(flags);
+    const input = {
+      to,
+      ...(flags.check?.length && { checks: flags.check.map((command) => ({ command })) }),
+      ...(named && { context: named }),
+      ...(flags.judge && { judge: flags.judge }),
+    };
+    const { job } = await asSession(flags, context, (client) =>
+      client.createJob({
+        to: RECIPE_HARNESS,
+        body,
+        ...(flags.title && { title: flags.title }),
+        ...(flags.cwd && { cwd: flags.cwd }),
+        recipe: { name: 'race', input },
+      })
+    );
+    if (flags.json) printJson(job);
+    else {
+      context.print(
+        `Job #${job.number} is the race (${job.state}): ${to.join(', ')} do the job side by side. ${AFTER_RECIPE}`
+      );
+    }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+export interface BridgeDebateFlags extends HomeFlags {
+  /** Who debates, each as `agent` or `agent=role` */
+  with?: string[];
+  rounds?: number;
+  moderator?: string;
+  title?: string;
+  json?: boolean;
+}
+
+/** A debater of `debate --with`: `codex`, or `claude=critic` with its role after `=`. */
+export function debaterOf(value: string): { to: string; role?: string } {
+  const [to, ...role] = value.split('=');
+  const said = role.join('=').trim();
+  return { to: to.trim(), ...(said && { role: said }) };
+}
+
+/**
+ * cogitator bridge debate --with <agent> --with <agent> <question>: several agents answer each
+ * other until they agree or the rounds run out.
+ */
+export async function runBridgeDebate(
+  words: readonly string[],
+  flags: BridgeDebateFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const debaters = (flags.with ?? []).map(debaterOf);
+    if (debaters.length < 2) {
+      throw new CommandError('A debate takes two agents or more: name each with --with', {
+        hints: [
+          'Such as: cogitator bridge debate --with codex --with claude=critic "Tabs or spaces?"',
+        ],
+      });
+    }
+    const body = await bodyOf(words, context);
+    const input = {
+      debaters,
+      ...(flags.rounds !== undefined && { rounds: flags.rounds }),
+      ...(flags.moderator && { moderator: flags.moderator }),
+    };
+    const { job } = await asSession(flags, context, (client) =>
+      client.createJob({
+        to: RECIPE_HARNESS,
+        body,
+        ...(flags.title && { title: flags.title }),
+        recipe: { name: 'debate', input },
+      })
+    );
+    if (flags.json) printJson(job);
+    else {
+      context.print(
+        `Job #${job.number} is the debate (${job.state}): ${debaters.map((debater) => debater.to).join(', ')} answer each other. ${AFTER_RECIPE}`
+      );
+    }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
 export interface BridgeRecipeFlags extends HomeFlags {
   /** What the recipe is started with, as JSON */
   input?: string;

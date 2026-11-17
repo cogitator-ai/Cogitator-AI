@@ -77,6 +77,8 @@ describe('bridge mcp', () => {
       'delegate',
       'build',
       'review',
+      'race',
+      'debate',
       'ask',
       'answer',
       'report',
