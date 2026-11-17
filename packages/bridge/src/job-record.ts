@@ -61,6 +61,7 @@ export const BridgeJobRecordSchema = z.object({
   to: z.string(),
   project: z.string(),
   cwd: z.string(),
+  taskLength: z.number().int().nonnegative().optional(),
   isolation: z.literal('worktree').optional(),
   worktree: JobWorktreeRecordSchema.optional(),
   changes: JobChangesSchema.optional(),

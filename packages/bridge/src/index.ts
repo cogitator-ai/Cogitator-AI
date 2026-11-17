@@ -277,7 +277,6 @@ export {
   JobContextSchema,
   buildHandover,
   tokensOf,
-  withoutHandover,
   type ContextFile,
   type HandoverSources,
   type JobContext,

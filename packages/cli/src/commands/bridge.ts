@@ -474,7 +474,6 @@ export async function runBridgeServe(
     await reach.stop().catch(() => undefined);
     if (reason === 'asked') {
       await host.close();
-      await board?.close?.().catch(() => undefined);
       context.io.print('Bridge dispatcher stopped');
       return 0;
     }
@@ -485,6 +484,7 @@ export async function runBridgeServe(
     );
     return 1;
   } finally {
+    await board?.close?.().catch(() => undefined);
     dispose();
   }
 }

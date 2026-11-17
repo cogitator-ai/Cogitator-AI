@@ -279,6 +279,11 @@ export interface BridgeJobRecord {
   to: string;
   project: string;
   cwd: string;
+  /**
+   * How many characters of the job's first letter its caller wrote. The rest is the context the
+   * bridge put under it. Absent when the bridge added nothing
+   */
+  taskLength?: number;
   /** `worktree` on a job that is to be done in a git worktree of its own */
   isolation?: 'worktree';
   /** The git worktree the job is done in, once the bridge has made it */
@@ -548,6 +553,8 @@ export interface BridgeLimits {
    * board that fit
    */
   contextTokens: number;
+  /** How long the bridge takes to put that block together before the job goes without it, in ms */
+  contextTimeoutMs: number;
 }
 
 export const BridgeLimitsSchema = z.strictObject({
@@ -582,7 +589,8 @@ export const BridgeLimitsSchema = z.strictObject({
     .int()
     .positive()
     .max(365 * 86_400_000),
-  contextTokens: z.number().int().positive().max(200_000),
+  contextTokens: z.number().int().positive().max(50_000),
+  contextTimeoutMs: z.number().int().positive().max(600_000),
 });
 
 export const DEFAULT_LIMITS: BridgeLimits = {
@@ -606,4 +614,5 @@ export const DEFAULT_LIMITS: BridgeLimits = {
   checkTimeoutMs: 10 * 60_000,
   worktreeKeepMs: 7 * 86_400_000,
   contextTokens: 6_000,
+  contextTimeoutMs: 10_000,
 };

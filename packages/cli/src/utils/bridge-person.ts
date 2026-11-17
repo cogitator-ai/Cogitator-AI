@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   bridgePaths,
@@ -32,8 +32,8 @@ export const BRIDGE_MEMORY_FILE = 'memory.db';
 
 /**
  * The board of facts of this machine: what agents and the person told the bridge to remember, by
- * project, kept in a SQLite file of its own next to the bridge's database. Undefined when it
- * cannot be opened: the dispatcher then runs without one, and `onError` hears why.
+ * project, kept in a SQLite file of its own next to the bridge's database, for its owner only.
+ * Undefined when it cannot be opened: the dispatcher then runs without one, and `onError` hears why.
  */
 export async function bridgeBoard(
   env: NodeJS.ProcessEnv = process.env,
@@ -42,7 +42,12 @@ export async function bridgeBoard(
   try {
     const paths = bridgePaths({ ...(settings.home && { home: settings.home }), env });
     mkdirSync(paths.home, { recursive: true, mode: 0o700 });
-    return await memoryBoard({ store: join(paths.home, BRIDGE_MEMORY_FILE) });
+    const file = join(paths.home, BRIDGE_MEMORY_FILE);
+    closeSync(openSync(file, 'a', 0o600));
+    for (const kept of [file, `${file}-wal`, `${file}-shm`]) {
+      if (existsSync(kept)) chmodSync(kept, 0o600);
+    }
+    return await memoryBoard({ store: file });
   } catch (error) {
     settings.onError?.(
       new Error(

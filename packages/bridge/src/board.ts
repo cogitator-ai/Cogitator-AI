@@ -78,10 +78,14 @@ export const MAX_RECALL_LIMIT = 50;
 /** The longest note the board takes, in characters. */
 export const MAX_FACT_LENGTH = 2_000;
 
-/** One note as a line an agent or a person reads: the text, then who said it and when. */
+/**
+ * One note as a line an agent or a person reads: the text, then who said it and when. It is one
+ * line whatever the text holds, so a note cannot pass for several lines of whoever shows it.
+ */
 export function factLine(fact: BoardFact): string {
+  const text = fact.text.replace(/\s+/gu, ' ').trim();
   const who = fact.source.by === 'person' ? 'the person' : fact.source.by;
   const on = fact.source.job === undefined ? '' : `, job #${fact.source.job}`;
   const kept = fact.job === undefined ? '' : ', kept to that job';
-  return `${fact.text} (${fact.kind} from ${who}${on}, ${fact.source.at.slice(0, 10)}${kept})`;
+  return `${text} (${fact.kind} from ${who}${on}, ${fact.source.at.slice(0, 10)}${kept})`;
 }

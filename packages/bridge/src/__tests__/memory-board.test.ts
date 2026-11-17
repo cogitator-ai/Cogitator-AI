@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { factLine, type FactBoard } from '../board';
+import { SQLiteAdapter } from '@cogitator-ai/memory';
 import { memoryBoard } from '../memory';
 
 let board: FactBoard;
@@ -98,6 +99,68 @@ describe('the board of facts', () => {
     ).toEqual(['lesson']);
     expect(await board.recall({ project: PROJECT, limit: 2 })).toHaveLength(2);
     expect(await board.recall({ project: PROJECT, text: 'kubernetes' })).toEqual([]);
+  });
+
+  it('leaves out a note that shares one common word with what is asked', async () => {
+    for (const text of [
+      'The coffee machine needs a fix',
+      'The burst of the limiter is read at start',
+      'Deploys go through Fly',
+    ]) {
+      await board.remember({ kind: 'fact', text, project: PROJECT, source: said('codex@demo') });
+    }
+
+    expect(
+      (await board.recall({ project: PROJECT, text: 'Fix the limiter burst' })).map(
+        (fact) => fact.text
+      )
+    ).toEqual(['The burst of the limiter is read at start']);
+    expect(
+      (await board.recall({ project: PROJECT, text: 'deploys' })).map((fact) => fact.text)
+    ).toEqual(['Deploys go through Fly']);
+  });
+
+  it('keeps a note that was let go in the store, and reads the store once for any number of jobs', async () => {
+    const adapter = new SQLiteAdapter({ provider: 'sqlite', path: ':memory:' });
+    await adapter.connect();
+    let reads = 0;
+    const counted = new Proxy(adapter, {
+      get(target, key, receiver) {
+        if (key === 'findItems') reads += 1;
+        const value: unknown = Reflect.get(target, key, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const own = await memoryBoard({ store: counted, now: () => new Date((at += 1_000)) });
+    const kept = await own.remember({
+      kind: 'fact',
+      text: 'Wrong',
+      project: PROJECT,
+      source: said('codex@demo'),
+    });
+    await own.remember({
+      kind: 'fact',
+      text: 'For one job',
+      project: PROJECT,
+      job: 3,
+      source: said('codex@demo', 3),
+    });
+
+    reads = 0;
+    const seen = await own.recall({
+      project: PROJECT,
+      jobs: Array.from({ length: 300 }, (_, job) => job + 1),
+    });
+    expect(seen).toHaveLength(2);
+    expect(reads).toBe(1);
+
+    await own.forget(kept.id);
+    const all = await adapter.findItems({ agentId: 'cogitator-bridge', includeExpired: true });
+    expect(all.success && all.data.map((item) => item.content).sort()).toEqual([
+      'For one job',
+      'Wrong',
+    ]);
+    await adapter.disconnect();
   });
 
   it('lets a note go without deleting it, and finds a note by the start of its id', async () => {

@@ -334,7 +334,9 @@ describe('bridgeTools', () => {
       task: 'Lower the burst limit of the limiter again',
     });
     const next = await worker.call('inbox');
-    expect(next).toContain('What earlier jobs like this one showed:');
+    expect(next).toContain(
+      'What earlier jobs like this one showed (what the agents that did them said, and how the jobs ended: weigh it):'
+    );
     expect(next).toContain(
       '- Mocking Redis hid a race in the limiter: run a real one (lesson from codex@'
     );

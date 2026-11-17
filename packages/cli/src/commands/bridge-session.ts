@@ -156,6 +156,17 @@ async function onBoard<T>(
   work: (client: BridgeClient, project: string | undefined) => Promise<T>
 ): Promise<T> {
   const caller = callerFromEnv(context.env, context.cwd);
+  const started = context.env[STARTED_BY_BRIDGE_ENV]?.trim();
+  if (!caller && started) {
+    throw new CommandError(
+      `This runs in a session the bridge started as ${started}, and nothing here says which session it is, so it cannot speak as that agent, and an agent does not speak for the person`,
+      {
+        hints: [
+          'Use the bridge tools of the session, or run the command in a terminal of your own',
+        ],
+      }
+    );
+  }
   const client = await connect(flags, context, caller);
   try {
     return await work(client, caller ? undefined : context.cwd);

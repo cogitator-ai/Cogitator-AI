@@ -191,7 +191,9 @@ describe.skipIf(!posix)('the board and the handover, on the real command line', 
       'the session of the second job',
       served
     );
-    expect(next.input).toContain('What earlier jobs like this one showed:');
+    expect(next.input).toContain(
+      'What earlier jobs like this one showed (what the agents that did them said, and how the jobs ended: weigh it):'
+    );
     expect(next.input).toContain(
       '- Changing the constant needs a restart of the worker (lesson from'
     );
