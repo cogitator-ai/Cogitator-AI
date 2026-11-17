@@ -2359,7 +2359,37 @@ export class BridgeDispatcher
         { job: job.number, recipe: recipe.number }
       );
     }
+    const user = this.workingOn(job);
+    if (user) {
+      throw new BridgeError(
+        'invalid_input',
+        `Job ${user.number} still works on what job ${job.number} left in its worktree. Wait for its report, or cancel it first`,
+        { job: job.number, by: user.number }
+      );
+    }
     return { job, worktree: this.requireWorktree(job), agent };
+  }
+
+  /**
+   * A job in progress that works on what another job left in its worktree: one that is done in
+   * that worktree, such as the review of the work or its fixes, and a recipe whose input names
+   * the job as the one it works on. The worktree stays while there is one.
+   */
+  private workingOn(job: BridgeJob): BridgeJob | undefined {
+    const worktree = this.liveWorktree(job);
+    return this.store
+      .jobTasks({ states: ACTIVE_JOB_STATES, project: job.project })
+      .flatMap((task) => jobOf(task) ?? [])
+      .find((other) => {
+        if (other.number === job.number) return false;
+        if (worktree && isInside(worktree.path, other.cwd)) return true;
+        const input: unknown = other.recipe?.input;
+        return (
+          typeof input === 'object' &&
+          input !== null &&
+          (input as { job?: unknown }).job === job.number
+        );
+      });
   }
 
   /**
@@ -2486,7 +2516,8 @@ export class BridgeDispatcher
         (job) =>
           this.liveWorktree(job) !== undefined &&
           !job.checking &&
-          now - Date.parse(job.endedAt ?? job.updatedAt) >= this.limits.worktreeKeepMs
+          now - Date.parse(job.endedAt ?? job.updatedAt) >= this.limits.worktreeKeepMs &&
+          this.workingOn(job) === undefined
       );
     for (const job of left) {
       if (this.taking.has(job.number)) continue;

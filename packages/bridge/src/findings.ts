@@ -27,11 +27,14 @@ const oneLine = (text: string): string => text.replace(/[\s\p{Cc}]+/gu, ' ').tri
 const MAX_SUMMARY = 2_000;
 const MAX_FILE = 1_000;
 
+/** The most a line number of a finding may be. */
+const MAX_LINE = 10_000_000;
+
 export const FindingSchema = z.strictObject({
   severity: z.enum(FINDING_SEVERITIES as [FindingSeverity, ...FindingSeverity[]]),
   summary: z.string().transform(oneLine).pipe(z.string().min(1).max(MAX_SUMMARY)),
   file: z.string().transform(oneLine).pipe(z.string().min(1).max(MAX_FILE)).optional(),
-  line: z.number().int().positive().max(10_000_000).optional(),
+  line: z.number().int().positive().max(MAX_LINE).optional(),
 });
 
 /** The most findings one report carries. */
@@ -61,15 +64,46 @@ export function findingsCount(findings: readonly Finding[]): string {
   }).join(', ');
 }
 
-/** A finding line: a list mark if any, the severity in brackets, bold or not, then the rest. */
-const LINE = /^\s*(?:(?:[-*+]|\d+[.)])\s+)?\*{0,2}\[(blocker|major|minor|nit)\]\*{0,2}:?\s*(.+)$/i;
+/** A line without the list mark it starts with: `- `, `* `, `1. `, `2) `. */
+function withoutMark(line: string): string {
+  const text = line.trimStart();
+  const mark = /^(?:[-*+]|\d{1,9}[.)])\s/.exec(text);
+  return mark ? text.slice(mark[0].length).trimStart() : text;
+}
 
-/** Where a finding is, when its line names a place before ` - `: `src/a.ts:42 - ...`. */
-const PLACE = /^(\S+?)(?::(\d+))?(?::\d+)?\s+-\s+(.+)$/;
+/** What a finding line starts with: the severity in brackets, bold or not, or `[none]`. */
+const HEAD = /^\*{0,2}\[(blocker|major|minor|nit|none)\]\*{0,2}:?/i;
 
 /** Whether a word reads as a path: it has a folder in it, or ends like a file name. */
 function looksLikeFile(word: string): boolean {
   return word.length <= MAX_FILE && (word.includes('/') || /\.[A-Za-z0-9]{1,10}$/.test(word));
+}
+
+/**
+ * Where a finding is, when what follows its severity names a place before ` - `:
+ * `src/a.ts:42 - ...`, with a column after the line or without either.
+ */
+function placeOf(rest: string): { file: string; line?: number; summary: string } | undefined {
+  const gap = rest.search(/\s/);
+  if (gap <= 0) return undefined;
+  const after = rest.slice(gap).trimStart();
+  if (!after.startsWith('-') || !/^\s/.test(after.slice(1))) return undefined;
+  let word = rest.slice(0, gap);
+  const numbers: number[] = [];
+  while (numbers.length < 2) {
+    const colon = word.lastIndexOf(':');
+    const tail = colon > 0 ? word.slice(colon + 1) : '';
+    if (!/^\d{1,9}$/.test(tail)) break;
+    numbers.unshift(Number(tail));
+    word = word.slice(0, colon);
+  }
+  if (!looksLikeFile(word)) return undefined;
+  const line = numbers[0];
+  return {
+    file: word,
+    ...(line !== undefined && line >= 1 && line <= MAX_LINE && { line }),
+    summary: after.slice(1),
+  };
 }
 
 /**
@@ -85,24 +119,21 @@ export function parseFindings(report: string): Finding[] | undefined {
   const found: Finding[] = [];
   let said = false;
   for (const line of report.split(/\r?\n/)) {
-    if (/^\s*(?:(?:[-*+]|\d+[.)])\s+)?\*{0,2}\[none\]/i.test(line)) {
-      said = true;
-      continue;
-    }
-    const match = LINE.exec(line);
-    if (!match) continue;
+    const text = withoutMark(line);
+    const head = HEAD.exec(text);
+    if (!head) continue;
     said = true;
-    if (found.length >= MAX_FINDINGS) continue;
-    const [, severity, rest] = match;
-    const place = PLACE.exec(rest);
-    const file = place && looksLikeFile(place[1]) ? place[1] : undefined;
-    const summary = oneLine(file && place ? place[3] : rest).slice(0, MAX_SUMMARY);
+    const severity = head[1].toLowerCase();
+    if (severity === 'none' || found.length >= MAX_FINDINGS) continue;
+    const rest = text.slice(head[0].length).trim();
+    const place = placeOf(rest);
+    const summary = oneLine(place ? place.summary : rest).slice(0, MAX_SUMMARY);
     if (!summary) continue;
     found.push({
-      severity: severity.toLowerCase() as FindingSeverity,
+      severity: severity as FindingSeverity,
       summary,
-      ...(file && { file }),
-      ...(file && place?.[2] && { line: Number(place[2]) }),
+      ...(place && { file: place.file }),
+      ...(place?.line !== undefined && { line: place.line }),
     });
   }
   return said ? found : undefined;
