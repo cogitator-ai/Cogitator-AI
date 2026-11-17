@@ -8,7 +8,7 @@ The agent bridge of `@cogitator-ai/bridge` (experimental): sessions of different
 pnpm install && pnpm build
 ```
 
-Every example but the second needs no model and no API key: they show the protocol between the sessions, the tools agents call it with, how leave for a call is decided, how a job is done in a worktree of its own, and what a job is handed over with, and play every side themselves. The second runs an agent on a model: Ollama with `qwen2.5:0.5b` by default (`ollama pull qwen2.5:0.5b`), or any model named in `EXAMPLE_MODEL`.
+Every example but the second needs no model and no API key: they show the protocol between the sessions, the tools agents call it with, how leave for a call is decided, how a job is done in a worktree of its own, what a job is handed over with, and how a recipe has a job done, reviewed and fixed, and play every side themselves. The second runs an agent on a model: Ollama with `qwen2.5:0.5b` by default (`ollama pull qwen2.5:0.5b`), or any model named in `EXAMPLE_MODEL`.
 
 ## Examples
 
@@ -20,6 +20,7 @@ Every example but the second needs no model and no API key: they show the protoc
 | 04  | `04-permissions.ts`  | Leave for a call: decided by the rules of the project, by the agent that handed the job over, or by the person       |
 | 05  | `05-worktree.ts`     | A job in a git worktree of its own: what it changed, the checks the bridge runs, and taking the work                 |
 | 06  | `06-memory.ts`       | What a job is handed over with: its context, the lines of its files, the notes of the board, and what the job taught |
+| 07  | `07-recipes.ts`      | A recipe: the bridge has a job done, reviewed by an agent of another harness and fixed, and reports once             |
 
 ## Running
 
@@ -30,6 +31,7 @@ npx tsx examples/bridge/03-tools.ts
 npx tsx examples/bridge/04-permissions.ts
 npx tsx examples/bridge/05-worktree.ts
 npx tsx examples/bridge/06-memory.ts
+npx tsx examples/bridge/07-recipes.ts
 ```
 
 The examples run their own dispatcher on a throwaway folder. For the dispatcher of your machine, which reaches Claude Code and Codex sessions in their own windows:
