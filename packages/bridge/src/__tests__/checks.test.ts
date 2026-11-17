@@ -1,7 +1,7 @@
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkName, runCheck, skippedCheck, summarizeChecks } from '../checks';
 
 let scratch: string;
@@ -59,6 +59,23 @@ describe('a check of a job', () => {
     expect(
       await runCheck({ command: 'true' }, { cwd: scratch, timeoutMs: 1_000, signal: stop.signal })
     ).toMatchObject({ ok: false, skipped: 'the checks were stopped' });
+  });
+
+  it('kills what ignores the request to stop, and ends only when it is gone', async () => {
+    writeFileSync(
+      join(scratch, 'stubborn.js'),
+      "process.on('SIGTERM', () => {});\nrequire('node:fs').writeFileSync('pid', String(process.pid));\nsetInterval(() => {}, 1000);\n"
+    );
+
+    const result = await runCheck(
+      { command: `${JSON.stringify(process.execPath)} stubborn.js & sleep 30` },
+      { cwd: scratch, timeoutMs: 500 }
+    );
+
+    expect(result).toMatchObject({ ok: false, timedOut: true });
+    const pid = Number(readFileSync(join(scratch, 'pid'), 'utf8'));
+    expect(pid).toBeGreaterThan(0);
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
   });
 
   it('is not kept waiting by a process its command left behind', async () => {
