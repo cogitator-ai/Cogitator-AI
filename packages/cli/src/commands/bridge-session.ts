@@ -7,6 +7,8 @@ import chalk from 'chalk';
 import { resolve } from 'node:path';
 import {
   BridgeClient,
+  FINDING_SEVERITIES,
+  RECIPE_HARNESS,
   bridgePaths,
   callerFromEnv,
   factLine,
@@ -18,6 +20,7 @@ import {
   type BridgePaths,
   type CallerIdentity,
   type ContextFile,
+  type FindingSeverity,
   type HealthCheck,
   type JobContext,
   type LetterKind,
@@ -219,13 +222,7 @@ export async function runBridgeDelegate(
 ): Promise<number> {
   try {
     const body = await bodyOf(words, context);
-    const named: JobContext = {
-      ...(flags.done?.length && { done: flags.done }),
-      ...(flags.constraint?.length && { constraints: flags.constraint }),
-      ...(flags.decision?.length && { decisions: flags.decision }),
-      ...(flags.file?.length && { files: flags.file.map(contextFile) }),
-    };
-    const context_ = Object.keys(named).length > 0 ? named : undefined;
+    const context_ = contextOf(flags);
     const { job } = await asSession(flags, context, (client) =>
       client.createJob({
         to,
@@ -250,6 +247,176 @@ export async function runBridgeDelegate(
         );
       }
     }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+/** The context of a job, as the flags of a command name it. Undefined when they name none. */
+function contextOf(
+  flags: Pick<BridgeDelegateFlags, 'done' | 'constraint' | 'decision' | 'file'>
+): JobContext | undefined {
+  const named: JobContext = {
+    ...(flags.done?.length && { done: flags.done }),
+    ...(flags.constraint?.length && { constraints: flags.constraint }),
+    ...(flags.decision?.length && { decisions: flags.decision }),
+    ...(flags.file?.length && { files: flags.file.map(contextFile) }),
+  };
+  return Object.keys(named).length > 0 ? named : undefined;
+}
+
+/** How a review goes, as `build` and `review` take it. */
+export interface BridgeReviewOptions {
+  by?: string;
+  rounds?: number;
+  threshold?: FindingSeverity;
+  focus?: string;
+}
+
+function reviewInput(flags: BridgeReviewOptions): Record<string, unknown> {
+  if (flags.threshold && !FINDING_SEVERITIES.includes(flags.threshold)) {
+    throw new CommandError(`--threshold is one of: ${FINDING_SEVERITIES.join(', ')}`);
+  }
+  return {
+    ...(flags.by && { by: flags.by }),
+    ...(flags.rounds !== undefined && { rounds: flags.rounds }),
+    ...(flags.threshold && { threshold: flags.threshold }),
+    ...(flags.focus && { focus: flags.focus }),
+  };
+}
+
+const AFTER_RECIPE =
+  'The bridge hands its steps to the agents itself. Its report arrives as a letter: nothing to wait for here';
+
+export interface BridgeBuildFlags
+  extends
+    HomeFlags,
+    BridgeReviewOptions,
+    Pick<
+      BridgeDelegateFlags,
+      'title' | 'cwd' | 'check' | 'done' | 'constraint' | 'decision' | 'file'
+    > {
+  /** False with `--no-worktree`: the work is done in the folder of the caller */
+  worktree?: boolean;
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge build <to> <text>: hands a job over to be done, checked and reviewed, and
+ * prints the number of the recipe's job at once.
+ */
+export async function runBridgeBuild(
+  to: string,
+  words: readonly string[],
+  flags: BridgeBuildFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const body = await bodyOf(words, context);
+    const named = contextOf(flags);
+    const input = {
+      to,
+      ...(flags.check?.length && { checks: flags.check.map((command) => ({ command })) }),
+      ...(flags.worktree === false && { worktree: false }),
+      ...(named && { context: named }),
+      ...reviewInput(flags),
+    };
+    const { job } = await asSession(flags, context, (client) =>
+      client.createJob({
+        to: RECIPE_HARNESS,
+        body,
+        ...(flags.title && { title: flags.title }),
+        ...(flags.cwd && { cwd: flags.cwd }),
+        recipe: { name: 'build', input },
+      })
+    );
+    if (flags.json) printJson(job);
+    else {
+      context.print(
+        `Job #${job.number} is the build (${job.state}): ${to} does the work, then it is checked and reviewed. ${AFTER_RECIPE}`
+      );
+    }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+export interface BridgeReviewFlags extends HomeFlags, BridgeReviewOptions {
+  json?: boolean;
+}
+
+/** cogitator bridge review <job>: has the work of a job that is done reviewed by another agent. */
+export async function runBridgeReview(
+  reviewed: number,
+  flags: BridgeReviewFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const input = { job: reviewed, ...reviewInput(flags) };
+    const { job } = await asSession(flags, context, (client) =>
+      client.createJob({
+        to: RECIPE_HARNESS,
+        title: `Review of job #${reviewed}`,
+        body: `Review the work of job #${reviewed}${flags.focus ? `: ${flags.focus}` : ''}`,
+        recipe: { name: 'review', input },
+      })
+    );
+    if (flags.json) printJson(job);
+    else {
+      context.print(
+        `Job #${job.number} is the review of job #${reviewed} (${job.state}). ${AFTER_RECIPE}`
+      );
+    }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+export interface BridgeRecipeFlags extends HomeFlags {
+  /** What the recipe is started with, as JSON */
+  input?: string;
+  title?: string;
+  cwd?: string;
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge recipe <name> <text>: starts any recipe the dispatcher knows, with its input
+ * as JSON. `build` and `review` are the same thing with flags for the input.
+ */
+export async function runBridgeRecipe(
+  name: string,
+  words: readonly string[],
+  flags: BridgeRecipeFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    let input: unknown;
+    if (flags.input !== undefined) {
+      try {
+        input = JSON.parse(flags.input);
+      } catch (error) {
+        throw new CommandError(
+          `--input is not JSON: ${error instanceof Error ? error.message : String(error)}`,
+          { hints: [`Such as: --input '{"to":"codex"}'`] }
+        );
+      }
+    }
+    const body = await bodyOf(words, context);
+    const { job } = await asSession(flags, context, (client) =>
+      client.createJob({
+        to: RECIPE_HARNESS,
+        body,
+        ...(flags.title && { title: flags.title }),
+        ...(flags.cwd && { cwd: flags.cwd }),
+        recipe: { name, ...(input !== undefined && { input }) },
+      })
+    );
+    if (flags.json) printJson(job);
+    else context.print(`Job #${job.number} is the recipe ${name} (${job.state}). ${AFTER_RECIPE}`);
     return 0;
   } catch (error) {
     return reportFailure(error, { json: flags.json ?? false });

@@ -5,16 +5,19 @@ import {
   channelRoute,
   inboxRoute,
   personRoutes,
+  type BridgeAdapter,
   type ChannelPersonRoute,
   type FactBoard,
   type PersonRoute,
   type RightsJudge,
 } from '@cogitator-ai/bridge';
 import { memoryBoard } from '@cogitator-ai/bridge/memory';
+import { recipeAdapter } from '@cogitator-ai/bridge/recipes';
 import { settingsRights } from '@cogitator-ai/bridge/rights';
 import { telegramChannel } from '@cogitator-ai/channels';
 import { experimental_FileInboxStore, experimental_Inbox } from '@cogitator-ai/core';
 import type { Channel } from '@cogitator-ai/types';
+import { FileCheckpointStore } from '@cogitator-ai/workflows';
 import { UsageError } from './cli.js';
 
 /** The token of the Telegram bot the bridge reaches the person with. */
@@ -52,6 +55,38 @@ export async function bridgeBoard(
     settings.onError?.(
       new Error(
         `The board of facts could not be opened, so nothing is remembered: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      )
+    );
+    return undefined;
+  }
+}
+
+/** The folder of the checkpoints of the recipes that run, in the folder of the bridge. */
+export const BRIDGE_RECIPES_DIR = 'recipes';
+
+/**
+ * The conductor of this machine's bridge: it carries the jobs that name a recipe out (`build`,
+ * `review`), and keeps the place of each run in a folder next to the bridge's database, so a
+ * recipe goes on where it was when the dispatcher is restarted. Undefined when it cannot be set
+ * up: the dispatcher then runs without recipes, and `onError` hears why.
+ */
+export function bridgeConductor(
+  env: NodeJS.ProcessEnv = process.env,
+  settings: Pick<BridgePersonSettings, 'home' | 'onError'> = {}
+): BridgeAdapter | undefined {
+  try {
+    const paths = bridgePaths({ ...(settings.home && { home: settings.home }), env });
+    const folder = join(paths.home, BRIDGE_RECIPES_DIR);
+    mkdirSync(folder, { recursive: true, mode: 0o700 });
+    return recipeAdapter({
+      checkpoints: new FileCheckpointStore(folder),
+      ...(settings.onError && { onError: settings.onError }),
+    });
+  } catch (error) {
+    settings.onError?.(
+      new Error(
+        `The recipes of the bridge could not be set up, so it carries none out: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error }
       )
     );

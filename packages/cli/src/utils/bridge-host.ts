@@ -5,7 +5,7 @@ import {
   type BridgeHost,
 } from '@cogitator-ai/bridge';
 import { bridgeAdapters } from './bridge-adapters.js';
-import { bridgeBoard, bridgePerson } from './bridge-person.js';
+import { bridgeBoard, bridgeConductor, bridgePerson } from './bridge-person.js';
 import { BRIDGE_HOST_ENV } from './daemon.js';
 import { log } from './logger.js';
 
@@ -37,9 +37,13 @@ export async function hostBridgeInDaemon(
     const onError = (error: Error): void => report.warn(`Bridge: ${error.message}`);
     const reach = bridgePerson(env, { onError });
     const board = await bridgeBoard(env, { onError });
+    const conductor = adapters ? undefined : bridgeConductor(env, { onError });
     const host = await hostBridge({
       env,
-      adapters: adapters ?? bridgeAdapters(env, { onError }),
+      adapters: adapters ?? [
+        ...bridgeAdapters(env, { onError }),
+        ...(conductor ? [conductor] : []),
+      ],
       rights: reach.rights,
       person: reach.person,
       ...(board && { board }),
