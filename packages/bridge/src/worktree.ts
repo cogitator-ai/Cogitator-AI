@@ -2,15 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { runCommand } from './adapters/exec.js';
-import { canonicalPath, isInside } from './paths.js';
+import { JOB_WORKTREES_DIR, canonicalPath, isInside } from './paths.js';
 
-/**
- * Where the worktrees of jobs go, under the main checkout of a project: the folder the runtime
- * keeps the worktrees of its isolated subagents in, so one `.gitignore` there covers both.
- */
-export const JOB_WORKTREES_DIR = join('.cogitator', 'worktrees');
+export { JOB_WORKTREES_DIR };
 
 /** Where the work of a worktree nobody took or dropped is kept when the worktree goes. */
 export const DISCARDED_REFS = 'refs/cogitator/discarded';
@@ -280,15 +276,44 @@ export async function conflictsOf(target: string, commit: string): Promise<strin
     .filter((path) => path !== '');
 }
 
+/** What git is in the middle of in a checkout, by the file or folder it keeps for it. */
+const IN_PROGRESS: ReadonlyArray<[string, string]> = [
+  ['MERGE_HEAD', 'a merge'],
+  ['CHERRY_PICK_HEAD', 'a cherry-pick'],
+  ['REVERT_HEAD', 'a revert'],
+  ['rebase-merge', 'a rebase'],
+  ['rebase-apply', 'a rebase'],
+];
+
+/**
+ * Why nothing can be brought into the checkout `target` right now, undefined when it can: git
+ * is in the middle of something there, or changes are staged. Bringing work in stages it, so
+ * what was staged before could not be told from it afterwards, and git would refuse anyway.
+ */
+export async function busyWith(target: string): Promise<string | undefined> {
+  for (const [name, what] of IN_PROGRESS) {
+    const path = await gitText(target, ['rev-parse', '--git-path', name]);
+    if (existsSync(isAbsolute(path) ? path : join(target, path))) {
+      return `${what} is in progress there`;
+    }
+  }
+  const { code } = await git(target, ['diff', '--cached', '--quiet'], { accept: [0, 1] });
+  return code === 0 ? undefined : 'changes are staged there';
+}
+
 /**
  * Brings the changes of `commit` into the checkout `target` as one change that is staged and not
  * committed (`git merge --squash`): the commit, with its message and the hooks of the project,
- * is for whoever works there.
+ * is for whoever works there. Only for a checkout `busyWith` finds free: nothing is staged
+ * there, so when git gives up half way, taking back what the merge staged takes back nothing
+ * else, and what is changed there and not staged stays as it is.
  *
- * @throws GitError when git refuses, as it does when files the merge changes have changes of
- * their own in `target`. The checkout is then as it was
+ * @throws GitError when the checkout is not free, or git refuses, as it does when files the
+ * merge changes have changes of their own in `target`. The checkout is then as it was
  */
 export async function squashInto(target: string, commit: string): Promise<void> {
+  const busy = await busyWith(target);
+  if (busy) throw new GitError(['merge'], null, busy);
   try {
     await git(target, ['merge', '--squash', '--no-commit', commit]);
   } catch (error) {
@@ -325,8 +350,9 @@ export async function pointRef(
 }
 
 /**
- * Removes the worktree of a job with everything in it, and its branch when one is named. A
- * worktree whose folder is gone already is forgotten by git all the same.
+ * Removes the worktree of a job with everything in it, and its branch when one is named. When
+ * its folder is gone already, as after someone removed it by hand, git is told to forget the
+ * worktrees whose folders are missing, which is the only way it has to forget one.
  */
 export async function removeJobWorktree(
   project: string,
@@ -334,8 +360,18 @@ export async function removeJobWorktree(
   branch?: string
 ): Promise<void> {
   if (existsSync(path)) await git(project, ['worktree', 'remove', '--force', path]);
-  await git(project, ['worktree', 'prune']);
+  else await git(project, ['worktree', 'prune']);
   if (branch) await git(project, ['branch', '-D', branch], { accept: [0, 1] });
+}
+
+/** The commit a branch is at, undefined when there is no such branch. */
+export async function branchTip(project: string, branch: string): Promise<string | undefined> {
+  const { code, stdout } = await git(
+    project,
+    ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`],
+    { accept: [0, 1] }
+  );
+  return code === 0 ? stdout.trim() : undefined;
 }
 
 /** The top folder of the checkout `folder` is in, undefined when it is in no git repository. */

@@ -168,7 +168,12 @@ export interface JobCheck {
 
 export const JobCheckSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
-  command: z.string().trim().min(1).max(4000),
+  command: z
+    .string()
+    .trim()
+    .min(1)
+    .max(4000)
+    .refine((command) => !command.includes('\0'), 'A command has no NUL character'),
   cwd: z.string().min(1).max(4096).optional(),
   timeoutMs: z.number().int().positive().max(86_400_000).optional(),
 });

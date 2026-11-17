@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { formatDuration } from './guards.js';
 import type { JobCheck, JobCheckResult } from './types.js';
@@ -8,6 +8,12 @@ const OUTPUT_KEPT = 4_000;
 
 /** How much of the output of a failed check a letter shows. */
 const OUTPUT_SHOWN = 1_200;
+
+/**
+ * How long the output of a command that exited is still read, in ms. A command that leaves a
+ * process of its own behind, holding the same pipes, would otherwise never be done.
+ */
+const DRAIN_MS = 250;
 
 /** How long a command that was told to stop gets before it is killed, in ms. */
 const STOP_GRACE_MS = 2_000;
@@ -40,8 +46,9 @@ export function skippedCheck(check: JobCheck, why: string): JobCheckResult {
 /**
  * Runs one check of a job: its command, through the shell, in `cwd`. It passes when the command
  * exits with 0. A command that runs longer than `timeoutMs`, or whose run is aborted, is ended
- * with everything it started, and the check fails. It never throws: a command that cannot be
- * started is a failed check that says why.
+ * with everything it started, and the check fails. A process the command left behind does not
+ * keep the check waiting. It never throws: a command that cannot be started is a failed check
+ * that says why.
  */
 export function runCheck(check: JobCheck, options: RunCheckOptions): Promise<JobCheckResult> {
   const base = { name: checkName(check), command: check.command };
@@ -58,17 +65,46 @@ export function runCheck(check: JobCheck, options: RunCheckOptions): Promise<Job
   const started = Date.now();
   return new Promise<JobCheckResult>((resolve) => {
     const group = process.platform !== 'win32';
-    const child = spawn(check.command, {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      shell: true,
-      detached: group,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
     let output = '';
     let timedOut = false;
     let stopped = false;
-    let killer: NodeJS.Timeout | undefined;
+    let done = false;
+    const timers: NodeJS.Timeout[] = [];
+    const finish = (result: Pick<JobCheckResult, 'ok' | 'code' | 'skipped'>): void => {
+      if (done) return;
+      done = true;
+      for (const timer of timers) clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
+      const said = tail(output, OUTPUT_KEPT);
+      resolve({
+        ...base,
+        ...result,
+        ...(timedOut && { timedOut: true }),
+        durationMs: Date.now() - started,
+        ...(said && { output: said }),
+      });
+    };
+    const ended = (code: number | null): void => {
+      if (stopped) finish({ ok: false, code, skipped: 'the checks were stopped' });
+      else finish({ ok: code === 0 && !timedOut, code });
+    };
+
+    let child: ChildProcess;
+    try {
+      child = spawn(check.command, {
+        cwd: options.cwd,
+        env: options.env ?? process.env,
+        shell: true,
+        detached: group,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      finish({
+        ok: false,
+        skipped: `it could not be started: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
 
     const signalAll = (signal: NodeJS.Signals): void => {
       try {
@@ -80,52 +116,47 @@ export function runCheck(check: JobCheck, options: RunCheckOptions): Promise<Job
     };
     const stop = (): void => {
       signalAll('SIGTERM');
-      killer = setTimeout(() => signalAll('SIGKILL'), STOP_GRACE_MS);
+      timers.push(
+        setTimeout(() => signalAll('SIGKILL'), STOP_GRACE_MS),
+        setTimeout(() => ended(null), STOP_GRACE_MS + DRAIN_MS)
+      );
     };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      stop();
-    }, options.timeoutMs);
-    const onAbort = (): void => {
+    function onAbort(): void {
       stopped = true;
       stop();
-    };
+    }
+    timers.push(
+      setTimeout(() => {
+        timedOut = true;
+        stop();
+      }, options.timeoutMs)
+    );
     options.signal?.addEventListener('abort', onAbort, { once: true });
 
     const keep = (chunk: string): void => {
       output = (output + chunk).slice(-2 * OUTPUT_KEPT);
     };
-    child.stdout.setEncoding('utf8').on('data', keep);
-    child.stderr.setEncoding('utf8').on('data', keep);
-
-    let done = false;
-    const finish = (result: Pick<JobCheckResult, 'ok' | 'code' | 'skipped'>): void => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      clearTimeout(killer);
-      options.signal?.removeEventListener('abort', onAbort);
-      const said = tail(output, OUTPUT_KEPT);
-      resolve({
-        ...base,
-        ...result,
-        ...(timedOut && { timedOut: true }),
-        durationMs: Date.now() - started,
-        ...(said && { output: said }),
-      });
-    };
+    child.stdout?.setEncoding('utf8').on('data', keep);
+    child.stderr?.setEncoding('utf8').on('data', keep);
     child.once('error', (error) => {
       finish({ ok: false, skipped: `it could not be started: ${error.message}` });
     });
-    child.once('close', (code) => {
-      if (stopped) finish({ ok: false, code, skipped: 'the checks were stopped' });
-      else finish({ ok: code === 0 && !timedOut, code });
+    child.once('exit', (code) => {
+      timers.push(setTimeout(() => ended(code), DRAIN_MS));
     });
+    child.once('close', (code) => ended(code));
   });
 }
 
+/** How long a check ran, to the tenth of a second while that says something. */
+function tookOf(ms: number): string {
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)} s`;
+  if (ms < 120_000) return `${Math.round(ms / 1000)} s`;
+  return formatDuration(ms);
+}
+
 function lineOf(result: JobCheckResult): string {
-  const took = result.durationMs === undefined ? '' : ` (${formatDuration(result.durationMs)})`;
+  const took = result.durationMs === undefined ? '' : ` (${tookOf(result.durationMs)})`;
   if (result.skipped) return `- not run: ${result.name}: ${result.skipped}`;
   if (result.ok) return `- passed: ${result.name}${took}`;
   const how = result.timedOut

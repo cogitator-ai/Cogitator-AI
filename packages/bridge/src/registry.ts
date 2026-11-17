@@ -1,6 +1,6 @@
-import { basename, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { BridgeError } from './errors.js';
-import { findProjectRoot } from './paths.js';
+import { JOB_WORKTREES_DIR, findProjectRoot, isInside } from './paths.js';
 import type { BridgeStore } from './store/store.js';
 import { HARNESSES, type AgentRecord, type CallerIdentity } from './types.js';
 
@@ -160,8 +160,8 @@ function matchSession(candidates: AgentRecord[], wanted: string): AgentRecord[] 
 
 /**
  * Finds who an address means. An address is an agent's name (`codex-2@demo`), or a harness word
- * (`codex`, `claude`) that reaches the sessions of that harness in the caller's project: the
- * only one there is, or the one named after a colon by its session name or id (`codex:reviewer`),
+ * (`codex`, `claude`) that reaches the sessions of that harness in the caller's project, those
+ * started in the worktree of a job aside, which are that job's alone: the only one there is, or the one named after a colon by its session name or id (`codex:reviewer`),
  * or a new one when there is none or `codex:new` asks for it.
  *
  * @throws BridgeError `unknown_agent` for a name nobody has, `ambiguous_agent` when several
@@ -209,9 +209,10 @@ export function resolveAddress(
     );
   }
 
+  const worktrees = join(context.project, JOB_WORKTREES_DIR);
   const candidates = store
     .listAgents({ project: context.project, harness, statuses: ['active', 'starting'] })
-    .filter((agent) => agent.name !== context.caller);
+    .filter((agent) => agent.name !== context.caller && !isInside(worktrees, agent.cwd));
   const spawn = (sessionName?: string): AddressResolution => {
     if (context.canSpawn(harness)) {
       return { kind: 'spawn', harness, ...(sessionName && { sessionName }) };
