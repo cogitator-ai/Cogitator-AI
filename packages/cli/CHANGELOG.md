@@ -1,5 +1,25 @@
 # @cogitator-ai/cli
 
+## 0.22.0
+
+### Minor Changes
+
+- [#364](https://github.com/cogitator-ai/Cogitator-AI/pull/364) [`e316753`](https://github.com/cogitator-ai/Cogitator-AI/commit/e316753a19d944e41d91ffe1250ea008b1e15f7e) - An agent that carries a job out asks leave for a call through the bridge, and the person is reached when the answer is theirs.
+
+  - **Leave for a call**: a `permission` letter names its call (`ask`: the tool, and the command, files or address it touches), and the answer carries a `verdict`. The bridge decides whose answer it takes by the rights of the agent that handed the job over: forbidden by its rules, the call is refused at once, allowed, that agent answers, left to a person, only the person can allow it. So an agent never gets leave another agent does not have itself, and a job handed over from inside a job is bound by every agent up the chain. `verdict()` lets the one who asked wait for the decision.
+  - **Rights from the project's settings**: `settingsRights()` in the new `@cogitator-ai/bridge/rights` entry reads them from the permission settings of the job's project (`.claude/` and `.cogitator/`) with the permission engine of core, in the permission mode the agent told the bridge it runs in. `hostBridge({ rights })` takes any judge.
+  - **Hosted agents ask instead of failing**: a tool call of a runtime agent that needs approval, and a call of an ACP agent its provider's rules do not settle, become such a request (`HostedTurnContext.approve`, `permissionAskOf()`). Before, the run paused and failed its job, or the call was refused without a word.
+  - **The person**: `escalate()` passes a question or a request on to the person, `personAnswer()` takes what they said. `inboxRoute()` shows what waits for them in an `experimental_Inbox`, `channelRoute()` in a chat of a messaging channel with Allow and Refuse buttons, `personRoutes()` joins routes, `hostBridge({ person })` takes them. Waiting for the person does not spend the job's time, and they have a limit of their own (`personReplyTimeoutMs`, 4 hours, then a reminder, then the job fails).
+  - **Command line**: `cogitator bridge asks` lists what waits for the person, `allow`, `deny` and `reply` answer it, and refuse to run inside a session of an agent. `bridge send --decision allow|deny|person` is the same for a session without the tools. `bridge serve` and `daemon start --bridge` read rights from the settings, keep the inbox in `inbox.json` next to the database, and reach a Telegram chat when `COGITATOR_BRIDGE_TELEGRAM_TOKEN` and `COGITATOR_BRIDGE_TELEGRAM_CHAT` are set.
+  - The `answer` tool takes a `decision`: `allow`, `deny`, or `person` to leave a request or a question to the user.
+
+  The store's schema goes to version 2 and the socket's protocol to version 2: a database of version 1 is upgraded when the new dispatcher first opens it, and an older dispatcher refuses a database or a client of the newer version, so restart the dispatcher after updating. `BridgeCalls` has a new `verdict` method, `PersonRoute.settle` and `forPerson()` are new, and `Letter` has new optional fields: code that implements `BridgeCalls` by hand adds the method. `@cogitator-ai/bridge/rights` needs `@cogitator-ai/core`, an optional peer of the package.
+
+### Patch Changes
+
+- Updated dependencies [[`e316753`](https://github.com/cogitator-ai/Cogitator-AI/commit/e316753a19d944e41d91ffe1250ea008b1e15f7e)]:
+  - @cogitator-ai/bridge@0.5.0
+
 ## 0.21.0
 
 ### Minor Changes
