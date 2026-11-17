@@ -44,6 +44,7 @@ import {
   SENDABLE_KINDS,
   runBridgeAsks,
   runBridgeBuild,
+  runBridgeDebate,
   runBridgeDecide,
   runBridgeDelegate,
   runBridgeDoctor,
@@ -51,6 +52,7 @@ import {
   runBridgeCancel,
   runBridgeDiff,
   runBridgeForget,
+  runBridgeRace,
   runBridgeRecall,
   runBridgeRecipe,
   runBridgeReject,
@@ -61,12 +63,14 @@ import {
   runBridgeSend,
   runBridgeWait,
   type BridgeBuildFlags,
+  type BridgeDebateFlags,
   type BridgeDelegateFlags,
   type BridgeDoctorFlags,
   type BridgeAcceptFlags,
   type BridgeCancelFlags,
   type BridgeDiffFlags,
   type BridgeForgetFlags,
+  type BridgeRaceFlags,
   type BridgeRecallFlags,
   type BridgeRecipeFlags,
   type BridgeRejectFlags,
@@ -706,6 +710,58 @@ reviewOptions(
   .option('--json', 'print the job as JSON')
   .action(async (job: number, flags: BridgeReviewFlags) => {
     process.exitCode = await runBridgeReview(job, flags);
+  });
+
+bridgeCommand
+  .command('race [text...]')
+  .description(
+    'From a session: hand the same job to several agents at once, each in a worktree of its own, and get the results side by side'
+  )
+  .option('--to <agent>', 'who does the job, twice or more: codex, claude', collect, [] as string[])
+  .option('--judge <agent>', 'who compares the attempts and says which to take')
+  .option('--title <title>', 'a short name of the job (default: the first line of the text)')
+  .option('--cwd <dir>', 'the folder the job is about (default: the current one)')
+  .option(
+    '--check <command>',
+    'a command that shows the job is done, run on every attempt, repeatable',
+    collect,
+    [] as string[]
+  )
+  .option('--done <text>', 'what done looks like, repeatable', collect, [] as string[])
+  .option('--constraint <text>', 'what must hold or stay untouched, repeatable', collect, [])
+  .option('--decision <text>', 'what was decided already, repeatable', collect, [] as string[])
+  .option(
+    '--file <path[:lines][=why]>',
+    'a file to start from, such as src/a.ts:120-180=the retry loop, repeatable',
+    collect,
+    [] as string[]
+  )
+  .option(...homeOption)
+  .option('--json', 'print the job as JSON')
+  .showHelpAfterError(DASH_HINT)
+  .action(async (text: string[], flags: BridgeRaceFlags) => {
+    process.exitCode = await runBridgeRace(text, flags);
+  });
+
+bridgeCommand
+  .command('debate [text...]')
+  .description(
+    'From a session: put a question to several agents, who answer each other until they agree or the rounds run out'
+  )
+  .option(
+    '--with <agent[=role]>',
+    'who debates, twice or more: codex, claude=critic, codex=advocate',
+    collect,
+    [] as string[]
+  )
+  .option('--rounds <number>', 'how many rounds at most (default: 3)', positiveInt)
+  .option('--moderator <agent>', 'who sums the debate up at the end')
+  .option('--title <title>', 'a short name of the debate')
+  .option(...homeOption)
+  .option('--json', 'print the job as JSON')
+  .showHelpAfterError(DASH_HINT)
+  .action(async (text: string[], flags: BridgeDebateFlags) => {
+    process.exitCode = await runBridgeDebate(text, flags);
   });
 
 bridgeCommand

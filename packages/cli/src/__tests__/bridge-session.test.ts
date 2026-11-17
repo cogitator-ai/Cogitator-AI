@@ -30,10 +30,13 @@ import {
   contextFile,
   replyHint,
   runBridgeAccept,
+  debaterOf,
   runBridgeBuild,
+  runBridgeDebate,
   runBridgeDelegate,
   runBridgeDiff,
   runBridgeForget,
+  runBridgeRace,
   runBridgeRecall,
   runBridgeRecipe,
   runBridgeReject,
@@ -1012,6 +1015,50 @@ describe('bridge build, review and recipe', () => {
     expect(output()).toContain('Job #6 is the recipe review (submitted).');
   });
 
+  it('start a debate and a race, with who takes part named by flags', async () => {
+    mkdirSync(join(project, '.git'));
+    const { adapter, started } = starting();
+    hosts.push(
+      await hostBridge({ home, tickMs: 25, adapters: [adapter, recipeAdapter({ pollMs: 20 })] })
+    );
+
+    expect(
+      await runBridgeDebate(
+        ['Tabs or spaces?'],
+        { with: ['codex=advocate', 'codex'], rounds: 1, moderator: 'codex' },
+        claude()
+      )
+    ).toBe(0);
+    expect(output()).toContain('Job #1 is the debate (submitted): codex, codex answer each other.');
+    await until(() => started.length === 2, 'the sessions of the debaters');
+    expect(started[0]).toContain('You argue in favor of the position or solution in question');
+    expect(started[1]).toContain('Give your own view of the question');
+    expect(debaterOf(' claude = critic ')).toEqual({ to: 'claude', role: 'critic' });
+
+    expect(await runBridgeRace(['Fix the limiter'], { to: ['codex'] }, claude())).not.toBe(0);
+    expect(failed()).toContain('A race takes two agents or more: name each with --to');
+    failures = [];
+    expect(await runBridgeDebate(['Tabs?'], { with: ['codex'] }, claude())).not.toBe(0);
+    expect(failed()).toContain('A debate takes two agents or more: name each with --with');
+
+    lines = [];
+    expect(
+      await runBridgeRace(
+        ['Fix the limiter'],
+        { to: ['codex', 'codex'], judge: 'codex', check: ['pnpm test'] },
+        claude()
+      )
+    ).toBe(0);
+    expect(output()).toContain(
+      'Job #4 is the race (submitted): codex, codex do the job side by side.'
+    );
+    const watch = await watcher();
+    expect((await watch.job(4)).recipe).toEqual({
+      name: 'race',
+      input: { to: ['codex', 'codex'], checks: [{ command: 'pnpm test' }], judge: 'codex' },
+    });
+  });
+
   it('say why a recipe cannot start', async () => {
     mkdirSync(join(project, '.git'));
     const { adapter } = starting();
@@ -1021,7 +1068,7 @@ describe('bridge build, review and recipe', () => {
 
     expect(await runBridgeRecipe('waltz', ['Go'], {}, claude())).not.toBe(0);
     expect(failed()).toContain(
-      'There is no recipe "waltz". The recipes of this bridge: review, build'
+      'There is no recipe "waltz". The recipes of this bridge: review, build, race, debate'
     );
 
     failures = [];
