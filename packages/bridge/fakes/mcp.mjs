@@ -5,7 +5,11 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
-const REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * A server of tools is a process that loads the whole runtime before it answers its first
+ * request: on a busy CI runner that took over fifteen seconds, so a request waits a minute
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
 const PROTOCOL_VERSION = '2025-06-18';
 
 /**
