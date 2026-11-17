@@ -114,7 +114,7 @@ export interface FakeHarnesses {
   say(sessionId: string, text: string): Promise<void>;
   /**
    * A person answers the permission dialog a Claude Code session shows, waiting for it to open
-   * (up to 30 s). A `bash: <command>` line of a turn opens one, unless the mode, a rule or a
+   * (up to 90 s). A `bash: <command>` line of a turn opens one, unless the mode, a rule or a
    * `PermissionRequest` hook settles it
    */
   answerPermission(sessionId: string, answer: 'allow' | 'deny'): Promise<void>;
@@ -134,7 +134,7 @@ export interface FakeHarnesses {
   stopCodexDaemon(): Promise<void>;
   /** The turns a session or thread ran, oldest first */
   transcript(harness: 'claude' | 'codex', id: string): FakeTurn[];
-  /** Resolves with the first turn of the session `matches` accepts, rejects after `timeoutMs` (default 30000) naming what it waited for and the turns seen */
+  /** Resolves with the first turn of the session `matches` accepts, rejects after `timeoutMs` (default 90000) naming what it waited for and the turns seen */
   waitForTurn(
     harness: 'claude' | 'codex',
     id: string,
@@ -187,9 +187,10 @@ const POLL_MS = 20;
 const STOP_GRACE_MS = 5_000;
 /**
  * A turn may start a server of tools, a process that loads the whole runtime: on a busy CI runner
- * that start alone took over ten seconds, so the wait leaves room for it
+ * that start alone took over fifteen seconds, and the stand-ins give a server a minute to answer,
+ * so the wait for a turn is longer than that
  */
-const DEFAULT_TURN_TIMEOUT_MS = 30_000;
+const DEFAULT_TURN_TIMEOUT_MS = 90_000;
 /** What the fake claude says of a session whose dialog is not open, or not open yet */
 const NO_DIALOG = 'shows no permission dialog';
 
