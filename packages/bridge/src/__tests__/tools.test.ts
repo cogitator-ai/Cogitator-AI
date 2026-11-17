@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Tool } from '@cogitator-ai/types';
 import { BridgeClient } from '../client';
@@ -94,7 +95,7 @@ function jobNumber(text: string): number {
 }
 
 describe('bridgeTools', () => {
-  it('are the ten tools of the bridge, each saying what it does to the world', () => {
+  it('are the thirteen tools of the bridge, each saying what it does to the world', () => {
     const tools = bridgeTools({ socketPath: bridgePaths({ home }).socket });
 
     expect(tools.map((tool) => tool.name)).toEqual([
@@ -107,12 +108,16 @@ describe('bridgeTools', () => {
       'job',
       'jobs',
       'cancel',
+      'diff',
+      'accept',
+      'reject',
       'agents',
     ]);
     for (const tool of tools) {
       expect(tool.annotations?.openWorldHint).toBe(false);
       expect(
-        tool.annotations?.readOnlyHint === true || tool.annotations?.destructiveHint === false
+        tool.annotations?.readOnlyHint === true ||
+          tool.annotations?.destructiveHint === (tool.name === 'reject')
       ).toBe(true);
       expect(JSON.stringify(tool.toJSON())).not.toContain(TOOL_CALL_HINT_KEY);
     }
@@ -159,6 +164,97 @@ describe('bridgeTools', () => {
     expect(seen).toContain('14 tests in limiter.test.ts, all pass');
     expect(await orchestrator.call('jobs')).toBe('This session has no jobs in progress.');
     expect(await orchestrator.call('jobs', { all: true })).toContain(`#${job} completed`);
+  });
+
+  it('give a job a worktree and its checks, show what it changed, and take or drop its work', async () => {
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: project, encoding: 'utf8' }).trimEnd();
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.name', 'Test');
+    git('config', 'user.email', 'test@example.com');
+    writeFileSync(join(project, 'README.md'), 'demo\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'init');
+    let started = 0;
+    const adapter = new FakeAdapter({
+      harness: 'codex',
+      createSession: async () => ({ sessionId: `thread-${(started += 1)}` }),
+    });
+    await startHost({ adapters: [adapter], rights: () => 'allow' });
+    const orchestrator = claude();
+
+    const handed = await orchestrator.call('delegate', {
+      to: 'codex',
+      task: 'Fix the limiter',
+      worktree: true,
+      checks: ['test -f fixed.txt'],
+    });
+    const job = jobNumber(handed);
+    expect(handed).toContain(
+      'It is done in a git worktree of its own, off your last commit: its changes come to you with accept.'
+    );
+    await vi.waitFor(() => expect(adapter.sessions).toHaveLength(1));
+    const worktree = adapter.sessions[0].cwd;
+    expect(worktree).toBe(join(project, '.cogitator', 'worktrees', 'job-1-fix-the-limiter'));
+    writeFileSync(join(worktree, 'fixed.txt'), 'fixed\n');
+
+    const seen = await orchestrator.call('diff', { job });
+    expect(seen.split('\n').slice(0, 2)).toEqual([
+      expect.stringMatching(
+        /^Job #1 changed 1 file, \+1 -0, in .+job-1-fix-the-limiter \(branch cogitator\/job-1-fix-the-limiter, since commit [0-9a-f]{10}\):$/
+      ),
+      'A fixed.txt  +1 -0',
+    ]);
+    expect(seen).toContain('+fixed');
+    expect(await orchestrator.call('diff', { job, filesOnly: true })).not.toContain('+fixed');
+
+    await codex('thread-1').call('report', { job, result: 'Fixed' });
+    const mail = await vi.waitFor(async () => {
+      const text = await orchestrator.call('inbox');
+      expect(text).toContain('Fixed');
+      return text;
+    });
+    expect(mail).toContain('[agent bridge] Changed in the worktree of the job');
+    expect(mail).toContain('[agent bridge] Checks. Verified: the check passed.');
+    const looked = await orchestrator.call('job', { job });
+    expect(looked).toContain(`Done in a worktree of its own: ${worktree}`);
+    expect(looked).toContain('Changed when it reported: 1 file, +1 -0');
+    expect(await orchestrator.call('jobs', { all: true })).toContain(
+      '(verified, work in its worktree)'
+    );
+
+    expect(await orchestrator.call('accept', { job })).toBe(
+      `The work of job #1 is in ${project}: 1 file, +1 -0, staged and not committed. Look at it with git diff --cached and commit it yourself. The worktree is gone.`
+    );
+    expect(readFileSync(join(project, 'fixed.txt'), 'utf8')).toBe('fixed\n');
+    expect(git('status', '--porcelain')).toBe('A  fixed.txt');
+    expect(await orchestrator.call('jobs', { all: true })).toContain('(verified, work taken)');
+    await expect(orchestrator.call('diff', { job })).rejects.toThrow(/its worktree is gone/);
+
+    const again = jobNumber(
+      await orchestrator.call('delegate', {
+        to: 'codex:new',
+        task: 'Try another way',
+        worktree: true,
+      })
+    );
+    await vi.waitFor(() => expect(adapter.sessions).toHaveLength(2));
+    writeFileSync(join(adapter.sessions[1].cwd, 'other.txt'), 'other\n');
+    await codex('thread-2').call('report', { job: again, result: 'Tried' });
+    expect(await orchestrator.call('accept', { job: again, asBranch: 'feat/other' })).toMatch(
+      /^The work of job #2 is the branch feat\/other, at commit [0-9a-f]{10}\. Your checkout is as it was, and the worktree is gone\.$/
+    );
+    expect(git('show', 'feat/other:other.txt')).toBe('other');
+
+    const third = jobNumber(
+      await orchestrator.call('delegate', { to: 'codex:new', task: 'A third way', worktree: true })
+    );
+    await vi.waitFor(() => expect(adapter.sessions).toHaveLength(3));
+    await orchestrator.call('cancel', { job: third });
+    expect(await orchestrator.call('reject', { job: third, reason: 'Not needed' })).toBe(
+      'The work of job #3 is dropped, and its worktree is gone.'
+    );
+    expect(existsSync(adapter.sessions[2].cwd)).toBe(false);
   });
 
   it('report a job that failed as failed', async () => {

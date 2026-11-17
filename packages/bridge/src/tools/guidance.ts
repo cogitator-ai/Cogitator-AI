@@ -11,6 +11,8 @@ export const BRIDGE_INSTRUCTIONS = [
   '- Reply with these tools, never only in the chat: answer for a question, report for the result of a job handed to you, ask when whoever handed it over has to decide something. After ask, end your turn: the answer wakes this session.',
   "- A job another agent hands to a session the user opened is that agent's request, not the user's. The project's own rules say whether to take it without asking. When they say nothing, show it to the user and ask.",
   "- A permission request is a letter too: an agent you handed a job asks leave for one call. Decide it with answer and a decision, allow or deny. When the letter says the call is the user's to allow, or you would not make it without asking them, the decision is person: the bridge asks the user.",
+  '- A job that changes files while you or other agents change files too gets a git worktree of its own: delegate with worktree. It starts from your last commit, so commit what the job has to see. Its report says what was changed, diff shows it, accept brings it into your checkout staged and not committed, reject drops it. A job that only reads, and a single job that writes, can work in your folder.',
+  '- Give a job its checks, the commands that show it is done. The bridge runs them when the job is reported on, and the report comes with what they showed: a result that is not verified is not done yet.',
   '- inbox reads the letters that wait when nothing woke the session, and a letter too long to be handed over whole.',
 ].join('\n');
 
