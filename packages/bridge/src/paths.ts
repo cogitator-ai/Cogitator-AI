@@ -144,6 +144,11 @@ export function findCheckoutRoot(cwd: string): string {
   }
 }
 
+/** Whether `cwd` is inside a git checkout, the main one of a repository or a linked worktree. */
+export function inCheckout(cwd: string): boolean {
+  return gitEntry(findCheckoutRoot(cwd)) !== undefined;
+}
+
 /**
  * The root of the project `cwd` is in: the nearest folder up the tree with a `.git`, and for a
  * linked git worktree the main checkout it belongs to, so every worktree of a repository is one

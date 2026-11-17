@@ -121,6 +121,11 @@ export interface ResolveAddressContext {
   canSpawn: (harness: string) => boolean;
   /** Ms since the epoch, to say how long ago each of several sessions was heard from */
   now?: number;
+  /**
+   * The job wants a session of its own: a harness word then starts one even when sessions of
+   * the harness are there
+   */
+  fresh?: boolean;
 }
 
 function heardFrom(agent: AgentRecord, now: number | undefined): string | undefined {
@@ -222,6 +227,7 @@ export function resolveAddress(
   };
 
   if (wanted?.toLowerCase() === NEW_SESSION) return spawn();
+  if (wanted === undefined && context.fresh) return spawn();
   if (wanted !== undefined) {
     const matches = matchSession(candidates, wanted);
     if (matches.length === 1) return { kind: 'agent', agent: matches[0] };

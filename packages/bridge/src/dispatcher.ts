@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import type { z } from 'zod';
 import { TaskManager, textPart, toMessage, type A2ATask } from '@cogitator-ai/a2a';
+import { runCheck, skippedCheck, summarizeChecks } from './checks.js';
 import { BridgeError } from './errors.js';
 import {
   deliveryBackoff,
@@ -30,9 +31,17 @@ import {
   StuckInputSchema,
   VerdictInputSchema,
   VerificationInputSchema,
+  AcceptInputSchema,
+  DiffInputSchema,
+  RejectInputSchema,
   WaitInputSchema,
   WithdrawInputSchema,
+  type AcceptInput,
+  type AcceptResult,
   type CreateJobInput,
+  type DiffInput,
+  type JobDiff,
+  type RejectInput,
   type CreateJobResult,
   type EscalateInput,
   type InboxInput,
@@ -60,8 +69,23 @@ import {
   repeats,
   titleOf,
 } from './letters.js';
-import { canonicalPath, findCheckoutRoot, findProjectRoot, isInside } from './paths.js';
-import { allocateAgentName, resolveAddress } from './registry.js';
+import { canonicalPath, findCheckoutRoot, findProjectRoot, inCheckout, isInside } from './paths.js';
+import {
+  DISCARDED_REFS,
+  GitError,
+  addJobWorktree,
+  changesOf,
+  checkoutOf,
+  conflictsOf,
+  patchOf,
+  pointRef,
+  removeJobWorktree,
+  shownPath,
+  snapshotOf,
+  squashInto,
+  type WorktreeChanges,
+} from './worktree.js';
+import { allocateAgentName, resolveAddress, type AddressResolution } from './registry.js';
 import type {
   AgentFilter,
   BridgeStore,
@@ -84,8 +108,12 @@ import {
   type BridgeLimits,
   type CallerIdentity,
   type DeliveryState,
+  type JobChanges,
+  type JobCheckResult,
   type JobState,
   type JobVerification,
+  type JobWorktreeEnd,
+  type JobWorktreeRecord,
   type JournalEntry,
   type Letter,
   type LetterKind,
@@ -158,6 +186,39 @@ export interface BridgeDispatcherEvents {
 }
 
 const ACTIVE_JOB_STATES: readonly JobState[] = ['submitted', 'working', 'input-required'];
+const FINISHED_JOB_STATES: readonly JobState[] = ['completed', 'failed', 'canceled'];
+
+/** How often the worktrees of finished jobs are looked at for those nobody came for, in ms. */
+const WORKTREE_SWEEP_MS = 3_600_000;
+
+/** How many changed files the record of a job names. */
+const PATHS_KEPT = 50;
+
+const ENDED: Readonly<Record<JobWorktreeEnd['how'], string>> = {
+  accepted: 'taken',
+  branch: 'left as a branch',
+  rejected: 'dropped',
+  discarded: 'put away',
+};
+
+/** What a job changed, as its record keeps it. */
+function summaryOf(changes: WorktreeChanges, at: string): JobChanges {
+  return {
+    files: changes.files.length,
+    insertions: changes.insertions,
+    deletions: changes.deletions,
+    commits: changes.commits,
+    paths: changes.files.slice(0, PATHS_KEPT).map((file) => shownPath(file.path)),
+    at,
+  };
+}
+
+/** What git said when it refused, as an error an agent can act on. */
+function gitRefusal(error: unknown, what: string): BridgeError {
+  if (error instanceof BridgeError) return error;
+  const said = error instanceof GitError ? error.said : asError(error).message;
+  return new BridgeError('invalid_input', `${what}: ${oneLine(said)}`);
+}
 const UNREAD_STATES: readonly DeliveryState[] = ['queued', 'delivered'];
 const NEEDS_ANSWER: readonly LetterKind[] = ['question', 'permission'];
 const REMINDER_QUOTE_LENGTH = 500;
@@ -199,6 +260,7 @@ function fitting<T>(
 }
 
 const STATE_RANK: Readonly<Record<DeliveryState, number>> = {
+  held: -1,
   queued: 0,
   delivered: 1,
   read: 2,
@@ -248,6 +310,8 @@ interface Transaction {
   decided: Set<string>;
   /** What the person is to know that takes no answer */
   notices: PersonNotice[];
+  /** Jobs whose checks are to run */
+  checks: number[];
 }
 
 /** A call the bridge refuses after writing down why: what it wrote stays, the caller gets the error. */
@@ -333,6 +397,15 @@ export class BridgeDispatcher
   private readonly verdictWaiters = new Map<string, Set<() => void>>();
   /** What the person route is told, one thing after another */
   private personNews: Promise<void> = Promise.resolve();
+  /** The checks that run or wait their turn, by job, each with what stops it */
+  private readonly checkRuns = new Map<number, AbortController>();
+  /** The checks of one job after those of another: they build and test, and memory is short */
+  private checkQueue: Promise<void> = Promise.resolve();
+  /** Jobs whose worktree is being taken, dropped or put away right now */
+  private readonly taking = new Set<number>();
+  /** Whether what a dispatcher before this one left unfinished was picked up */
+  private recovered = false;
+  private worktreesSweptAt = Number.NEGATIVE_INFINITY;
   private queue: Promise<unknown> = Promise.resolve();
   private readonly deliveries = new Map<string, Promise<void>>();
   private readonly background = new Set<Promise<void>>();
@@ -500,6 +573,7 @@ export class BridgeDispatcher
         caller: from.name,
         now: this.now(),
         canSpawn: (harness) => this.adapters.get(harness)?.createSession !== undefined,
+        fresh: request.worktree === true,
       });
 
       const carriedOut = this.store
@@ -549,6 +623,8 @@ export class BridgeDispatcher
         );
       }
 
+      if (request.worktree) this.checkWorktreeAsked(from, resolution, cwd);
+
       const now = this.now();
       const refusal = this.handOverRefusal(from, resolution, request.body, cwd, now);
       if (refusal) {
@@ -593,6 +669,7 @@ export class BridgeDispatcher
         to: to.name,
         project: from.project,
         cwd,
+        ...(request.worktree && { isolation: 'worktree' as const }),
         checks: request.checks ?? [],
         budget,
         lettersUsed: 1,
@@ -616,7 +693,7 @@ export class BridgeDispatcher
         data: { title: record.title, from: from.name, to: to.name, depth, cwd },
       });
 
-      const letter = this.accept(tx, {
+      const letter = this.acceptLetter(tx, {
         id: firstLetterId,
         job: number,
         kind: 'task',
@@ -653,6 +730,7 @@ export class BridgeDispatcher
     const request = parse(SendLetterInputSchema, input, 'Cannot send the letter');
     this.checkBody(request.body);
     const rights = request.ask ? await this.rightsFor(request.job, request.ask) : undefined;
+    const changes = request.kind === 'report' ? await this.changesAtReport(request.job) : undefined;
     const outcome = await this.asCaller(caller, async (tx): Promise<SendLetterResult | Refusal> => {
       const from = this.requireCaller(caller);
 
@@ -803,7 +881,7 @@ export class BridgeDispatcher
             ? 'Only the person can allow this, and this bridge has no way to reach them, so it is refused'
             : undefined;
 
-      const letter = this.accept(tx, {
+      const letter = this.acceptLetter(tx, {
         id: request.id ?? this.letterId(),
         job: job.number,
         kind: request.kind,
@@ -843,6 +921,16 @@ export class BridgeDispatcher
         await this.transition(tx, job.number, state, forHistory(request.body, letter.id));
         if (state === 'failed')
           await this.patchRecord(job.taskId, { reason: `reported as failed by ${from.name}` });
+        if (changes && job.worktree && !job.worktree.end) {
+          await this.patchRecord(job.taskId, { changes });
+        }
+        if (state === 'completed' && job.checks.length > 0) {
+          this.store.updateLetter(letter.id, { state: 'held' });
+          await this.patchRecord(job.taskId, {
+            checking: { letter: letter.id, since: this.iso(now) },
+          });
+          tx.checks.push(job.number);
+        }
         this.closeLetters(tx, job.number, letter.id);
         await this.stopWaiting(job.number, now, false);
         await this.cancelChildren(tx, job);
@@ -976,7 +1064,7 @@ export class BridgeDispatcher
       const body =
         request.body ??
         (request.verdict === 'allow' ? 'Allowed by the person' : 'Refused by the person');
-      const letter = this.accept(tx, {
+      const letter = this.acceptLetter(tx, {
         id: this.letterId(),
         job: job.number,
         kind: 'answer',
@@ -1232,7 +1320,7 @@ export class BridgeDispatcher
    */
   private refuse(tx: Transaction, request: Letter, reason: string): Letter {
     const settled = this.markHandled(tx, request);
-    const answer = this.accept(tx, {
+    const answer = this.acceptLetter(tx, {
       id: this.letterId(),
       job: request.job,
       kind: 'answer',
@@ -1607,6 +1695,521 @@ export class BridgeDispatcher
     });
   }
 
+  /**
+   * Refuses a job that asks for a worktree of its own and cannot have one: the folder is in no
+   * git repository, the session that would carry it out is open somewhere else already, or the
+   * project has as many such jobs in progress as it may.
+   */
+  private checkWorktreeAsked(from: AgentRecord, resolution: AddressResolution, cwd: string): void {
+    if (!inCheckout(cwd)) {
+      throw new BridgeError(
+        'no_worktree',
+        `A worktree is a checkout of a git repository, and ${cwd} is in none`,
+        { cwd }
+      );
+    }
+    if (resolution.kind === 'agent') {
+      throw new BridgeError(
+        'no_worktree',
+        `A job in a worktree of its own is done by a session started for it, and ${resolution.agent.name} is open somewhere else already. Hand the job to a harness and it gets a fresh session`,
+        { agent: resolution.agent.name }
+      );
+    }
+    const isolated = this.store
+      .jobTasks({ states: ACTIVE_JOB_STATES, project: from.project })
+      .flatMap((task) => jobOf(task) ?? [])
+      .filter((job) => job.isolation === 'worktree');
+    if (isolated.length >= this.limits.worktreesPerProject) {
+      throw new BridgeError(
+        'worktree_limit',
+        `${isolated.length} jobs of this project are in progress in worktrees of their own (${isolated.map((job) => `#${job.number}`).join(', ')}), the most there may be: each builds and tests next to the others. Wait for one to report, or hand this job over without a worktree`,
+        { jobs: isolated.map((job) => job.number) }
+      );
+    }
+  }
+
+  /**
+   * Where a session that is about to be started for a job works: the worktree of the job, made
+   * now, when the job asked for one. Resolves with the job as it is once it has its worktree and
+   * with its first letter, which says so, and with nothing for a job that works where it was
+   * handed over.
+   *
+   * @throws when git cannot make the worktree: the job then fails with what git said
+   */
+  private async placeOf(
+    agentName: string,
+    job: BridgeJob,
+    letterId: string
+  ): Promise<{ job: BridgeJob; letter: RenderedLetter } | undefined> {
+    if (job.isolation !== 'worktree' || job.worktree) return undefined;
+    let made;
+    try {
+      made = await addJobWorktree({
+        project: job.project,
+        from: job.cwd,
+        number: job.number,
+        title: job.title,
+      });
+    } catch (error) {
+      throw new Error(`the worktree of the job could not be made: ${asError(error).message}`, {
+        cause: error,
+      });
+    }
+    return this.mutate(async (tx) => {
+      await this.patchRecord(job.taskId, {
+        worktree: { path: made.path, branch: made.branch, base: made.base },
+        cwd: made.cwd,
+      });
+      const agent = this.store.getAgent(agentName);
+      if (agent) this.store.putAgent({ ...agent, cwd: made.cwd });
+      this.journal(tx, {
+        type: 'job.worktree',
+        job: job.number,
+        agent: agentName,
+        data: { path: made.path, branch: made.branch, base: made.base },
+      });
+      const fresh = this.requireJob(job.number).job;
+      const letter = this.store.getLetter(letterId);
+      if (!letter)
+        throw new BridgeError('storage', `The first letter of job ${job.number} is lost`);
+      return { job: fresh, letter: renderLetter(letter, fresh) };
+    });
+  }
+
+  /** The worktree of a job while its work is still in it. */
+  private liveWorktree(job: BridgeJob): JobWorktreeRecord | undefined {
+    return job.worktree && !job.worktree.end ? job.worktree : undefined;
+  }
+
+  /**
+   * What a job changed in its worktree, counted as its report comes in, for the report to say.
+   * Nothing for a job without a worktree, and nothing when git cannot tell: the report goes
+   * through all the same.
+   */
+  private async changesAtReport(number: number): Promise<JobChanges | undefined> {
+    const job = await this.enqueue(async () => this.jobIfAny(number));
+    const worktree = job && this.liveWorktree(job);
+    if (!worktree) return undefined;
+    try {
+      return summaryOf(await changesOf(worktree.path, worktree.base), this.iso());
+    } catch (error) {
+      this.onError(asError(error));
+      return undefined;
+    }
+  }
+
+  private startChecks(number: number): void {
+    if (this.checkRuns.has(number)) return;
+    const stop = new AbortController();
+    this.checkRuns.set(number, stop);
+    const run = this.checkQueue
+      .then(() => this.runChecks(number, stop.signal))
+      .finally(() => this.checkRuns.delete(number));
+    this.checkQueue = run.catch(() => undefined);
+    this.track(run);
+  }
+
+  /**
+   * Runs the checks of a job that was reported on, where the job was done, and hands its report
+   * over with what they showed. The bridge runs a command itself, outside any sandbox, so it
+   * runs only what the rules of whoever handed the job over allow without asking: the rest is
+   * left out, and the result then does not count as verified. A dispatcher that closes in the
+   * middle leaves the job as it is, and the next one runs its checks again.
+   */
+  private async runChecks(number: number, signal: AbortSignal): Promise<void> {
+    const job = await this.enqueue(async () => this.jobIfAny(number));
+    if (!job?.checking) return;
+    const top = this.liveWorktree(job)?.path;
+    const results: JobCheckResult[] = [];
+    for (const check of job.checks) {
+      const cwd = check.cwd ? canonicalPath(resolvePath(job.cwd, check.cwd)) : job.cwd;
+      if (!isInside(job.project, cwd) && !(top && isInside(top, cwd))) {
+        results.push(skippedCheck(check, `it would run in ${cwd}, outside the project`));
+        continue;
+      }
+      const rights = await this.rightsFor(number, {
+        tool: 'Bash',
+        access: 'command',
+        command: check.command,
+        cwd,
+      });
+      if (rights !== 'allow') {
+        results.push(
+          skippedCheck(
+            check,
+            !this.rights
+              ? 'this bridge has no rules to judge a command by, and runs none without them'
+              : rights === 'deny'
+                ? `the rules of ${job.from} forbid the command`
+                : `the rules of ${job.from} do not allow the command without asking. Allow it in the settings of the project, or run it yourself`
+          )
+        );
+        continue;
+      }
+      results.push(
+        await runCheck(check, {
+          cwd,
+          timeoutMs: check.timeoutMs ?? this.limits.checkTimeoutMs,
+          signal,
+        })
+      );
+      if (signal.aborted) return;
+    }
+    if (this.closing) return;
+    const { verified, summary } = summarizeChecks(results);
+    await this.mutate(async (tx) => {
+      const { job: fresh } = this.requireJob(number);
+      if (!fresh.checking) return;
+      await this.patchRecord(fresh.taskId, {
+        verification: { verified, checkedAt: this.iso(), summary, checks: results },
+        checking: undefined,
+      });
+      this.journal(tx, { type: 'job.verified', job: number, data: { verified, summary } });
+      const report = this.store.getLetter(fresh.checking.letter);
+      if (report?.state === 'held') {
+        this.store.updateLetter(report.id, { state: 'queued' });
+        tx.wake.add(report.to);
+      }
+    });
+  }
+
+  /**
+   * Picks up what a dispatcher before this one left in the middle: the checks of jobs that were
+   * reported on and never got their verdict.
+   */
+  private recover(tx: Transaction): void {
+    if (this.recovered) return;
+    this.recovered = true;
+    for (const task of this.store.jobTasks({ states: ['completed'] })) {
+      const job = jobOf(task);
+      if (job?.checking) tx.checks.push(job.number);
+    }
+  }
+
+  /**
+   * What a job changed in its worktree so far: the files, how much, and the patch. For the two
+   * agents of the job, while it runs and after, as long as its worktree is there.
+   *
+   * @throws BridgeError `unknown_job`, `not_a_party`, `no_worktree` for a job without a worktree
+   * of its own or whose work was taken or dropped already
+   */
+  async diff(caller: string, input: DiffInput): Promise<JobDiff> {
+    const request = parse(DiffInputSchema, input, 'Cannot show the changes');
+    const { job, worktree } = await this.asCaller(caller, async () => {
+      const agent = this.requireCaller(caller);
+      const found = this.requireJob(request.job).job;
+      if (agent.name !== found.from && agent.name !== found.to) {
+        throw new BridgeError(
+          'not_a_party',
+          `Job ${found.number} is between ${found.from} and ${found.to}`,
+          { job: found.number }
+        );
+      }
+      return { job: found, worktree: this.requireWorktree(found) };
+    });
+    const changes = await this.readChanges(job, worktree);
+    const { patch, truncated } =
+      request.maxChars === 0
+        ? { patch: '', truncated: changes.files.length > 0 }
+        : await patchOf(worktree.path, worktree.base, changes.tree, {
+            ...(request.paths && { paths: request.paths }),
+            ...(request.maxChars !== undefined && { maxChars: request.maxChars }),
+          });
+    return {
+      job: job.number,
+      worktree: worktree.path,
+      branch: worktree.branch,
+      base: worktree.base,
+      files: changes.files.map((file) => ({ ...file, path: shownPath(file.path) })),
+      insertions: changes.insertions,
+      deletions: changes.deletions,
+      commits: changes.commits,
+      patch,
+      truncated,
+    };
+  }
+
+  /**
+   * Takes the work of a finished job out of its worktree, as the agent that handed the job over.
+   * The changes, committed there or not, come into the checkout the caller works in as one
+   * change that is staged and not committed: the commit is the caller's to make. With
+   * `asBranch` they are left as a branch instead, for work that goes on as a pull request. The
+   * worktree is removed either way. When the changes would leave files in conflict nothing is
+   * touched, the answer names the files, and the worktree stays for another try. The bridge
+   * never merges into a branch nobody is working on.
+   *
+   * @throws BridgeError `unknown_job`, `not_a_party` (only who handed the job over takes its
+   * work), `invalid_input` (the job still runs, its checks do, the caller is in another
+   * repository, or git refused), `no_worktree`
+   */
+  async accept(caller: string, input: AcceptInput): Promise<AcceptResult> {
+    const request = parse(AcceptInputSchema, input, 'Cannot take the work');
+    const { job, worktree, agent } = await this.asCaller(caller, async () =>
+      this.requireTaker(caller, request.job, 'take')
+    );
+    return this.whileTaking(job.number, async () => {
+      const changes = await this.readChanges(job, worktree);
+      if (changes.files.length === 0 && changes.commits === 0) {
+        await removeJobWorktree(job.project, worktree.path, worktree.branch);
+        const ended = await this.endWorktree(job.number, { how: 'accepted' }, 'job.accepted', {});
+        return { state: 'nothing', job: ended };
+      }
+      const commit = await snapshotOf(worktree.path, changes, `job #${job.number}: ${job.title}`);
+
+      if (request.asBranch) {
+        const branch = request.asBranch === true ? worktree.branch : request.asBranch;
+        await this.leaveBranch(job, worktree, branch, commit);
+        const ended = await this.endWorktree(
+          job.number,
+          { how: 'branch', commit, ref: branch },
+          'job.accepted',
+          { branch, commit }
+        );
+        return { state: 'branch', job: ended, branch, commit };
+      }
+
+      const into = await checkoutOf(agent.cwd);
+      if (!into || canonicalPath(findProjectRoot(into)) !== canonicalPath(job.project)) {
+        throw new BridgeError(
+          'invalid_input',
+          `The work of job ${job.number} belongs to ${job.project}, and you work in ${agent.cwd}, which is not a checkout of it. Take it as a branch instead`,
+          { job: job.number, cwd: agent.cwd }
+        );
+      }
+      const conflicts = await conflictsOf(into, commit).catch((error: unknown) => {
+        throw gitRefusal(error, `Git could not tell whether job ${job.number} merges into ${into}`);
+      });
+      if (conflicts.length > 0) {
+        return {
+          state: 'conflict',
+          job,
+          into,
+          files: conflicts.map(shownPath),
+        };
+      }
+      await squashInto(into, commit).catch((error: unknown) => {
+        throw gitRefusal(
+          error,
+          `Git refused to bring the changes of job ${job.number} into ${into}, which is as it was. Commit or stash what is in the way there, then take the work again`
+        );
+      });
+      await removeJobWorktree(job.project, worktree.path, worktree.branch);
+      const ended = await this.endWorktree(
+        job.number,
+        { how: 'accepted', commit, into },
+        'job.accepted',
+        { into, commit, files: changes.files.length }
+      );
+      return {
+        state: 'accepted',
+        job: ended,
+        into,
+        files: changes.files.length,
+        insertions: changes.insertions,
+        deletions: changes.deletions,
+      };
+    });
+  }
+
+  /**
+   * Drops the work of a finished job, as the agent that handed the job over: its worktree and
+   * the branch of it are removed with everything in them.
+   *
+   * @throws BridgeError `unknown_job`, `not_a_party`, `invalid_input` (the job still runs, or
+   * its checks do), `no_worktree`
+   */
+  async reject(caller: string, input: RejectInput): Promise<BridgeJob> {
+    const request = parse(RejectInputSchema, input, 'Cannot drop the work');
+    const { job, worktree } = await this.asCaller(caller, async () =>
+      this.requireTaker(caller, request.job, 'drop')
+    );
+    return this.whileTaking(job.number, async () => {
+      await removeJobWorktree(job.project, worktree.path, worktree.branch);
+      return this.endWorktree(job.number, { how: 'rejected' }, 'job.rejected', {
+        ...(request.reason && { reason: request.reason }),
+      });
+    });
+  }
+
+  /** The worktree of a job whose work is still in it, or why there is none. */
+  private requireWorktree(job: BridgeJob): JobWorktreeRecord {
+    const worktree = this.liveWorktree(job);
+    if (worktree) return worktree;
+    const end = job.worktree?.end;
+    throw new BridgeError(
+      'no_worktree',
+      end
+        ? `The work of job ${job.number} was ${ENDED[end.how]}${end.ref ? ` (${end.ref})` : ''}${end.into ? ` into ${end.into}` : ''}, and its worktree is gone`
+        : job.isolation === 'worktree'
+          ? `Job ${job.number} has no worktree yet: its session has not started`
+          : `Job ${job.number} was done in ${job.cwd}, not in a worktree of its own: what it changed is there`,
+      { job: job.number }
+    );
+  }
+
+  /** The job, its worktree and the caller, for the one who may take or drop its work. */
+  private requireTaker(
+    caller: string,
+    number: number,
+    what: 'take' | 'drop'
+  ): { job: BridgeJob; worktree: JobWorktreeRecord; agent: AgentRecord } {
+    const agent = this.requireCaller(caller);
+    const { job } = this.requireJob(number);
+    if (agent.name !== job.from) {
+      throw new BridgeError(
+        'not_a_party',
+        `Only ${job.from}, who handed job ${job.number} over, can ${what} its work`,
+        { job: job.number }
+      );
+    }
+    if (!isFinishedJobState(job.state)) {
+      throw new BridgeError(
+        'invalid_input',
+        `Job ${job.number} is still ${job.state}. Wait for its report, or cancel it first`,
+        { job: job.number, state: job.state }
+      );
+    }
+    if (job.checking) {
+      throw new BridgeError(
+        'invalid_input',
+        `The checks of job ${job.number} still run. Its report comes with what they show`,
+        { job: job.number }
+      );
+    }
+    return { job, worktree: this.requireWorktree(job), agent };
+  }
+
+  /** One taking, dropping or putting away of a job's worktree at a time. */
+  private async whileTaking<T>(number: number, work: () => Promise<T>): Promise<T> {
+    if (this.taking.has(number)) {
+      throw new BridgeError(
+        'invalid_input',
+        `The work of job ${number} is being taken or dropped right now`,
+        { job: number }
+      );
+    }
+    this.taking.add(number);
+    try {
+      return await work();
+    } finally {
+      this.taking.delete(number);
+    }
+  }
+
+  private async readChanges(job: BridgeJob, worktree: JobWorktreeRecord): Promise<WorktreeChanges> {
+    try {
+      return await changesOf(worktree.path, worktree.base);
+    } catch (error) {
+      throw gitRefusal(
+        error,
+        `Git could not read the worktree of job ${job.number}, ${worktree.path}`
+      );
+    }
+  }
+
+  /** Removes a worktree and leaves its work as the branch `branch`, at `commit`. */
+  private async leaveBranch(
+    job: BridgeJob,
+    worktree: JobWorktreeRecord,
+    branch: string,
+    commit: string
+  ): Promise<void> {
+    try {
+      if (branch !== worktree.branch) {
+        await pointRef(job.project, `refs/heads/${branch}`, commit, { fresh: true });
+      }
+      await removeJobWorktree(
+        job.project,
+        worktree.path,
+        branch === worktree.branch ? undefined : worktree.branch
+      );
+      if (branch === worktree.branch) await pointRef(job.project, `refs/heads/${branch}`, commit);
+    } catch (error) {
+      throw gitRefusal(error, `Git could not leave the work of job ${job.number} as ${branch}`);
+    }
+  }
+
+  /** Records how the work in a job's worktree ended. */
+  private async endWorktree(
+    number: number,
+    end: Omit<JobWorktreeEnd, 'at'>,
+    type: 'job.accepted' | 'job.rejected' | 'job.discarded',
+    data: Record<string, unknown>
+  ): Promise<BridgeJob> {
+    return this.mutate(async (tx) => {
+      const { job } = this.requireJob(number);
+      if (job.worktree) {
+        await this.patchRecord(job.taskId, {
+          worktree: { ...job.worktree, end: { ...end, at: this.iso() } },
+        });
+      }
+      this.journal(tx, { type, job: number, data: { how: end.how, ...data } });
+      return this.requireJob(number).job;
+    });
+  }
+
+  /**
+   * Puts away the worktrees nobody came for: those of jobs that finished longer ago than
+   * `limits.worktreeKeepMs`. What such a worktree holds is kept as a commit under a ref of its
+   * own, the worktree and its branch are removed, and whoever handed the job over is told
+   * where the work is. Looked at once an hour.
+   */
+  private sweepWorktrees(now: number): void {
+    if (now - this.worktreesSweptAt < WORKTREE_SWEEP_MS) return;
+    this.worktreesSweptAt = now;
+    const left = this.store
+      .jobTasks({ states: FINISHED_JOB_STATES })
+      .flatMap((task) => jobOf(task) ?? [])
+      .filter(
+        (job) =>
+          this.liveWorktree(job) !== undefined &&
+          !job.checking &&
+          now - Date.parse(job.endedAt ?? job.updatedAt) >= this.limits.worktreeKeepMs
+      );
+    for (const job of left) {
+      if (this.taking.has(job.number)) continue;
+      this.track(this.whileTaking(job.number, () => this.putAway(job)));
+    }
+  }
+
+  private async putAway(job: BridgeJob): Promise<void> {
+    const worktree = this.liveWorktree(job);
+    if (!worktree) return;
+    let kept: { commit: string; ref: string } | undefined;
+    try {
+      const changes = await changesOf(worktree.path, worktree.base);
+      if (changes.files.length > 0 || changes.commits > 0) {
+        const commit = await snapshotOf(worktree.path, changes, `job #${job.number}: ${job.title}`);
+        const ref = `${DISCARDED_REFS}/job-${job.number}`;
+        await pointRef(job.project, ref, commit);
+        kept = { commit, ref };
+      }
+    } catch (error) {
+      this.onError(asError(error));
+    }
+    await removeJobWorktree(job.project, worktree.path, worktree.branch);
+    await this.mutate(async (tx) => {
+      const { job: fresh } = this.requireJob(job.number);
+      if (!fresh.worktree) return;
+      await this.patchRecord(fresh.taskId, {
+        worktree: { ...fresh.worktree, end: { how: 'discarded', at: this.iso(), ...kept } },
+      });
+      this.journal(tx, {
+        type: 'job.discarded',
+        job: job.number,
+        data: { how: 'discarded', ...kept },
+      });
+      if (kept) {
+        this.systemNote(
+          tx,
+          fresh,
+          fresh.from,
+          `Nobody took or dropped the work of job #${job.number} for ${formatDuration(this.limits.worktreeKeepMs)}, so its worktree was removed. What it held is kept as commit ${kept.commit.slice(0, 10)} under ${kept.ref}: look at it with git show ${kept.ref}.`
+        );
+      }
+    });
+  }
+
   /** @throws BridgeError `unknown_job` */
   async job(number: number): Promise<BridgeJob> {
     return this.enqueue(async () => this.requireJob(number).job);
@@ -1684,6 +2287,8 @@ export class BridgeDispatcher
       const now = this.now();
       const failed: number[] = [];
       const reminded: string[] = [];
+      this.recover(tx);
+      this.sweepWorktrees(now);
 
       const overdue = this.store
         .jobTasks({ states: ACTIVE_JOB_STATES, deadlineBy: now })
@@ -1912,6 +2517,7 @@ export class BridgeDispatcher
    */
   async close(): Promise<void> {
     this.closing = true;
+    for (const run of this.checkRuns.values()) run.abort();
     for (const waiter of [...this.waiters.values()]) waiter.end('closed');
     for (const letter of [...this.verdictWaiters.keys()]) this.announce(letter);
     await this.idle();
@@ -1971,6 +2577,7 @@ export class BridgeDispatcher
       settled: [],
       decided: new Set(),
       notices: [],
+      checks: [],
     };
     const result = await this.store.transaction(() => {
       this.assertWritable?.();
@@ -1988,6 +2595,7 @@ export class BridgeDispatcher
     }
     for (const agent of tx.wake) this.wake(agent);
     for (const letter of tx.decided) this.announce(letter);
+    if (!this.closing) for (const number of tx.checks) this.startChecks(number);
     this.tellPerson(tx);
     return result;
   }
@@ -2121,6 +2729,7 @@ export class BridgeDispatcher
     }
     if (job.state !== to) {
       this.journal(tx, { type: 'job.state', job: number, data: { from: job.state, to } });
+      if (isFinishedJobState(to)) await this.patchRecord(job.taskId, { endedAt: this.iso() });
     }
   }
 
@@ -2253,7 +2862,7 @@ export class BridgeDispatcher
     }
   }
 
-  private accept(
+  private acceptLetter(
     tx: Transaction,
     fields: Pick<Letter, 'id' | 'job' | 'kind' | 'from' | 'to' | 'body'> &
       Partial<
@@ -2298,7 +2907,7 @@ export class BridgeDispatcher
 
   /** A letter the bridge writes itself. It costs the job nothing and is never held back as a repeat. */
   private systemNote(tx: Transaction, job: BridgeJob, to: string, body: string): Letter {
-    return this.accept(tx, {
+    return this.acceptLetter(tx, {
       id: this.letterId(),
       job: job.number,
       kind: 'note',
@@ -2580,15 +3189,16 @@ export class BridgeDispatcher
 
     let created: CreatedSession;
     try {
+      const place = await this.placeOf(agentName, request.job, letterId);
       created = await within(
         adapter.createSession({
           agentName,
           harness: request.agent.harness,
           project: request.agent.project,
-          cwd: request.agent.cwd,
+          cwd: place?.job.cwd ?? request.agent.cwd,
           ...(request.agent.sessionName && { sessionName: request.agent.sessionName }),
-          job: request.job,
-          firstLetter: request.letter,
+          job: place?.job ?? request.job,
+          firstLetter: place?.letter ?? request.letter,
         }),
         this.limits.sessionStartTimeoutMs,
         `Starting a ${request.agent.harness} session`

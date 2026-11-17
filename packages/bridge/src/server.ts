@@ -198,6 +198,15 @@ class Connection {
     on(BRIDGE_METHODS.delivered, (value) =>
       dispatcher.delivered(this.caller(), params(DeliveredParamsSchema, value).letters)
     );
+    on(BRIDGE_METHODS.diff, (value) =>
+      dispatcher.diff(this.caller(), value as Parameters<BridgeDispatcher['diff']>[1])
+    );
+    on(BRIDGE_METHODS.accept, (value) =>
+      dispatcher.accept(this.caller(), value as Parameters<BridgeDispatcher['accept']>[1])
+    );
+    on(BRIDGE_METHODS.reject, (value) =>
+      dispatcher.reject(this.caller(), value as Parameters<BridgeDispatcher['reject']>[1])
+    );
     on(BRIDGE_METHODS.escalate, (value) =>
       dispatcher.escalate(this.caller(), value as Parameters<BridgeDispatcher['escalate']>[1])
     );

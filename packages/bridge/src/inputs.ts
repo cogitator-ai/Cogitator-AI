@@ -17,6 +17,7 @@ import {
   type ReportOutcome,
   type Verdict,
 } from './types.js';
+import type { ChangedFile } from './worktree.js';
 
 /** An id a sender may give its letter, so sending it again does not deliver it twice. */
 export const LetterIdSchema = z
@@ -46,6 +47,7 @@ export const CreateJobInputSchema = z.strictObject({
   title: z.string().trim().min(1).max(200).regex(NO_CONTROL, 'A title is one line').optional(),
   cwd: z.string().min(1).max(4096).optional(),
   checks: z.array(JobCheckSchema).max(50).optional(),
+  worktree: z.boolean().optional(),
   budget: JobBudgetSchema.partial().optional(),
   parent: JobNumberSchema.optional(),
   letterId: LetterIdSchema.optional(),
@@ -64,7 +66,17 @@ export interface CreateJobInput {
    * and always inside the caller's project
    */
   cwd?: string;
+  /**
+   * Commands that show the result holds. When the job is reported on, the bridge runs those the
+   * rules of the caller allow without asking, and hands the report over with what they showed
+   */
   checks?: JobCheck[];
+  /**
+   * Whether the job is done in a git worktree of its own, off the commit the caller's checkout
+   * is at, by a session started for it. For jobs that change files while others do too: the
+   * work comes back with `accept`
+   */
+  worktree?: boolean;
   budget?: Partial<JobBudget>;
   /** The job this one is part of, when the caller carries out several */
   parent?: number;
@@ -219,6 +231,94 @@ export interface WithdrawInput {
  * before the caller gave up, which still holds.
  */
 export type WithdrawResult = { state: 'withdrawn' } | Extract<VerdictResult, { state: 'decided' }>;
+
+export const DiffInputSchema = z.strictObject({
+  job: JobNumberSchema,
+  paths: z.array(z.string().min(1).max(4096)).max(200).optional(),
+  maxChars: z.number().int().min(0).max(1_000_000).optional(),
+});
+
+export interface DiffInput {
+  job: number;
+  /** Only these files, paths from the top of the worktree */
+  paths?: string[];
+  /** The most characters of the patch, 200 000 by default, `0` for the list of files alone */
+  maxChars?: number;
+}
+
+/** What a job changed in its worktree so far, see `BridgeDispatcher.diff`. */
+export interface JobDiff {
+  job: number;
+  /** The top folder of the worktree */
+  worktree: string;
+  branch: string;
+  /** The commit the changes are measured against */
+  base: string;
+  files: ChangedFile[];
+  insertions: number;
+  deletions: number;
+  /** Commits the agent made in the worktree */
+  commits: number;
+  patch: string;
+  /** Whether the patch was cut at `maxChars` */
+  truncated: boolean;
+}
+
+/** A branch name git takes, without the characters a shell or a ref gives a meaning to. */
+const BranchNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .regex(
+    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/,
+    'A branch name takes letters, digits, ".", "_", "/" and "-"'
+  )
+  .refine((name) => !name.includes('..') && !name.endsWith('/') && !name.endsWith('.lock'), {
+    message: 'Not a name git takes for a branch',
+  });
+
+export const AcceptInputSchema = z.strictObject({
+  job: JobNumberSchema,
+  asBranch: z.union([z.boolean(), BranchNameSchema]).optional(),
+});
+
+export interface AcceptInput {
+  job: number;
+  /**
+   * Leave the work as a branch instead of bringing it into the caller's checkout: `true` for
+   * the branch of the worktree, or the name the branch is to have
+   */
+  asBranch?: boolean | string;
+}
+
+/** How taking the work of a job ended, see `BridgeDispatcher.accept`. */
+export type AcceptResult =
+  | {
+      state: 'accepted';
+      job: BridgeJob;
+      /** The checkout the changes are in now, staged and not committed */
+      into: string;
+      files: number;
+      insertions: number;
+      deletions: number;
+    }
+  | { state: 'branch'; job: BridgeJob; branch: string; commit: string }
+  /** The worktree held no change, and is gone */
+  | { state: 'nothing'; job: BridgeJob }
+  /** These files would be left in conflict: nothing was changed, and the worktree is still there */
+  | { state: 'conflict'; job: BridgeJob; into: string; files: string[] };
+
+export const RejectInputSchema = z.strictObject({
+  job: JobNumberSchema,
+  reason: z.string().trim().min(1).max(2000).optional(),
+});
+
+export interface RejectInput {
+  job: number;
+  /** Why the work is dropped, for the journal */
+  reason?: string;
+}
 
 /** How many letters one call to the inbox returns when it names no limit. */
 export const DEFAULT_INBOX_LIMIT = 20;

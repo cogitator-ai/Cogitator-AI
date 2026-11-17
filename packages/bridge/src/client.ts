@@ -9,11 +9,16 @@ import { BridgeError } from './errors.js';
 import {
   DEFAULT_VERDICT_WAIT_MS,
   DEFAULT_WAIT_MS,
+  type AcceptInput,
+  type AcceptResult,
   type CreateJobInput,
   type CreateJobResult,
+  type DiffInput,
   type EscalateInput,
   type InboxInput,
+  type JobDiff,
   type PersonAnswerInput,
+  type RejectInput,
   type SendLetterInput,
   type SendLetterResult,
   type StuckInput,
@@ -54,6 +59,9 @@ export interface BridgeClientOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+/** How much longer a call that has git read or move the work of a job may take, in ms. */
+const GIT_CALL_MS = 300_000;
 const NO_DISPATCHER_CODES = new Set(['ENOENT', 'ECONNREFUSED', 'ENOTSOCK']);
 
 function open(socketPath: string): Promise<Socket> {
@@ -245,6 +253,21 @@ export class BridgeClient {
 
   cancel(job: number, reason?: string): Promise<BridgeJob> {
     return this.call(BRIDGE_METHODS.cancelJob, { job, ...(reason !== undefined && { reason }) });
+  }
+
+  /** What a job changed in its worktree so far, see `BridgeDispatcher.diff` */
+  diff(input: DiffInput): Promise<JobDiff> {
+    return this.call(BRIDGE_METHODS.diff, input, GIT_CALL_MS + this.timeoutMs);
+  }
+
+  /** Takes the work of a finished job out of its worktree, see `BridgeDispatcher.accept` */
+  accept(input: AcceptInput): Promise<AcceptResult> {
+    return this.call(BRIDGE_METHODS.accept, input, GIT_CALL_MS + this.timeoutMs);
+  }
+
+  /** Drops the work of a finished job with its worktree, see `BridgeDispatcher.reject` */
+  reject(input: RejectInput): Promise<BridgeJob> {
+    return this.call(BRIDGE_METHODS.reject, input, GIT_CALL_MS + this.timeoutMs);
   }
 
   job(number: number): Promise<BridgeJob> {

@@ -62,8 +62,13 @@ export { isFinishedJobState, jobOf, jobRecordOf } from './job-record.js';
 export type { BridgeLimitsInput } from './guards.js';
 export { DEFAULT_VERDICT_WAIT_MS, DEFAULT_WAIT_MS, MAX_WAIT_MS } from './inputs.js';
 export type {
+  AcceptInput,
+  AcceptResult,
   CreateJobInput,
+  DiffInput,
   EscalateInput,
+  JobDiff,
+  RejectInput,
   InboxInput,
   PersonAnswerInput,
   SendLetterInput,
@@ -131,9 +136,13 @@ export type {
   CallerIdentity,
   DeliveryState,
   JobBudget,
+  JobChanges,
   JobCheck,
+  JobCheckResult,
   JobState,
   JobVerification,
+  JobWorktreeEnd,
+  JobWorktreeRecord,
   JournalEntry,
   JournalEntryType,
   Letter,
@@ -242,3 +251,9 @@ export { mailText, waitForMail } from './waiter.js';
 export { answerPermissionHook, askLeave, describeAsk } from './permit.js';
 export type { AskLeaveOptions, LeaveOutcome } from './permit.js';
 export type { WaitForMailOptions, WaitForMailResult } from './waiter.js';
+export {
+  DISCARDED_REFS,
+  JOB_WORKTREES_DIR,
+  type ChangeKind,
+  type ChangedFile,
+} from './worktree.js';
