@@ -1,3 +1,4 @@
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   bridgePaths,
@@ -5,9 +6,11 @@ import {
   inboxRoute,
   personRoutes,
   type ChannelPersonRoute,
+  type FactBoard,
   type PersonRoute,
   type RightsJudge,
 } from '@cogitator-ai/bridge';
+import { memoryBoard } from '@cogitator-ai/bridge/memory';
 import { settingsRights } from '@cogitator-ai/bridge/rights';
 import { telegramChannel } from '@cogitator-ai/channels';
 import { experimental_FileInboxStore, experimental_Inbox } from '@cogitator-ai/core';
@@ -23,6 +26,33 @@ export const BRIDGE_TELEGRAM_USERS_ENV = 'COGITATOR_BRIDGE_TELEGRAM_USERS';
 
 /** The file of the bridge's inbox, in the folder of the bridge. */
 export const BRIDGE_INBOX_FILE = 'inbox.json';
+
+/** The file of the board of facts, in the folder of the bridge. */
+export const BRIDGE_MEMORY_FILE = 'memory.db';
+
+/**
+ * The board of facts of this machine: what agents and the person told the bridge to remember, by
+ * project, kept in a SQLite file of its own next to the bridge's database. Undefined when it
+ * cannot be opened: the dispatcher then runs without one, and `onError` hears why.
+ */
+export async function bridgeBoard(
+  env: NodeJS.ProcessEnv = process.env,
+  settings: Pick<BridgePersonSettings, 'home' | 'onError'> = {}
+): Promise<FactBoard | undefined> {
+  try {
+    const paths = bridgePaths({ ...(settings.home && { home: settings.home }), env });
+    mkdirSync(paths.home, { recursive: true, mode: 0o700 });
+    return await memoryBoard({ store: join(paths.home, BRIDGE_MEMORY_FILE) });
+  } catch (error) {
+    settings.onError?.(
+      new Error(
+        `The board of facts could not be opened, so nothing is remembered: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      )
+    );
+    return undefined;
+  }
+}
 
 export interface BridgePersonSettings {
   /** The folder of the bridge, when a flag named one */

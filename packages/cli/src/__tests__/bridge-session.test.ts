@@ -23,12 +23,17 @@ import {
   type BridgeHost,
   type HealthCheck,
 } from '@cogitator-ai/bridge';
+import { memoryBoard } from '@cogitator-ai/bridge/memory';
 import {
+  contextFile,
   replyHint,
   runBridgeAccept,
   runBridgeDelegate,
   runBridgeDiff,
+  runBridgeForget,
+  runBridgeRecall,
   runBridgeReject,
+  runBridgeRemember,
   runBridgeDoctor,
   runBridgeInbox,
   runBridgeSend,
@@ -116,6 +121,141 @@ afterEach(async () => {
   await Promise.all(hosts.splice(0).map((host) => host.close()));
   rmSync(home, { recursive: true, force: true });
   rmSync(project, { recursive: true, force: true });
+});
+
+describe('bridge remember, recall and forget', () => {
+  it('keep the notes of a project, from its sessions and from the person', async () => {
+    mkdirSync(join(project, '.git'));
+    const board = await memoryBoard({ store: ':memory:' });
+    hosts.push(await hostBridge({ home, tickMs: 25, board }));
+    const person = (extra: Partial<BridgeSessionContext> = {}): BridgeSessionContext => ({
+      print: (line) => lines.push(line),
+      wake: (text) => woken.push(text),
+      env: { COGITATOR_BRIDGE_HOME: home },
+      cwd: project,
+      stdin: async () => undefined,
+      adapters: [],
+      ...extra,
+    });
+    const checkout = realpathSync(project);
+
+    expect(await runBridgeRecall([], {}, person())).toBe(0);
+    expect(output()).toBe('The board of this project is empty');
+
+    lines = [];
+    expect(await runBridgeRemember(['Deploys', 'are', 'frozen'], {}, person())).toBe(0);
+    expect(output()).toMatch(new RegExp(`^Kept as \\S+, for every agent of ${checkout}$`));
+    await runBridgeRemember(
+      [],
+      { lesson: true },
+      codex({ stdin: async () => 'Mocking Redis hid a race: run a real one\n' })
+    );
+
+    lines = [];
+    expect(await runBridgeRecall([], {}, claude())).toBe(0);
+    const listed = output().split('\n');
+    expect(listed).toEqual([
+      expect.stringMatching(
+        /^\S+ {2}Mocking Redis hid a race: run a real one \(lesson from codex@\S+, \d{4}-\d{2}-\d{2}\)$/
+      ),
+      expect.stringMatching(
+        /^\S+ {2}Deploys are frozen \(fact from the person, \d{4}-\d{2}-\d{2}\)$/
+      ),
+    ]);
+    lines = [];
+    await runBridgeRecall(['deploys'], { kind: 'fact' }, person());
+    expect(output()).toContain('Deploys are frozen');
+    expect(output()).not.toContain('Redis');
+    lines = [];
+    await runBridgeRecall(['kubernetes'], {}, person());
+    expect(output()).toBe('Nothing on the board fits that');
+
+    const lesson = listed[0].split(' ')[0];
+    const fact = listed[1].split(' ')[0];
+    expect(await runBridgeForget(fact, {}, claude())).toBe(1);
+    expect(failed()).toContain('only they, or the person, let it go');
+    lines = [];
+    expect(await runBridgeForget(lesson.slice(0, 8), {}, person())).toBe(0);
+    expect(output()).toBe(
+      `The note ${lesson} is off the board: Mocking Redis hid a race: run a real one`
+    );
+    await board.close?.();
+  });
+
+  it('hand a job over with what the flags name, and report with lessons', async () => {
+    mkdirSync(join(project, '.git'));
+    writeFileSync(
+      join(project, 'limiter.ts'),
+      'export const limit = 1;\nexport const burst = 1;\n'
+    );
+    const board = await memoryBoard({ store: ':memory:' });
+    hosts.push(await hostBridge({ home, tickMs: 25, board }));
+    await runBridgeInbox({}, codex());
+
+    expect(
+      await runBridgeDelegate(
+        'codex',
+        ['Raise the burst limit'],
+        {
+          done: ['The burst test passes'],
+          constraint: ['No new dependencies'],
+          decision: ['The limit stays per user'],
+          file: ['limiter.ts:2=the constant'],
+          contextTokens: 2000,
+        },
+        claude()
+      )
+    ).toBe(0);
+    lines = [];
+    await runBridgeInbox({}, codex());
+    expect(output()).toContain(
+      [
+        'Done when:',
+        '- The burst test passes',
+        'Constraints:',
+        '- No new dependencies',
+        'Decided already:',
+        '- The limit stays per user',
+        'Files to start from:',
+        '- limiter.ts lines 2-2 of 2: the constant',
+        '  2| export const burst = 1;',
+      ].join('\n')
+    );
+
+    await runBridgeSend(
+      ['Raised it'],
+      { job: 1, kind: 'report', lesson: ['The constant is read at start only'] },
+      codex()
+    );
+    lines = [];
+    await until(async () => {
+      lines = [];
+      await runBridgeRecall([], { kind: 'lesson' }, claude());
+      return output().includes('The constant is read at start only');
+    }, 'the lesson to reach the board');
+    expect(output()).toMatch(/\(lesson from codex@\S+, job #1, /);
+    await board.close?.();
+  });
+
+  it('reads a file of the context with its lines and what is there', () => {
+    expect(contextFile('src/a.ts')).toEqual({ path: 'src/a.ts' });
+    expect(contextFile('src/a.ts:120-180')).toEqual({ path: 'src/a.ts', lines: '120-180' });
+    expect(contextFile('src/a.ts:42=the retry loop')).toEqual({
+      path: 'src/a.ts',
+      lines: '42',
+      why: 'the retry loop',
+    });
+    expect(contextFile('C:/work/a.ts=why = this')).toEqual({
+      path: 'C:/work/a.ts',
+      why: 'why = this',
+    });
+  });
+
+  it('say so when the dispatcher keeps no board', async () => {
+    await startHost();
+    expect(await runBridgeRemember(['Anything'], {}, claude())).toBe(1);
+    expect(failed()).toContain('This bridge keeps no notes');
+  });
 });
 
 describe('bridge diff, accept and reject', () => {

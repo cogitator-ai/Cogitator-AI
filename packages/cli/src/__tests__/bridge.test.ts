@@ -318,6 +318,20 @@ describe('journal lines', () => {
     expect(
       describeJournalEntry(
         entry({
+          type: 'fact.remembered',
+          agent: 'codex@demo',
+          data: { id: 'mem_1', kind: 'lesson', text: 'Run a real Redis' },
+        })
+      )
+    ).toBe('codex@demo put a lesson on the board: Run a real Redis');
+    expect(
+      describeJournalEntry(
+        entry({ type: 'fact.forgotten', agent: 'person', data: { id: 'mem_1' } })
+      )
+    ).toBe('the person took the note mem_1 off the board');
+    expect(
+      describeJournalEntry(
+        entry({
           type: 'job.worktree',
           data: { path: '/work/demo/.cogitator/worktrees/job-3', branch: 'cogitator/job-3' },
         })
@@ -493,12 +507,15 @@ describe('the command line', () => {
       'deny',
       'diff',
       'doctor',
+      'forget',
       'inbox',
       'install',
       'log',
       'mcp',
       'permit',
+      'recall',
       'reject',
+      'remember',
       'reply',
       'send',
       'serve',
