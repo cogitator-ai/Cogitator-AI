@@ -478,8 +478,8 @@ describe('the dispatcher inside the daemon', () => {
 });
 
 describe('the command line', () => {
-  it('has the bridge commands, and --bridge on the daemon', () => {
-    const program = createProgram();
+  it('has the bridge commands, and --bridge on the daemon', async () => {
+    const program = await createProgram();
     const bridge = program.commands.find((command) => command.name() === 'bridge');
     const daemon = program.commands.find((command) => command.name() === 'daemon');
 

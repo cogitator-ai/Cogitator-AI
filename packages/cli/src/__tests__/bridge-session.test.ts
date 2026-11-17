@@ -644,9 +644,9 @@ describe('what bridge wait exits with', () => {
 
 describe('text that starts with a dash', () => {
   it('goes after --, and the refusal says so', async () => {
-    const program = createProgram();
+    const program = await createProgram();
     const said: string[] = [];
-    const quiet = (command: ReturnType<typeof createProgram>): void => {
+    const quiet = (command: Awaited<ReturnType<typeof createProgram>>): void => {
       command.configureOutput({ writeErr: (text) => said.push(text), writeOut: () => undefined });
       for (const sub of command.commands) quiet(sub);
     };
@@ -731,8 +731,8 @@ describe('how a hook reaches the command line', () => {
       UsageError
     );
     expect(() => codexSandboxOf({}, 'wide-open')).toThrow('"wide-open" is not a sandbox of Codex');
-    const serve = createProgram()
-      .commands.find((command) => command.name() === 'bridge')
+    const serve = (await createProgram()).commands
+      .find((command) => command.name() === 'bridge')
       ?.commands.find((command) => command.name() === 'serve');
     expect(serve?.options.find((option) => option.long === '--codex-sandbox')?.argChoices).toEqual([
       'read-only',
@@ -741,7 +741,7 @@ describe('how a hook reaches the command line', () => {
     ]);
   });
 
-  it('take the permission mode of the Claude Code sessions they start from the flag, then the environment', () => {
+  it('take the permission mode of the Claude Code sessions they start from the flag, then the environment', async () => {
     expect(claudeModeOf({})).toBeUndefined();
     expect(claudeModeOf({ COGITATOR_BRIDGE_CLAUDE_MODE: ' plan ' })).toBe('plan');
     expect(claudeModeOf({ COGITATOR_BRIDGE_CLAUDE_MODE: 'plan' }, 'default')).toBe('default');
@@ -749,8 +749,8 @@ describe('how a hook reaches the command line', () => {
       '"yolo" is not a permission mode of Claude Code'
     );
     expect(() => bridgeAdapters({ COGITATOR_BRIDGE_CLAUDE_MODE: 'yolo' })).toThrow(UsageError);
-    const serve = createProgram()
-      .commands.find((command) => command.name() === 'bridge')
+    const serve = (await createProgram()).commands
+      .find((command) => command.name() === 'bridge')
       ?.commands.find((command) => command.name() === 'serve');
     expect(serve?.options.find((option) => option.long === '--claude-mode')?.argChoices).toEqual([
       'default',
@@ -764,8 +764,8 @@ describe('how a hook reaches the command line', () => {
 });
 
 describe('the bridge commands of the program', () => {
-  it('parses what a session types', () => {
-    const bridge = createProgram().commands.find((command) => command.name() === 'bridge');
+  it('parses what a session types', async () => {
+    const bridge = (await createProgram()).commands.find((command) => command.name() === 'bridge');
     const send = bridge?.commands.find((command) => command.name() === 'send');
     expect(send?.options.find((option) => option.long === '--kind')?.argChoices).toEqual([
       'question',

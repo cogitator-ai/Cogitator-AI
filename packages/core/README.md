@@ -519,6 +519,12 @@ const weatherTool = tool({
 });
 ```
 
+A process that only defines tools, such as an MCP server, can import them from `@cogitator-ai/core/tool`. The entry has `tool()`, `toolset()` and the helpers for tool names, schemas and results (`toolContent()`, `toolOutput()`, `normalizeToolName()`, ...), the same functions the package root exports, and it does not load the agents, the LLM backends or their SDKs, so the process starts several times faster.
+
+```typescript
+import { tool } from '@cogitator-ai/core/tool';
+```
+
 `tool()` also takes `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout`, `sandbox` and `maxResultLength`, plus `title`, `outputSchema` and MCP `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), which an MCP server sends to its clients. `providerTypes` names the tool's type in a provider's own catalog, such as `{ anthropic: 'memory_20250818' }`: the Anthropic backend sends the tool as that type instead of its schema (the memory tool only to the Claude models that take it, Claude 4 and later), every other backend sends the schema. `withParsedArguments(tool)` keeps a tool's approval, sandbox, timeout and limits with a pass-through schema, for `cogitator.invokeTool()` calls whose arguments were already parsed with the tool's schema (by the MCP SDK or the AI SDK).
 
 The name must be one every provider accepts: letters, digits, `_` and `-`, starting with a letter or `_`, at most 64 characters (the strictest of the OpenAI, Anthropic, Gemini and Bedrock rules). `tool()` throws a `TypeError` for any other name, with a name that fits, instead of the run failing later with a provider error. `normalizeToolName('weather.get')` gives `weather_get` for names built from data, `normalizeToolNames(names)` keeps a whole set distinct, `isProviderSafeToolName(name)` checks one, and `assertToolName(name)` throws the same error for tools you build without `tool()`. A parameter with `.default()` is optional in the JSON Schema the model sees, and `execute` receives the default when the model leaves it out. Tools passed to `new Agent({ tools })` lose their individual parameter types in a plain array, while `toolset(...tools)` keeps them as a typed tuple that agents still accept:

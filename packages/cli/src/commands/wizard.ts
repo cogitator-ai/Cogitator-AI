@@ -9,7 +9,7 @@ import {
   EMAIL_ADDRESS_PATTERN,
   EMAIL_ALLOW_FROM_PATTERN,
   type AssistantConfigOutput,
-} from '@cogitator-ai/channels';
+} from '@cogitator-ai/channels/assistant-config';
 import { printBanner } from '../utils/logger.js';
 import { examplesHelp } from '../utils/cli.js';
 import { mergeEnvContent, parseDotenv } from '../utils/env.js';

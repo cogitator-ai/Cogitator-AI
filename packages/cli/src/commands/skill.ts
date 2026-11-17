@@ -12,7 +12,6 @@ import {
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { resolve, basename, relative } from 'node:path';
-import { validateSkill } from '@cogitator-ai/core';
 import type { Skill, Tool } from '@cogitator-ai/types';
 import { log } from '../utils/logger.js';
 import { CommandError, EXIT, examplesHelp } from '../utils/cli.js';
@@ -335,6 +334,7 @@ skillCommand
     const warnings: string[] = [];
 
     if (skill) {
+      const { validateSkill } = await import('@cogitator-ai/core');
       const result = validateSkill({ ...skill, dependencies: undefined });
       issues.push(...result.errors);
       warnings.push(...result.warnings);

@@ -1,4 +1,4 @@
-import { tool } from '@cogitator-ai/core';
+import { tool } from '@cogitator-ai/core/tool';
 import type { Tool, ToolAnnotations } from '@cogitator-ai/types';
 import { z } from 'zod';
 import { BridgeClient } from '../client.js';
@@ -139,7 +139,7 @@ const NO_SESSION =
  *
  * @example
  * ```ts
- * import { MCPServer } from '@cogitator-ai/mcp';
+ * import { MCPServer } from '@cogitator-ai/mcp/server';
  * import { bridgePaths } from '@cogitator-ai/bridge';
  * import { BRIDGE_INSTRUCTIONS, bridgeTools } from '@cogitator-ai/bridge/tools';
  *

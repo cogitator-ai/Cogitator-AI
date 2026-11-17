@@ -24,6 +24,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./tool": {
+      "types": "./dist/tool-entry.d.ts",
+      "import": "./dist/tool-entry.js",
+      "default": "./dist/tool-entry.js"
     }
   },
   "sideEffects": false,

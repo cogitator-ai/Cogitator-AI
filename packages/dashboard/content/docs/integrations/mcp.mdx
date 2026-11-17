@@ -282,6 +282,13 @@ const server = new MCPServer({
 });
 ```
 
+`@cogitator-ai/mcp/server` exports `MCPServer`, `serveMCPTools` and `InMemoryMCPTaskStore` without the MCP client. A server that takes its tools from `@cogitator-ai/core/tool` starts without the runtime: it answers `initialize` and lists its tools right away, and loads `@cogitator-ai/core` with the first tool call that runs through a Cogitator of its own (never when `toolInvoker` is set).
+
+```typescript
+import { MCPServer } from '@cogitator-ai/mcp/server';
+import { tool } from '@cogitator-ai/core/tool';
+```
+
 `serveMCPTools(tools, config)` does the same in one call and returns the started server. Tools, resources and prompts can be added one by one (`registerTool`, `registerResource`, `registerPrompt`) or in batches (`registerTools`, `registerResources`, `registerPrompts`), removed with the matching `unregister*` methods and listed with `getRegisteredTools()` / `getRegisteredResources()` / `getRegisteredPrompts()`.
 
 A tool's `title`, `annotations` and `outputSchema` reach the clients with it. The result of a tool with an output schema is sent as `structuredContent`, with its JSON as text for clients that read only `content`, and a result the schema rejects comes back as an `isError` result that says why. The output schema may have any root (an array, a record, a union): 2025-11-25 clients get such a result wrapped as `{ result }`. Imported tools carry the server's output schema to the model: Gemini takes it as `responseJsonSchema`, other providers read it at the end of the description with `llm.toolOutputSchemas: 'description'`.

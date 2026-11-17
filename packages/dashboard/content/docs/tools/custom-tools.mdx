@@ -25,6 +25,8 @@ const weatherTool = tool({
 });
 ```
 
+A process that only defines tools, such as an MCP server, can import `tool()` from `@cogitator-ai/core/tool`. The entry has `tool()`, `toolset()` and the helpers for tool names, schemas and results, the same functions the package root exports, and it does not load the agents, the LLM backends or their SDKs, so the process starts several times faster.
+
 ---
 
 ## The `tool()` Factory
