@@ -179,7 +179,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(!posix)('bridge mcp', () => {
-  it('tells a client how the tools go together, and lists them as tools that destroy nothing', async () => {
+  it('tells a client how the tools go together, and lists them with what each does to the world', async () => {
     const server = startServer({ PATH: process.env.PATH, HOME: process.env.HOME });
 
     const hello = await server.initialize('codex-mcp-client');
@@ -198,12 +198,16 @@ describe.skipIf(!posix)('bridge mcp', () => {
       'job',
       'jobs',
       'cancel',
+      'diff',
+      'accept',
+      'reject',
       'agents',
     ]);
     for (const listed of tools) {
       expect(listed.annotations?.openWorldHint).toBe(false);
       expect(
-        listed.annotations?.readOnlyHint === true || listed.annotations?.destructiveHint === false
+        listed.annotations?.readOnlyHint === true ||
+          listed.annotations?.destructiveHint === (listed.name === 'reject')
       ).toBe(true);
       expect(Object.keys(listed.inputSchema.properties ?? {})).not.toContain('_bridge');
     }

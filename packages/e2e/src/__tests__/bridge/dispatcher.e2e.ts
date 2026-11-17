@@ -153,8 +153,18 @@ describe('bridge dispatcher', () => {
     await codex.send({ job: 1, kind: 'report', body: 'Done: 14 tests pass' });
 
     expect(await claude.job(1)).toMatchObject({ state: 'completed', lettersUsed: 4 });
-    expect((await claude.inbox())[0]).toMatchObject({ kind: 'report', outcome: 'completed' });
-    expect((await claude.job(1)).verification).toBeUndefined();
+    await until(async () => (await claude.job(1)).checking === undefined, 'the checks of the job');
+    const [report] = await claude.inbox();
+    expect(report).toMatchObject({ kind: 'report', outcome: 'completed' });
+    expect(report.text).toContain(
+      '[agent bridge] Checks. Not verified: 0 of 1 check passed.\n- not run: pnpm test: the rules of claude@'
+    );
+    expect((await claude.job(1)).verification).toMatchObject({
+      verified: false,
+      checks: [
+        { name: 'pnpm test', ok: false, skipped: expect.stringContaining('without asking') },
+      ],
+    });
   });
 
   it('shows the same exchange through the command line', async () => {
