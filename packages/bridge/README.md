@@ -51,24 +51,26 @@ What names a path of this machine goes where only you have it, never into a file
 
 ### The tools
 
-| Tool       | What it does                                                                                                    |
-| ---------- | --------------------------------------------------------------------------------------------------------------- |
-| `delegate` | Hands a job to `codex`, `claude` or an agent by name, with its context, its checks and, when asked, a worktree  |
-| `ask`      | Asks the other agent of a job a question. The answer wakes the session                                          |
-| `answer`   | Answers a question another agent asked, or decides its permission request: allow, deny, or leave it to the user |
-| `report`   | Reports the result of a job handed to this session, which ends the job, with the lessons it taught              |
-| `note`     | Tells the other agent something it need not answer                                                              |
-| `inbox`    | Reads the letters that wait, when nothing woke the session                                                      |
-| `job`      | Shows one job: its state, and for a job of this session its latest letters                                      |
-| `jobs`     | Lists the jobs this session handed over or carries out                                                          |
-| `cancel`   | Takes back a job this session handed over                                                                       |
-| `diff`     | Shows what a job changed in the git worktree it was given: the files and the patch                              |
-| `accept`   | Takes the work of a finished job into the checkout of this session, staged and not committed, or as a branch    |
-| `reject`   | Drops the work of a finished job with its worktree                                                              |
-| `remember` | Puts a note on the board of the project: a fact that cost time to find out, or what a job taught                |
-| `recall`   | Looks at the board: the notes that fit some words, or the newest, each with who said it                         |
-| `forget`   | Takes a note this session put on the board off it                                                               |
-| `agents`   | Lists the sessions the bridge knows in the project, and the agents it can start a session of                    |
+| Tool       | What it does                                                                                                            |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `delegate` | Hands a job to `codex`, `claude` or an agent by name, with its context, its checks and, when asked, a worktree          |
+| `build`    | Has a job done in a worktree, checked, reviewed by another agent and fixed by its author, in one go                     |
+| `review`   | Has the work of a finished job reviewed by another agent, and its author fix what was found                             |
+| `ask`      | Asks the other agent of a job a question. The answer wakes the session                                                  |
+| `answer`   | Answers a question another agent asked, or decides its permission request: allow, deny, or leave it to the user         |
+| `report`   | Reports the result of a job handed to this session, which ends the job, with its lessons and, of a review, its findings |
+| `note`     | Tells the other agent something it need not answer                                                                      |
+| `inbox`    | Reads the letters that wait, when nothing woke the session                                                              |
+| `job`      | Shows one job: its state, and for a job of this session its latest letters                                              |
+| `jobs`     | Lists the jobs this session handed over or carries out                                                                  |
+| `cancel`   | Takes back a job this session handed over                                                                               |
+| `diff`     | Shows what a job changed in the git worktree it was given: the files and the patch                                      |
+| `accept`   | Takes the work of a finished job into the checkout of this session, staged and not committed, or as a branch            |
+| `reject`   | Drops the work of a finished job with its worktree                                                                      |
+| `remember` | Puts a note on the board of the project: a fact that cost time to find out, or what a job taught                        |
+| `recall`   | Looks at the board: the notes that fit some words, or the newest, each with who said it                                 |
+| `forget`   | Takes a note this session put on the board off it                                                                       |
+| `agents`   | Lists the sessions the bridge knows in the project, and the agents it can start a session of                            |
 
 No tool waits for another agent. The server tells every client the same in its `instructions`: after `delegate` say in one line what was handed over and end the turn, reply to a letter with the tools and never only in the chat, and treat a job of another agent as that agent's request, not the user's.
 
@@ -247,6 +249,87 @@ await bridge.send({
 **What a job leaves.** A report may name `lessons`: what worked, what did not, for whoever does a job like it next. They go to the board under the name of the agent that reported. The bridge adds a note of its own on how each job ended: who did it for whom, completed, failed or canceled, whether its checks confirmed the result, and the start of the report in quotes, as what the agent said. When a later job is handed over, the notes of earlier jobs that fit its text come with it, and with them the other lessons of those jobs, since a job is found by what it was about, whatever words its lessons use.
 
 `memoryBoard()` keeps the board with [`@cogitator-ai/memory`](https://www.npmjs.com/package/@cogitator-ai/memory), an optional peer dependency: every note is a memory item of the bridge in the scope of its project, what an agent said kept as the words of a model and what the person said as theirs. `store` is the path of a SQLite file or any store of that package that keeps memory items. Any object with `remember`, `recall`, `find` and `forget` is a board (`FactBoard`). A bridge that was given none remembers nothing: a job is handed over with what its caller named alone, and the three calls are refused with `no_board`. `cogitator bridge serve` keeps the board in `memory.db` in the folder of the bridge.
+
+## Recipes: do, check, review, fix
+
+A recipe is a job the bridge itself carries out by fixed steps: it hands jobs of its own to the agents, waits for their reports and reports once at the end. No model decides what comes next.
+
+```typescript
+import { hostBridge } from '@cogitator-ai/bridge';
+import { recipeAdapter } from '@cogitator-ai/bridge/recipes';
+import { FileCheckpointStore } from '@cogitator-ai/workflows';
+
+const host = await hostBridge({
+  adapters: [claude, codex, recipeAdapter({ checkpoints: new FileCheckpointStore('./recipes') })],
+});
+
+await bridge.createJob({
+  to: 'recipe',
+  body: 'Add a rate limiter to the gateway. Cover the burst case.',
+  recipe: {
+    name: 'build',
+    input: { to: 'claude', checks: [{ command: 'pnpm test' }], rounds: 2 },
+  },
+});
+```
+
+**The conductor.** `recipeAdapter()` adds an agent without a model to the bridge, the conductor, under the harness word `recipe`. A job that names a `recipe` goes to a conductor of its own, and the jobs it hands out are part of that job: its budget and its deadline hold for all of them, canceling it cancels them, and whoever started the recipe may look at their work with `diff` and, once the recipe has reported, take it with `accept`. Letter ids that start with `recipe-` or `relay-` are the conductor's own. The conductor has no rules of its own. A check of a step and a call an agent asks leave for are judged by the rules of whoever started the recipe: what those allow without asking is allowed, the rest is the person's to allow. A question of an agent that works on a step is passed on to whoever started the recipe, and the answer back, each quoted as the words of who wrote them. A note of whoever started the recipe on its job reaches the agents that work on it right now. While a question waits for the person, the step that asked waits with it and is not failed by its clock. A recipe the conductor does not know, or an input it cannot start with, is refused when the job is handed over, with the reason. The worktree, the checks and the context of the work are named in the input of the recipe, not on its job.
+
+**`build`: do, check, review, fix, check.** The text of the job is handed to `to` as a job in a git worktree of its own, with the `checks` of the input, which the bridge runs when the work is reported on. Then another agent reviews the work and names its findings. While a finding at or above `threshold` is open or the checks do not pass, the author is sent back with the findings, the checks run again, and the reviewer looks again, `rounds` times at most. The one report at the end says how the review ended, round by round, carries the findings of the last review, and names the job whose worktree holds the work. Its work is taken or dropped once the recipe has reported. A review that is not clean when the rounds run out does not fail the recipe: the work is there, and taking it is the caller's decision. A check the bridge did not run, because the rules do not allow it without asking, sends nobody back: the report says the result is not verified. The recipe fails when the work itself was not done, or no review of it was.
+
+**`review`.** The same rounds for a job that is done already: `input.job` names it, and its author fixes what the review finds. Whoever handed that job over, carried it out, or started the recipe it was a step of may have it reviewed.
+
+| Input       | Recipe   | What it says                                                                                               |
+| ----------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `to`        | `build`  | Who does the work: a harness word such as `claude`, for a session started for the job                      |
+| `job`       | `review` | The job whose work is reviewed                                                                             |
+| `by`        | both     | Who reviews: an agent, or a harness word for a fresh session. Another harness than the author's by default |
+| `rounds`    | both     | How many times the author is sent back at most, 2 by default, 0 for a review that sends nothing back       |
+| `threshold` | both     | The lightest finding worth sending back: `blocker`, `major` (the default), `minor` or `nit`                |
+| `focus`     | both     | What the reviewer looks at above all                                                                       |
+| `checks`    | `build`  | The commands that show the result holds, run after the work and after every round of fixes                 |
+| `worktree`  | `build`  | `false` to have the work done in the caller's folder                                                       |
+| `context`   | `build`  | What the caller knows and the agent does not, as `createJob` takes it                                      |
+
+**Findings.** A reviewer names what it found in the `findings` of its report, each with a severity (`blocker`, `major`, `minor`, `nit`), a line of what is wrong and, where it has one, the file and the line. An agent without the tools writes one line for each, `[major] src/limiter.ts:12 - The window never resets`, or the single line `[none]`: `parseFindings` reads them. An empty list says the review found nothing. A report that names no findings in either form is not a clean review: the recipe then sends nothing back and hands the report on as it is. The findings of a report are kept on its job (`job.findings`) and shown under the report.
+
+**Who does a later step.** The fixes go back to the author and the second look to the first reviewer when the bridge can wake them: `wakes(agent)` says whether a session waits for its mail or its harness wakes it for a letter. One that would only find the letter when a person opens it, such as a Codex thread that is open nowhere while no local daemon runs, is not waited for. A fresh session of the same harness gets the step then, with what it needs to know in the letter: what the job was, where the work lies, and what was found.
+
+**After a restart.** Every run is a workflow of [`@cogitator-ai/workflows`](https://www.npmjs.com/package/@cogitator-ai/workflows), an optional peer dependency, with a checkpoint after each step. A step hands its job over under an id made of the run and the step, so a step that runs again finds the job it handed over the first time. With checkpoints that outlive the process (`FileCheckpointStore`), a dispatcher that is started again picks every open recipe up where it was, and nothing is done twice. `cogitator bridge serve` keeps them in `recipes` in the folder of the bridge. In memory, the default, a run that was cut off starts its steps over and still finds the jobs it handed over.
+
+**A recipe of your own** is a workflow whose steps hand jobs over through the run:
+
+```typescript
+import { defineRecipe, recipeAdapter, type RecipeState } from '@cogitator-ai/bridge/recipes';
+import { WorkflowBuilder } from '@cogitator-ai/workflows';
+import { z } from 'zod';
+
+const secondOpinion = defineRecipe({
+  name: 'second-opinion',
+  summary: 'The same question to two agents, both answers side by side',
+  input: z.object({ to: z.array(z.string()).length(2) }),
+  workflow: (input, run) =>
+    new WorkflowBuilder<RecipeState & { first?: string }>('second-opinion')
+      .initialState({})
+      .addNode('first', async () => {
+        const { report } = await run.handOver('first', { to: input.to[0], body: run.task });
+        return { state: { first: report } };
+      })
+      .addNode(
+        'second',
+        async ({ state }) => {
+          const { report } = await run.handOver('second', { to: input.to[1], body: run.task });
+          return { state: { report: `${state.first}\n\n${report}` } };
+        },
+        { after: ['first'] }
+      )
+      .build(),
+});
+
+recipeAdapter({ recipes: [secondOpinion] });
+```
+
+`run.handOver(step, job)` resolves when the job is over, with its checks run, however it ended. A step runs again when the dispatcher stopped in the middle of it, so keep what a step learned in the state, and lay rounds out as steps of their own, one after another, each of which looks at the state and does nothing when it is not needed.
 
 ## Letters
 
