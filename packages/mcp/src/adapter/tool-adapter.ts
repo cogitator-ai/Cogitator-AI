@@ -13,7 +13,7 @@ import {
   toolContent,
   toolPartsToText,
   toolResultParts,
-} from '@cogitator-ai/core';
+} from '@cogitator-ai/core/tool';
 import type { Tool, ToolSchema, ToolContext, ToolContentPart } from '@cogitator-ai/types';
 import type {
   MCPJsonSchema,

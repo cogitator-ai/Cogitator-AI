@@ -126,7 +126,7 @@ The second argument is the environment the runtime reads keys and tokens from; i
 
 ## Config Reference
 
-`cogitator.yml` is validated by `AssistantConfigSchema` (exported from `@cogitator-ai/channels`, with `AssistantConfigInput` / `AssistantConfigOutput` types).
+`cogitator.yml` is validated by `AssistantConfigSchema` (exported from `@cogitator-ai/channels`, with `AssistantConfigInput` / `AssistantConfigOutput` types). `@cogitator-ai/channels/assistant-config` exports the schema and its types alone, for a tool that only reads or checks the file and does not need the channels and the runtime loaded.
 
 | Field                                     | Type                                                                                                                       | Default                                                                                        | Description                                                                                                                                                                                         |
 | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

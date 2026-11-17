@@ -1,4 +1,4 @@
-import { MCPServer } from '@cogitator-ai/mcp';
+import { MCPServer } from '@cogitator-ai/mcp/server';
 import { bridgePaths } from '../../paths';
 import { BRIDGE_INSTRUCTIONS, bridgeTools } from '../../tools';
 

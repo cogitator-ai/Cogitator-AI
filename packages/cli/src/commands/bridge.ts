@@ -22,7 +22,7 @@ import {
 } from '@cogitator-ai/bridge';
 import { CommandError, examplesHelp, printJson, reportFailure } from '../utils/cli.js';
 import { bridgeAdapters, CLAUDE_MODES, CODEX_SANDBOXES } from '../utils/bridge-adapters.js';
-import { bridgePerson, type BridgePerson } from '../utils/bridge-person.js';
+import type { BridgePerson } from '../utils/bridge-person.js';
 import {
   INSTALL_CHOICES,
   runBridgeInstall,
@@ -390,7 +390,10 @@ export async function runBridgeServe(
       context.io.warn(`${chalk.yellow('!')} ${error.message}`);
     reach =
       context.person ??
-      bridgePerson(context.env, { ...(flags.home && { home: flags.home }), onError });
+      (await import('../utils/bridge-person.js')).bridgePerson(context.env, {
+        ...(flags.home && { home: flags.home }),
+        onError,
+      });
     host = await hostBridge({
       ...(flags.home && { home: flags.home }),
       env: context.env,

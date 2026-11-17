@@ -428,6 +428,13 @@ server.registerTools([tool1, tool2, tool3]);
 await server.start();
 ```
 
+`@cogitator-ai/mcp/server` exports `MCPServer`, `serveMCPTools` and `InMemoryMCPTaskStore` without the MCP client. A server that takes its tools from `@cogitator-ai/core/tool` starts without the runtime: it answers `initialize` and lists its tools right away, and loads `@cogitator-ai/core` with the first tool call that runs through a Cogitator of its own (never when `toolInvoker` is set).
+
+```typescript
+import { MCPServer } from '@cogitator-ai/mcp/server';
+import { tool } from '@cogitator-ai/core/tool';
+```
+
 ### Server Configuration
 
 ```typescript

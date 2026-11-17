@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { AssistantConfigSchema } from '@cogitator-ai/channels';
+import { AssistantConfigSchema } from '@cogitator-ai/channels/assistant-config';
 import { CogitatorConfigSchema } from '@cogitator-ai/config';
 
 export const PROJECT_CONFIG_FILES = ['cogitator.yml', 'cogitator.yaml'];

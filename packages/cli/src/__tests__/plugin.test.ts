@@ -72,8 +72,8 @@ describe('cogitator plugin', () => {
     rmSync(base, { recursive: true, force: true });
   });
 
-  it('is mounted with its subcommands', () => {
-    const plugin = createProgram().commands.find((command) => command.name() === 'plugin');
+  it('is mounted with its subcommands', async () => {
+    const plugin = (await createProgram()).commands.find((command) => command.name() === 'plugin');
     expect(plugin?.commands.map((command) => command.name())).toEqual([
       'install',
       'uninstall',

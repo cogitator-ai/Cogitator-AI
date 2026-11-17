@@ -25,7 +25,7 @@ import {
   type VersionNegotiationMode,
 } from '@modelcontextprotocol/client';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
-import { toolOutput } from '@cogitator-ai/core';
+import { toolOutput } from '@cogitator-ai/core/tool';
 import type {
   Tool,
   ToolApp,
