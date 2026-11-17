@@ -155,6 +155,7 @@ export interface BridgeDelegateFlags extends HomeFlags {
   title?: string;
   cwd?: string;
   check?: string[];
+  worktree?: boolean;
   parent?: number;
   json?: boolean;
 }
@@ -175,6 +176,7 @@ export async function runBridgeDelegate(
         ...(flags.title && { title: flags.title }),
         ...(flags.cwd && { cwd: flags.cwd }),
         ...(flags.check?.length && { checks: flags.check.map((command) => ({ command })) }),
+        ...(flags.worktree && { worktree: true }),
         ...(flags.parent !== undefined && { parent: flags.parent }),
       })
     );
@@ -183,6 +185,11 @@ export async function runBridgeDelegate(
       context.print(
         `Job #${job.number} is with ${job.to} (${job.state}). Its answer arrives as a letter: nothing to wait for here`
       );
+      if (job.isolation === 'worktree') {
+        context.print(
+          `  It is done in a git worktree of its own. Its work comes back with: cogitator bridge accept ${job.number}`
+        );
+      }
     }
     return 0;
   } catch (error) {
@@ -448,6 +455,142 @@ export async function runBridgeCancel(
     );
     if (flags.json) printJson(canceled);
     else context.print(`Job #${canceled.number} is ${canceled.state}, ${canceled.to} is told`);
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+export interface BridgeDiffFlags extends HomeFlags {
+  stat?: boolean;
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge diff <job> [path...]: what a job changed in the git worktree it was given,
+ * as its two agents may see it: the files, and the patch unless `--stat` leaves it out.
+ */
+export async function runBridgeDiff(
+  job: number,
+  paths: readonly string[],
+  flags: BridgeDiffFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const found = await asSession(flags, context, (client) =>
+      client.diff({
+        job,
+        ...(paths.length > 0 && { paths: [...paths] }),
+        ...(flags.stat && { maxChars: 0 }),
+      })
+    );
+    if (flags.json) {
+      printJson(found);
+      return 0;
+    }
+    if (found.files.length === 0) {
+      context.print(`Job #${found.job} changed nothing in its worktree, ${found.worktree}`);
+      return 0;
+    }
+    context.print(
+      `Job #${found.job}: ${found.files.length} ${found.files.length === 1 ? 'file' : 'files'}, +${found.insertions} -${found.deletions}, in ${found.worktree} (branch ${found.branch})`
+    );
+    for (const file of found.files) {
+      const mark = file.kind === 'added' ? 'A' : file.kind === 'deleted' ? 'D' : 'M';
+      const size =
+        file.insertions === undefined ? 'binary' : `+${file.insertions} -${file.deletions}`;
+      context.print(`  ${mark} ${file.path}  ${size}`);
+    }
+    if (!flags.stat) {
+      context.print('');
+      context.print(found.patch.trimEnd());
+      if (found.truncated) {
+        context.print(
+          `[cut here: the patch is longer. Name some files, or read them in ${found.worktree}]`
+        );
+      }
+    }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+export interface BridgeAcceptFlags extends HomeFlags {
+  asBranch?: string | boolean;
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge accept <job>: the session that handed a job over takes its work out of the
+ * worktree, into the checkout the command runs in, staged and not committed. `--as-branch`
+ * leaves it as a branch instead. Files that would conflict are named, nothing is touched then,
+ * and the command fails.
+ */
+export async function runBridgeAccept(
+  job: number,
+  flags: BridgeAcceptFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const taken = await asSession(flags, context, (client) =>
+      client.accept({ job, ...(flags.asBranch !== undefined && { asBranch: flags.asBranch }) })
+    );
+    if (flags.json) {
+      printJson(taken);
+      return taken.state === 'conflict' ? EXIT.failed : 0;
+    }
+    switch (taken.state) {
+      case 'accepted':
+        context.print(
+          `The work of job #${job} is in ${taken.into}: ${taken.files} ${taken.files === 1 ? 'file' : 'files'}, +${taken.insertions} -${taken.deletions}, staged and not committed`
+        );
+        context.print('  Look at it: git diff --cached   Then commit it yourself');
+        return 0;
+      case 'branch':
+        context.print(
+          `The work of job #${job} is the branch ${taken.branch}, at commit ${taken.commit.slice(0, 10)}`
+        );
+        return 0;
+      case 'nothing':
+        context.print(`Job #${job} changed nothing: there was nothing to take`);
+        return 0;
+      case 'conflict':
+        context.print(
+          `Nothing was taken: the work of job #${job} would leave these files of ${taken.into} in conflict`
+        );
+        for (const file of taken.files) context.print(`  ${file}`);
+        context.print(
+          `  Its worktree is still there. Take it as a branch: cogitator bridge accept ${job} --as-branch   Or drop it: cogitator bridge reject ${job}`
+        );
+        return EXIT.failed;
+    }
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+export interface BridgeRejectFlags extends HomeFlags {
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge reject <job> [reason]: the session that handed a job over drops its work.
+ * The worktree and its branch are removed with everything in them.
+ */
+export async function runBridgeReject(
+  job: number,
+  words: readonly string[],
+  flags: BridgeRejectFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const reason = words.join(' ').trim();
+    const dropped = await asSession(flags, context, (client) =>
+      client.reject({ job, ...(reason && { reason }) })
+    );
+    if (flags.json) printJson(dropped);
+    else context.print(`The work of job #${dropped.number} is dropped, and its worktree is gone`);
     return 0;
   } catch (error) {
     return reportFailure(error, { json: flags.json ?? false });

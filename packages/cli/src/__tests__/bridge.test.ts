@@ -317,6 +317,44 @@ describe('journal lines', () => {
     );
     expect(
       describeJournalEntry(
+        entry({
+          type: 'job.worktree',
+          data: { path: '/work/demo/.cogitator/worktrees/job-3', branch: 'cogitator/job-3' },
+        })
+      )
+    ).toBe(
+      'works in a worktree of its own: /work/demo/.cogitator/worktrees/job-3 (branch cogitator/job-3)'
+    );
+    expect(
+      describeJournalEntry(
+        entry({ type: 'job.accepted', data: { how: 'accepted', into: '/work/demo', files: 2 } })
+      )
+    ).toBe('work taken into /work/demo');
+    expect(
+      describeJournalEntry(
+        entry({ type: 'job.accepted', data: { how: 'branch', branch: 'feat/burst' } })
+      )
+    ).toBe('work left as the branch feat/burst');
+    expect(describeJournalEntry(entry({ type: 'job.accepted', data: { how: 'accepted' } }))).toBe(
+      'nothing to take, the worktree is removed'
+    );
+    expect(
+      describeJournalEntry(
+        entry({ type: 'job.rejected', data: { how: 'rejected', reason: 'Superseded' } })
+      )
+    ).toBe('work dropped: Superseded');
+    expect(
+      describeJournalEntry(
+        entry({
+          type: 'job.discarded',
+          data: { how: 'discarded', ref: 'refs/cogitator/discarded/job-3' },
+        })
+      )
+    ).toBe(
+      'worktree put away, nobody came for it: its work is kept under refs/cogitator/discarded/job-3'
+    );
+    expect(
+      describeJournalEntry(
         entry({ type: 'letter.delivered', agent: 'codex@demo', letter: 'ltr_1' })
       )
     ).toBe('delivered to codex@demo (ltr_1)');
@@ -446,18 +484,21 @@ describe('the command line', () => {
     const daemon = program.commands.find((command) => command.name() === 'daemon');
 
     expect(bridge?.commands.map((command) => command.name()).sort()).toEqual([
+      'accept',
       'allow',
       'asks',
       'caller',
       'cancel',
       'delegate',
       'deny',
+      'diff',
       'doctor',
       'inbox',
       'install',
       'log',
       'mcp',
       'permit',
+      'reject',
       'reply',
       'send',
       'serve',
