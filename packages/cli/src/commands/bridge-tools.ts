@@ -164,6 +164,8 @@ export interface BridgePermitFlags {
   hook: string;
   /** Seconds to wait for the decision */
   timeout?: number;
+  /** The name the bridge gave the session, for one it started */
+  agent?: string;
   home?: string;
 }
 
@@ -190,11 +192,13 @@ export async function runBridgePermit(
       throw new CommandError(`No adapter asks leave for the sessions of "${flags.hook}"`);
     }
     const hookInput = await context.stdin();
-    const call =
+    const read =
       hookInput === undefined
         ? undefined
         : adapter.permissionHook({ env: context.env, cwd: context.cwd, hookInput });
-    if (!call) return 0;
+    if (!read) return 0;
+    const started = flags.agent?.trim();
+    const call = started ? { ...read, caller: { ...read.caller, agentName: started } } : read;
     const answer = await answerPermissionHook({
       socketPath: bridgePaths({ ...(flags.home && { home: flags.home }), env: context.env }).socket,
       call,

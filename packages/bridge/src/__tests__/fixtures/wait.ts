@@ -44,8 +44,10 @@ async function main(): Promise<number> {
   if (args[1] === 'permit') {
     const input: Buffer[] = [];
     for await (const chunk of process.stdin) input.push(chunk as Buffer);
-    const call = claudePermissionCall(Buffer.concat(input).toString('utf8'));
-    if (!call) return 0;
+    const read = claudePermissionCall(Buffer.concat(input).toString('utf8'));
+    if (!read) return 0;
+    const started = flag('--agent');
+    const call = started ? { ...read, caller: { ...read.caller, agentName: started } } : read;
     const answer = await answerPermissionHook({
       socketPath: bridgePaths({ home: flag('--home'), env: process.env }).socket,
       call,

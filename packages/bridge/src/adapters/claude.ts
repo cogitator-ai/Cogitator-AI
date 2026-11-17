@@ -239,6 +239,11 @@ const HookInputSchema = z.object({
 export interface ClaudePermitHookOptions {
   /** How the bridge's command line is run, `cogitator bridge` by default */
   bridgeCommand?: string;
+  /**
+   * The name the bridge gave the session it starts. With it a call the session asks leave for
+   * before the bridge has learned its id still belongs to the job it was started for
+   */
+  agentName?: string;
   /** The folder of the bridge's files, when it is not the default one */
   bridgeHome?: string;
   /** Seconds the hook may wait for the decision before Claude Code ends it, 12 hours by default */
@@ -259,6 +264,7 @@ export function claudePermitCommand(options: ClaudePermitHookOptions = {}): stri
     'permit',
     `--hook ${HARNESSES.claudeCode}`,
     `--timeout ${Math.max(1, Math.floor(timeoutS - HOOK_MARGIN_S))}`,
+    ...(options.agentName ? [`--agent ${shellQuote(options.agentName)}`] : []),
     ...(options.bridgeHome ? [`--home ${shellQuote(options.bridgeHome)}`] : []),
   ].join(' ');
 }
@@ -693,7 +699,7 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     const whole = fitsArgument(request.firstLetter.text);
     const tools = options.toolsServer;
     const waits = claudeWaitHook({ ...hook, agentName: request.agentName, tools: !!tools });
-    const permit = claudePermitHook(hook);
+    const permit = claudePermitHook({ ...hook, agentName: request.agentName });
     const settings = tools
       ? {
           hooks: { ...waits.hooks, ...claudeToolsHook(hook).hooks, ...permit.hooks },

@@ -12,6 +12,7 @@ import {
   codexAdapter,
   hostBridge,
   type AdapterSetup,
+  type BridgeAdapter,
   type BridgeHost,
   type SetupStep,
 } from '@cogitator-ai/bridge';
@@ -178,6 +179,55 @@ describe('bridge permit', () => {
           decision: { behavior: 'allow' },
         },
       });
+    } finally {
+      await conductor.close();
+    }
+  });
+
+  it('belongs to the job a session was started for, even before the bridge has learned its id', async () => {
+    let started: (session: { sessionId: string }) => void = () => undefined;
+    const starting: BridgeAdapter = {
+      harness: 'claude-code',
+      delivery: 'test',
+      capabilities: { createSession: true, push: true, steer: false, nativeWindow: true },
+      createSession: () => new Promise((resolve) => (started = resolve)),
+      deliver: async () => undefined,
+    };
+    const host = await hostBridge({
+      home: bridgeDir,
+      tickMs: 25,
+      adapters: [starting],
+      rights: () => 'allow',
+    });
+    hosts.push(host);
+    const conductor = await BridgeClient.connect({
+      socketPath: bridgePaths({ home: bridgeDir }).socket,
+      caller: { harness: 'conductor', sessionId: 'conductor-1', cwd: project },
+    });
+    try {
+      const { job } = await conductor.createJob({ to: 'claude', body: 'Ship the fix' });
+      const first = hook(hookInput('git push origin main'));
+
+      const running = runBridgePermit(
+        { hook: 'claude-code', timeout: 20, agent: job.to },
+        first.context
+      );
+      const request = await vi.waitFor(async () => {
+        const [letter] = await conductor.inbox();
+        expect(letter).toBeDefined();
+        return letter;
+      });
+      expect(request).toMatchObject({ kind: 'permission', from: job.to });
+      await conductor.send({ job: job.number, kind: 'answer', body: 'Go', verdict: 'allow' });
+
+      expect(await running).toBe(0);
+      expect(JSON.parse(first.written.join('')).hookSpecificOutput.decision).toEqual({
+        behavior: 'allow',
+      });
+      expect(
+        (await conductor.agents({ harness: 'claude-code' })).map((agent) => agent.name)
+      ).toEqual([job.to]);
+      started({ sessionId: 'worker-1' });
     } finally {
       await conductor.close();
     }
