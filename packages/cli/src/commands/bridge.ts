@@ -45,14 +45,20 @@ import {
   runBridgeDecide,
   runBridgeDelegate,
   runBridgeDoctor,
+  runBridgeAccept,
   runBridgeCancel,
+  runBridgeDiff,
+  runBridgeReject,
   runBridgeInbox,
   runBridgeReply,
   runBridgeSend,
   runBridgeWait,
   type BridgeDelegateFlags,
   type BridgeDoctorFlags,
+  type BridgeAcceptFlags,
   type BridgeCancelFlags,
+  type BridgeDiffFlags,
+  type BridgeRejectFlags,
   type BridgeInboxFlags,
   type BridgePersonFlags,
   type BridgeSendFlags,
@@ -172,6 +178,18 @@ export function describeJournalEntry(raw: JournalEntry): string {
       return `job is ${text(data.to)} (was ${text(data.from)})`;
     case 'job.verified':
       return `checks ${data.verified ? 'confirmed the result' : 'did not confirm the result'}${data.summary ? `: ${preview(text(data.summary))}` : ''}`;
+    case 'job.worktree':
+      return `works in a worktree of its own: ${text(data.path)} (branch ${text(data.branch)})`;
+    case 'job.accepted':
+      return data.how === 'branch'
+        ? `work left as the branch ${text(data.branch)}`
+        : data.into
+          ? `work taken into ${text(data.into)}`
+          : 'nothing to take, the worktree is removed';
+    case 'job.rejected':
+      return `work dropped${data.reason ? `: ${preview(text(data.reason))}` : ''}`;
+    case 'job.discarded':
+      return `worktree put away, nobody came for it${data.ref ? `: its work is kept under ${text(data.ref)}` : ''}`;
     case 'letter.queued': {
       const verdict = data.verdict ? ` (${text(data.verdict)})` : '';
       const forPerson = data.needsPerson ? ', waits for the person' : '';
@@ -482,6 +500,8 @@ export const bridgeCommand = new Command('bridge')
       ['cogitator bridge delegate codex "Write the tests"', 'from a session: hand a job over'],
       ['cogitator bridge send --job 12 --kind report "Done"', 'from a session: report on a job'],
       ['cogitator bridge cancel 12 "Not needed any more"', 'from a session: take a job back'],
+      ['cogitator bridge diff 12 --stat', 'from a session: what a job changed in its worktree'],
+      ['cogitator bridge accept 12', 'from a session: take the work of a job into this checkout'],
     ])
   );
 
@@ -553,6 +573,10 @@ bridgeCommand
     'a command that shows the job is done, repeatable',
     (value: string, all: string[]) => [...all, value],
     [] as string[]
+  )
+  .option(
+    '--worktree',
+    'give the job a git worktree of its own, off the last commit here, and a fresh session'
   )
   .option('--parent <number>', 'the job this one is part of', positiveInt)
   .option(...homeOption)
@@ -645,6 +669,45 @@ bridgeCommand
   .option('--json', 'print the job as JSON')
   .action(async (job: number, reason: string[], flags: BridgeCancelFlags) => {
     process.exitCode = await runBridgeCancel(job, reason, flags);
+  });
+
+bridgeCommand
+  .command('diff')
+  .description('From a session: see what a job changed in the git worktree it was given')
+  .argument('<job>', 'the number of the job', positiveInt)
+  .argument('[path...]', 'only these files, paths from the top of the repository')
+  .option('--stat', 'the list of files without the patch')
+  .option(...homeOption)
+  .option('--json', 'print the changes as JSON')
+  .action(async (job: number, paths: string[], flags: BridgeDiffFlags) => {
+    process.exitCode = await runBridgeDiff(job, paths, flags);
+  });
+
+bridgeCommand
+  .command('accept')
+  .description(
+    'From a session: take the work of a finished job into the checkout here, staged and not committed'
+  )
+  .argument('<job>', 'the number of the job', positiveInt)
+  .option(
+    '--as-branch [name]',
+    'leave the work as a branch instead: the one of the worktree, or the name given'
+  )
+  .option(...homeOption)
+  .option('--json', 'print the result as JSON')
+  .action(async (job: number, flags: BridgeAcceptFlags) => {
+    process.exitCode = await runBridgeAccept(job, flags);
+  });
+
+bridgeCommand
+  .command('reject')
+  .description('From a session: drop the work of a finished job with its worktree')
+  .argument('<job>', 'the number of the job', positiveInt)
+  .argument('[reason...]', 'why, for the journal')
+  .option(...homeOption)
+  .option('--json', 'print the job as JSON')
+  .action(async (job: number, reason: string[], flags: BridgeRejectFlags) => {
+    process.exitCode = await runBridgeReject(job, reason, flags);
   });
 
 bridgeCommand

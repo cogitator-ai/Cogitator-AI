@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
@@ -16,7 +25,10 @@ import {
 } from '@cogitator-ai/bridge';
 import {
   replyHint,
+  runBridgeAccept,
   runBridgeDelegate,
+  runBridgeDiff,
+  runBridgeReject,
   runBridgeDoctor,
   runBridgeInbox,
   runBridgeSend,
@@ -106,6 +118,106 @@ afterEach(async () => {
   rmSync(project, { recursive: true, force: true });
 });
 
+describe('bridge diff, accept and reject', () => {
+  it('show what a job changed in its worktree, and take or drop its work', async () => {
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: project, encoding: 'utf8' }).trimEnd();
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.name', 'Test');
+    git('config', 'user.email', 'test@example.com');
+    writeFileSync(join(project, 'README.md'), 'demo\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'init');
+    const checkout = realpathSync(project);
+    const started: string[] = [];
+    const starts: BridgeAdapter = {
+      harness: 'codex',
+      delivery: 'test',
+      capabilities: { createSession: true, push: true, steer: false, nativeWindow: true },
+      createSession: async (request) => {
+        started.push(request.cwd);
+        return { sessionId: `thread-${started.length}` };
+      },
+      deliver: async () => undefined,
+    };
+    hosts.push(await hostBridge({ home, tickMs: 25, adapters: [starts], rights: () => 'allow' }));
+    const worker = (thread: number) => session(CODEX_ENV, `thread-${thread}`);
+    const reported = async (job: number) => {
+      await runBridgeSend(['Done'], { job, kind: 'report' }, worker(job));
+      const watch = await watcher();
+      await until(async () => (await watch.job(job)).checking === undefined, 'the checks');
+    };
+
+    expect(
+      await runBridgeDelegate(
+        'codex',
+        ['Fix the limiter'],
+        { worktree: true, check: ['test -f fixed.txt'] },
+        claude()
+      )
+    ).toBe(0);
+    expect(output().split('\n')[1]).toBe(
+      '  It is done in a git worktree of its own. Its work comes back with: cogitator bridge accept 1'
+    );
+    await until(() => started.length === 1, 'the session of the job');
+    writeFileSync(join(started[0], 'fixed.txt'), 'fixed\n');
+
+    lines = [];
+    expect(await runBridgeDiff(1, [], { stat: true }, claude())).toBe(0);
+    expect(output().split('\n')).toEqual([
+      `Job #1: 1 file, +1 -0, in ${started[0]} (branch cogitator/job-1-fix-the-limiter)`,
+      '  A fixed.txt  +1 -0',
+    ]);
+    lines = [];
+    expect(await runBridgeDiff(1, ['fixed.txt'], {}, claude())).toBe(0);
+    expect(output()).toContain('+fixed');
+    expect(await runBridgeAccept(1, {}, claude())).toBe(1);
+    expect(failed()).toContain('Job 1 is still working');
+
+    await reported(1);
+    lines = [];
+    expect(await runBridgeAccept(1, {}, claude())).toBe(0);
+    expect(output().split('\n')).toEqual([
+      `The work of job #1 is in ${checkout}: 1 file, +1 -0, staged and not committed`,
+      '  Look at it: git diff --cached   Then commit it yourself',
+    ]);
+    expect(git('status', '--porcelain')).toBe('A  fixed.txt');
+    git('commit', '-q', '-m', 'fixed');
+
+    await runBridgeDelegate('codex:new', ['Another way'], { worktree: true }, claude());
+    await until(() => started.length === 2, 'the second session');
+    writeFileSync(join(started[1], 'fixed.txt'), 'theirs\n');
+    writeFileSync(join(project, 'fixed.txt'), 'mine\n');
+    git('commit', '-q', '-am', 'mine');
+    await reported(2);
+    lines = [];
+    expect(await runBridgeAccept(2, {}, claude())).toBe(1);
+    expect(output().split('\n')).toEqual([
+      `Nothing was taken: the work of job #2 would leave these files of ${checkout} in conflict`,
+      '  fixed.txt',
+      '  Its worktree is still there. Take it as a branch: cogitator bridge accept 2 --as-branch   Or drop it: cogitator bridge reject 2',
+    ]);
+    expect(readFileSync(join(project, 'fixed.txt'), 'utf8')).toBe('mine\n');
+    lines = [];
+    expect(await runBridgeAccept(2, { asBranch: true }, claude())).toBe(0);
+    expect(output()).toMatch(
+      /^The work of job #2 is the branch cogitator\/job-2-another-way, at commit [0-9a-f]{10}$/
+    );
+    expect(git('show', 'cogitator/job-2-another-way:fixed.txt')).toBe('theirs');
+
+    await runBridgeDelegate('codex:new', ['A third way'], { worktree: true }, claude());
+    await until(() => started.length === 3, 'the third session');
+    await reported(3);
+    lines = [];
+    expect(await runBridgeReject(3, ['Not', 'needed'], {}, claude())).toBe(0);
+    expect(output()).toBe('The work of job #3 is dropped, and its worktree is gone');
+    expect(existsSync(started[2])).toBe(false);
+    lines = [];
+    expect(await runBridgeDiff(3, [], {}, claude())).toBe(1);
+    expect(failed()).toContain('The work of job 3 was dropped, and its worktree is gone');
+  });
+});
+
 describe('bridge delegate, send and inbox', () => {
   it('carries a job from hand-over to report between two sessions', async () => {
     await startHost();
@@ -129,6 +241,7 @@ describe('bridge delegate, send and inbox', () => {
     expect(output().split('\n')).toEqual([
       expect.stringMatching(/^\[agent bridge\] job #1 "Tests" \| task from claude@/),
       'Write the tests',
+      '[agent bridge] When you report, the bridge runs the checks of the job where you worked: `pnpm test`.',
     ]);
 
     lines = [];
@@ -144,12 +257,23 @@ describe('bridge delegate, send and inbox', () => {
         codex({ stdin: async () => 'Done:\n14 pass\n' })
       )
     ).toBe(0);
-    const job = await (await watcher()).job(1);
-    expect(job).toMatchObject({ state: 'completed', checks: [{ command: 'pnpm test' }] });
+    const job = await vi.waitFor(async () => {
+      const found = await (await watcher()).job(1);
+      expect(found.checking).toBeUndefined();
+      return found;
+    });
+    expect(job).toMatchObject({
+      state: 'completed',
+      checks: [{ command: 'pnpm test' }],
+      verification: { verified: false },
+    });
 
     lines = [];
     await runBridgeInbox({ job: 1 }, claude());
     expect(output()).toContain('Done:\n14 pass');
+    expect(output()).toContain(
+      '[agent bridge] Checks. Not verified: 0 of 1 check passed.\n- not run: pnpm test: this bridge has no rules to judge a command by, and runs none without them'
+    );
   });
 
   it('takes a job back for the session that handed it over, and for no other', async () => {
