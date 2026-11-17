@@ -1012,6 +1012,7 @@ export class BridgeDispatcher
     const jobs = this.store
       .jobTasks({ to: agent.name, states: ACTIVE_JOB_STATES })
       .flatMap((task) => jobOf(task) ?? [])
+      .filter((job) => !this.holdsCall(agent.name, job.number))
       .sort((a, b) => a.number - b.number);
     if (jobs.length === 0) return [];
     this.stuckTold.set(agent.name, now);
@@ -1029,6 +1030,23 @@ export class BridgeDispatcher
       text: `${agent.name} waits for you at its own window: ${oneLine(what)}`,
     });
     return jobs.map((job) => job.number);
+  }
+
+  /**
+   * Whether the agent holds a call of the job for a verdict it asked through the bridge. Its
+   * harness may say all the while that the session waits for a permission (Claude Code does, a
+   * few seconds into the hook that asks leave), but that wait is answered through the bridge,
+   * not at a window.
+   */
+  private holdsCall(agent: string, job: number): boolean {
+    return this.store
+      .listLetters({
+        job,
+        from: agent,
+        kinds: ['permission'],
+        states: ['queued', 'delivered', 'read'],
+      })
+      .some((letter) => letter.ask !== undefined);
   }
 
   /** The letters that wait for the person, oldest first, each with its job and the text to show. */

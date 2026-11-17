@@ -743,7 +743,7 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
 
     expect(note.body.split('\n')).toEqual([
       `${window.name} waits for a person at its own window, and job #1 stands still until they answer there. It shows:`,
-      '> Claude needs your permission to use Bash',
+      '> Claude needs your permission',
       'Nobody can answer that from here. If the user is with you, tell them in one line.',
     ]);
     await fakes.answerPermission(sessionId, 'allow');
