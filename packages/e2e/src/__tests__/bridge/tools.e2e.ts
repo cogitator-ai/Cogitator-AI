@@ -201,6 +201,9 @@ describe.skipIf(!posix)('bridge mcp', () => {
       'diff',
       'accept',
       'reject',
+      'remember',
+      'recall',
+      'forget',
       'agents',
     ]);
     for (const listed of tools) {
