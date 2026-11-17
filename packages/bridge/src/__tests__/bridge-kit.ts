@@ -26,6 +26,8 @@ export interface FakeAdapterOptions {
   createSession?: (request: SessionRequest) => Promise<CreatedSession>;
   /** The sessions the harness lists as running, asked every time */
   liveSessions?: () => Promise<LiveSession[]>;
+  /** Whether a session of the harness wakes for a letter, asked every time */
+  wakesFor?: (agent: AgentRecord) => Promise<boolean>;
 }
 
 /** An adapter that remembers what it was asked to do. */
@@ -37,6 +39,7 @@ export class FakeAdapter implements BridgeAdapter {
   readonly sessions: SessionRequest[] = [];
   readonly createSession?: (request: SessionRequest) => Promise<CreatedSession>;
   readonly liveSessions?: () => Promise<LiveSession[]>;
+  readonly wakesFor?: (agent: AgentRecord) => Promise<boolean>;
   private readonly onDeliver?: (delivery: LetterDelivery) => Promise<DeliveryReceipt | void>;
 
   constructor(options: FakeAdapterOptions = {}) {
@@ -50,6 +53,7 @@ export class FakeAdapter implements BridgeAdapter {
     };
     this.onDeliver = options.deliver;
     if (options.liveSessions) this.liveSessions = options.liveSessions;
+    if (options.wakesFor) this.wakesFor = options.wakesFor;
     if (options.createSession) {
       const create = options.createSession;
       this.createSession = async (request) => {

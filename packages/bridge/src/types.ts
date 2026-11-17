@@ -1,5 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
+import type { Finding } from './findings.js';
 
 /** Metadata key of an A2A task holding the bridge's record of the job. */
 export const BRIDGE_JOB_KEY = 'cogitator:bridge';
@@ -202,6 +203,14 @@ export const JobBudgetSchema = z.object({
     .max(7 * 86_400_000),
 });
 
+/** The recipe a job is carried out by, and what it was started with. */
+export interface JobRecipe {
+  /** The name of the recipe, such as `review` or `build` */
+  name: string;
+  /** What the recipe was given, as its own schema reads it */
+  input?: unknown;
+}
+
 /** How one check of a job went. */
 export interface JobCheckResult {
   /** The name of the check, its command when it has none */
@@ -284,6 +293,13 @@ export interface BridgeJobRecord {
    * bridge put under it. Absent when the bridge added nothing
    */
   taskLength?: number;
+  /**
+   * Set on a job that is a recipe: the conductor of the bridge carries it out by handing jobs of
+   * its own to other agents, by the steps the recipe of this name lays down
+   */
+  recipe?: JobRecipe;
+  /** What a review found, when the job was one and its report named findings */
+  findings?: Finding[];
   /** `worktree` on a job that is to be done in a git worktree of its own */
   isolation?: 'worktree';
   /** The git worktree the job is done in, once the bridge has made it */

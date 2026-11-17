@@ -10,6 +10,7 @@ import {
   type BridgeJob,
   type JobBudget,
   type JobCheck,
+  type JobRecipe,
   type Letter,
   type LetterKind,
   type PermissionAsk,
@@ -18,6 +19,7 @@ import {
   type Verdict,
 } from './types.js';
 import { FACT_KINDS, MAX_FACT_LENGTH, MAX_RECALL_LIMIT, type FactKind } from './board.js';
+import { FindingsSchema, type Finding } from './findings.js';
 import { JobContextSchema, type JobContext } from './handover.js';
 import type { ChangedFile } from './worktree.js';
 
@@ -31,6 +33,9 @@ export const LetterIdSchema = z
 
 const JobNumberSchema = z.number().int().positive();
 
+/** The most characters the input of a recipe takes as JSON. */
+const MAX_RECIPE_INPUT = 50_000;
+
 const NO_CONTROL = /^[^\p{Cc}]*$/u;
 
 /**
@@ -40,22 +45,53 @@ const NO_CONTROL = /^[^\p{Cc}]*$/u;
 const withoutNul = (text: string): boolean => !text.includes('\0');
 const NUL_REFUSED = 'The text has a NUL character, which no harness takes';
 
-export const CreateJobInputSchema = z.strictObject({
-  to: z.string().trim().min(1).max(512).regex(NO_CONTROL, 'An address is one line'),
-  body: z
-    .string()
-    .refine((body) => body.trim().length > 0, 'The job needs a description')
-    .refine(withoutNul, NUL_REFUSED),
-  title: z.string().trim().min(1).max(200).regex(NO_CONTROL, 'A title is one line').optional(),
-  cwd: z.string().min(1).max(4096).optional(),
-  checks: z.array(JobCheckSchema).max(50).optional(),
-  worktree: z.boolean().optional(),
-  context: JobContextSchema.optional(),
-  contextTokens: z.number().int().min(200).max(50_000).optional(),
-  budget: JobBudgetSchema.partial().optional(),
-  parent: JobNumberSchema.optional(),
-  letterId: LetterIdSchema.optional(),
-});
+export const CreateJobInputSchema = z
+  .strictObject({
+    to: z.string().trim().min(1).max(512).regex(NO_CONTROL, 'An address is one line'),
+    body: z
+      .string()
+      .refine((body) => body.trim().length > 0, 'The job needs a description')
+      .refine(withoutNul, NUL_REFUSED),
+    title: z.string().trim().min(1).max(200).regex(NO_CONTROL, 'A title is one line').optional(),
+    cwd: z.string().min(1).max(4096).optional(),
+    checks: z.array(JobCheckSchema).max(50).optional(),
+    worktree: z.boolean().optional(),
+    context: JobContextSchema.optional(),
+    contextTokens: z.number().int().min(200).max(50_000).optional(),
+    recipe: z
+      .strictObject({
+        name: z
+          .string()
+          .trim()
+          .min(1)
+          .max(64)
+          .regex(/^[a-z][a-z0-9-]*$/, 'A recipe name is lower-case letters, digits and "-"'),
+        input: z
+          .unknown()
+          .refine(
+            (input) => input === undefined || JSON.stringify(input).length <= MAX_RECIPE_INPUT,
+            'The input of the recipe is too large'
+          )
+          .optional(),
+      })
+      .optional(),
+    budget: JobBudgetSchema.partial().optional(),
+    parent: JobNumberSchema.optional(),
+    letterId: LetterIdSchema.optional(),
+  })
+  .refine(
+    (input) =>
+      input.recipe === undefined ||
+      (input.worktree === undefined &&
+        input.checks === undefined &&
+        input.context === undefined &&
+        input.contextTokens === undefined),
+    {
+      message:
+        'A recipe hands its own jobs over: name the worktree, the checks and the context in the input of the recipe',
+      path: ['recipe'],
+    }
+  );
 
 /** What an agent says to hand a job over. */
 export interface CreateJobInput {
@@ -89,6 +125,11 @@ export interface CreateJobInput {
   context?: JobContext;
   /** How many tokens that block may take, `limits.contextTokens` by default */
   contextTokens?: number;
+  /**
+   * Makes the job a recipe: it goes to the conductor of the bridge (`to` names its harness,
+   * `recipe` by default), which carries it out by the steps of the recipe of this name
+   */
+  recipe?: JobRecipe;
   budget?: Partial<JobBudget>;
   /** The job this one is part of, when the caller carries out several */
   parent?: number;
@@ -125,6 +166,11 @@ export const SendLetterInputSchema = z
     ask: PermissionAskSchema.optional(),
     verdict: z.enum(['allow', 'deny']).optional(),
     lessons: z.array(FactTextSchema).max(10).optional(),
+    findings: FindingsSchema.optional(),
+  })
+  .refine((input) => input.findings === undefined || input.kind === 'report', {
+    message: 'Only a report carries findings',
+    path: ['findings'],
   })
   .refine((input) => input.lessons === undefined || input.kind === 'report', {
     message: 'Only a report carries lessons',
@@ -164,6 +210,11 @@ export interface SendLetterInput {
    * report. Each goes to the board of the project as a lesson of the caller
    */
   lessons?: string[];
+  /**
+   * What a review found, each with its severity and where it is. Only on a report. An empty
+   * list says the review found nothing
+   */
+  findings?: Finding[];
   /** Of an answer to a permission request that names its call: whether it may go ahead */
   verdict?: Verdict;
 }

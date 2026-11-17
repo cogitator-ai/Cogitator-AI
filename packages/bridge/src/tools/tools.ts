@@ -4,8 +4,9 @@ import { z } from 'zod';
 import { BridgeClient } from '../client.js';
 import { BridgeError, isBridgeError } from '../errors.js';
 import { oneLine } from '../letters.js';
-import { NEW_SESSION, aliasOfHarness } from '../registry.js';
+import { NEW_SESSION, RECIPE_HARNESS, aliasOfHarness } from '../registry.js';
 import { factLine } from '../board.js';
+import { FINDING_SEVERITIES, type Finding, type FindingSeverity } from '../findings.js';
 import type { JobContext } from '../handover.js';
 import type { JobDiff } from '../inputs.js';
 import type { AgentRecord, BridgeJob, CallerIdentity, JobState, Letter } from '../types.js';
@@ -117,6 +118,78 @@ function contextOf(given: {
     }),
   };
 }
+
+/** What an agent that hands a job over knows and the other agent does not. */
+const ContextParam = z
+  .looseObject({
+    done: z.array(z.string().min(1)).optional().describe('What done looks like, one line each'),
+    constraints: z
+      .array(z.string().min(1))
+      .optional()
+      .describe('What must hold and what must not be touched'),
+    decisions: z
+      .array(z.string().min(1))
+      .optional()
+      .describe('What was decided already, so it is not decided again'),
+    files: z
+      .array(
+        z.looseObject({
+          path: z.string().min(1).describe('A file of this project, from your folder'),
+          lines: z.string().optional().describe('The lines that matter, such as "120-180"'),
+          why: z.string().optional().describe('What is there, in a few words'),
+        })
+      )
+      .optional()
+      .describe('The files to start from'),
+  })
+  .optional()
+  .describe(
+    'What you know and the other agent does not. The bridge puts it under the task in one block, with the lines of the files you point at and the notes of the board that fit, so the other agent does not start by finding out what you already know'
+  );
+
+const Severity = z.enum(FINDING_SEVERITIES as [FindingSeverity, ...FindingSeverity[]]);
+
+/** How a review goes, as `review` and `build` take it. */
+const ReviewParams = {
+  by: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'Who reviews: an agent name from the agents tool, or "codex" or "claude" for a fresh session of that agent. A fresh session of another agent than the author by default'
+    ),
+  rounds: z
+    .number()
+    .int()
+    .min(0)
+    .max(5)
+    .optional()
+    .describe(
+      'How many times the author is sent back to fix what the review found, 2 by default, 0 to only review'
+    ),
+  threshold: Severity.optional().describe(
+    'The lightest finding the author is sent back for: blocker, major (the default), minor or nit'
+  ),
+  focus: z.string().min(1).optional().describe('What the reviewer looks at above all'),
+};
+
+/** The options of a review as a recipe takes them, without what the model left out. */
+function reviewInput(args: {
+  by?: string;
+  rounds?: number;
+  threshold?: FindingSeverity;
+  focus?: string;
+}): Record<string, unknown> {
+  return {
+    ...(args.by?.trim() && { by: args.by.trim() }),
+    ...(args.rounds !== undefined && { rounds: args.rounds }),
+    ...(args.threshold !== undefined && { threshold: args.threshold }),
+    ...(args.focus?.trim() && { focus: args.focus.trim() }),
+  };
+}
+
+const AFTER_RECIPE =
+  'The bridge hands its steps to the agents itself. A question of one of them and the report at the end arrive as letters. Say in one line what you started, then end your turn: do not wait or poll.';
 
 /** One changed file as a line: `M src/a.ts  +3 -1`. */
 function fileLine(file: JobDiff['files'][number]): string {
@@ -269,35 +342,7 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
         .describe(
           'Give the job a git worktree of its own, made from the last commit of your checkout, and a fresh session to work there. Ask for it when the job changes files while you or other agents change files too. What you have not committed is not there. The work comes back with the accept tool'
         ),
-      context: z
-        .looseObject({
-          done: z
-            .array(z.string().min(1))
-            .optional()
-            .describe('What done looks like, one line each'),
-          constraints: z
-            .array(z.string().min(1))
-            .optional()
-            .describe('What must hold and what must not be touched'),
-          decisions: z
-            .array(z.string().min(1))
-            .optional()
-            .describe('What was decided already, so it is not decided again'),
-          files: z
-            .array(
-              z.looseObject({
-                path: z.string().min(1).describe('A file of this project, from your folder'),
-                lines: z.string().optional().describe('The lines that matter, such as "120-180"'),
-                why: z.string().optional().describe('What is there, in a few words'),
-              })
-            )
-            .optional()
-            .describe('The files to start from'),
-        })
-        .optional()
-        .describe(
-          'What you know and the other agent does not. The bridge puts it under the task in one block, with the lines of the files you point at and the notes of the board that fit, so the other agent does not start by finding out what you already know'
-        ),
+      context: ContextParam,
       checks: z
         .array(z.string().min(1))
         .max(50)
@@ -329,6 +374,94 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
             : '') +
           'Its questions and its report arrive as letters. Say in one line what you handed over, then end your turn: do not wait or poll.'
         );
+      }),
+  });
+
+  const build = tool({
+    name: 'build',
+    title: 'Have a job done, checked and reviewed',
+    description:
+      'Hand a job over to be done, checked and reviewed in one go: an agent does it in a git worktree of its own, the bridge runs the checks, another agent reviews the work, and the author fixes what the review found until it is clean or the rounds run out. Returns a job number at once. One report comes back at the end: how the review ended, what is still open, and which job holds the work for accept. For a job that needs no review, use delegate.',
+    parameters: z.looseObject({
+      to: z
+        .string()
+        .min(1)
+        .describe(
+          'Who does the work: "codex" or "claude" for a session of that agent, started for the job'
+        ),
+      task: z
+        .string()
+        .min(1)
+        .describe(
+          'The job: what to do, and what done looks like. The agents see nothing of this conversation, so name the files, the constraints and the decisions already made'
+        ),
+      title: z.string().optional().describe('A short name of the job, its first line by default'),
+      cwd: z
+        .string()
+        .optional()
+        .describe("The folder the job is about, inside this project. This session's by default"),
+      checks: z
+        .array(z.string().min(1))
+        .max(50)
+        .optional()
+        .describe(
+          'Shell commands that show the job is done, such as the tests of what it touches. The bridge runs those your own rules allow without asking after the work and after every round of fixes'
+        ),
+      worktree: z
+        .boolean()
+        .optional()
+        .describe(
+          'False to have the work done in your folder instead of a git worktree of its own. In a worktree by default: the work starts from your last commit and comes back with accept'
+        ),
+      context: ContextParam,
+      ...ReviewParams,
+    }),
+    annotations: WRITES,
+    sideEffects: ['process'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const { job, duplicate } = await bridge.createJob({
+          to: RECIPE_HARNESS,
+          body: args.task,
+          ...(args.title !== undefined && { title: args.title }),
+          ...(args.cwd !== undefined && { cwd: args.cwd }),
+          recipe: {
+            name: 'build',
+            input: {
+              to: args.to,
+              ...(args.checks !== undefined && {
+                checks: args.checks.map((command) => ({ command })),
+              }),
+              ...(args.worktree !== undefined && { worktree: args.worktree }),
+              ...(args.context !== undefined && { context: contextOf(args.context) }),
+              ...reviewInput(args),
+            },
+          },
+        });
+        return `Job #${job.number} is the build (${job.state})${duplicate ? ', started before: nothing was sent twice' : ''}: ${args.to} does the work, then it is checked and reviewed. ${AFTER_RECIPE}`;
+      }),
+  });
+
+  const review = tool({
+    name: 'review',
+    title: 'Have the work of a job reviewed',
+    description:
+      'Have another agent review the work of a job that is done: one you handed over, or one you carried out. The reviewer names what it found with severities, the author fixes what weighs enough, and the reviewer looks again. Returns the number of the review at once. One report comes back at the end: how the review ended and what is still open.',
+    parameters: z.looseObject({
+      job: JobNumber.describe('The job whose work is reviewed'),
+      ...ReviewParams,
+    }),
+    annotations: WRITES,
+    sideEffects: ['process'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const { job, duplicate } = await bridge.createJob({
+          to: RECIPE_HARNESS,
+          title: `Review of job #${args.job}`,
+          body: `Review the work of job #${args.job}${args.focus?.trim() ? `: ${args.focus.trim()}` : ''}`,
+          recipe: { name: 'review', input: { job: args.job, ...reviewInput(args) } },
+        });
+        return `Job #${job.number} is the review of job #${args.job} (${job.state})${duplicate ? ', started before: nothing was sent twice' : ''}. ${AFTER_RECIPE}`;
       }),
   });
 
@@ -435,6 +568,23 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
         .describe(
           'What this job taught that the next agent with a job like it should know: what worked, what did not, what cost time. One whole sentence each. They are kept on the board of the project under your name'
         ),
+      findings: z
+        .array(
+          z.looseObject({
+            severity: Severity,
+            summary: z
+              .string()
+              .min(1)
+              .describe('What is wrong, and what would be right, in one line'),
+            file: z.string().optional().describe('The file, from the top of the repository'),
+            line: z.number().int().positive().optional().describe('The line it is at'),
+          })
+        )
+        .max(100)
+        .optional()
+        .describe(
+          'When the job was a review: what you found, each with its severity: blocker (must not go in as it is), major (should be fixed first), minor (worth fixing), nit (a matter of taste). An empty list says you found nothing. Leave it out when the job was no review'
+        ),
     }),
     annotations: WRITES,
     sideEffects: ['external'],
@@ -446,6 +596,14 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
           body: args.result,
           ...(args.failed && { outcome: 'failed' as const }),
           ...(args.lessons?.length && { lessons: args.lessons }),
+          ...(args.findings !== undefined && {
+            findings: args.findings.map((finding): Finding => ({
+              severity: finding.severity,
+              summary: finding.summary,
+              ...(finding.file?.trim() && { file: finding.file.trim() }),
+              ...(finding.line !== undefined && { line: finding.line }),
+            })),
+          }),
         });
         return `Reported to ${sent.letter.to}. Job #${sent.job.number} is ${sent.job.state}.`;
       }),
@@ -783,6 +941,8 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
 
   return [
     delegate,
+    build,
+    review,
     ask,
     answer,
     report,

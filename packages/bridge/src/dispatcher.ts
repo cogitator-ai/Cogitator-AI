@@ -121,6 +121,7 @@ import {
   type DeliveryState,
   type JobChanges,
   type JobCheckResult,
+  type JobRecipe,
   type JobState,
   type JobVerification,
   type JobWorktreeEnd,
@@ -418,6 +419,12 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+/** The ids the conductor of a recipe gives the letters it writes. */
+const RECIPE_LETTER_ID = /^(recipe|relay)-/;
+
+const NO_CONDUCTOR =
+  'This bridge carries out no recipes: its host gave it no conductor (recipeAdapter of @cogitator-ai/bridge/recipes)';
+
 /** `work`, or a rejection when it takes longer than `ms`. */
 function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -634,11 +641,12 @@ export class BridgeDispatcher
   async createJob(caller: string, input: CreateJobInput): Promise<CreateJobResult> {
     const request = parse(CreateJobInputSchema, input, 'Cannot create the job');
     this.checkBody(request.body);
-    const handover = await this.handoverFor(caller, request);
+    const handover = request.recipe ? undefined : await this.handoverFor(caller, request);
     const withContext = handover ? `${request.body}${HANDOVER_GAP}${handover}` : request.body;
     const body = withContext.length <= this.limits.maxBodyLength ? withContext : request.body;
     const outcome = await this.asCaller(caller, async (tx): Promise<CreateJobResult | Refusal> => {
       const from = this.requireCaller(caller);
+      this.checkOwnId(request.letterId, from);
 
       if (request.letterId) {
         const sent = this.store.getLetter(request.letterId);
@@ -658,13 +666,23 @@ export class BridgeDispatcher
         }
       }
 
+      if (request.recipe && this.conductors().length === 0) {
+        throw new BridgeError('invalid_input', NO_CONDUCTOR, { recipe: request.recipe.name });
+      }
       const resolution = resolveAddress(this.store, request.to, {
         project: from.project,
         caller: from.name,
         now: this.now(),
         canSpawn: (harness) => this.adapters.get(harness)?.createSession !== undefined,
-        fresh: request.worktree === true,
+        fresh: request.worktree === true || request.recipe !== undefined,
       });
+      this.checkRecipeAsked(resolution, request.recipe);
+      if (this.closing && resolution.kind === 'spawn') {
+        throw new BridgeError(
+          'not_running',
+          'The bridge dispatcher is closing and starts no session now. Hand the job over again when it runs'
+        );
+      }
 
       const carriedOut = this.store
         .jobTasks({ to: from.name, states: ACTIVE_JOB_STATES })
@@ -688,6 +706,7 @@ export class BridgeDispatcher
       let depth: number;
       try {
         depth = nextDepth(parent?.depth, this.limits);
+        if (request.recipe) nextDepth(depth, this.limits);
       } catch (error) {
         if (!(error instanceof BridgeError)) throw error;
         this.journal(tx, {
@@ -758,6 +777,7 @@ export class BridgeDispatcher
         project: from.project,
         cwd,
         ...(body !== request.body && { taskLength: request.body.length }),
+        ...(request.recipe && { recipe: request.recipe }),
         ...(request.worktree && { isolation: 'worktree' as const }),
         checks: request.checks ?? [],
         budget,
@@ -822,6 +842,7 @@ export class BridgeDispatcher
     const changes = request.kind === 'report' ? await this.changesAtReport(request.job) : undefined;
     const outcome = await this.asCaller(caller, async (tx): Promise<SendLetterResult | Refusal> => {
       const from = this.requireCaller(caller);
+      this.checkOwnId(request.id, from);
 
       if (request.id) {
         const sent = this.store.getLetter(request.id);
@@ -965,7 +986,7 @@ export class BridgeDispatcher
       const forPerson = rights === 'ask' && this.person !== undefined;
       const refused =
         rights === 'deny'
-          ? `The rules of ${job.from} forbid this, so it is refused`
+          ? `The rules of ${this.ruledBy(job)} forbid this, so it is refused`
           : rights === 'ask' && !forPerson
             ? 'Only the person can allow this, and this bridge has no way to reach them, so it is refused'
             : undefined;
@@ -983,7 +1004,8 @@ export class BridgeDispatcher
         ...(request.verdict && { verdict: request.verdict }),
         ...(forPerson && { needsPerson: true, personAskedAt: this.iso(now) }),
         ...(expectationOf(request.kind) === 'reply' &&
-          !refused && {
+          !refused &&
+          !this.conducts(this.store.getAgent(to)) && {
             replyDueAt: this.iso(
               now + (forPerson ? this.limits.personReplyTimeoutMs : job.budget.replyTimeoutMs)
             ),
@@ -1013,6 +1035,7 @@ export class BridgeDispatcher
         if (changes && job.worktree && !job.worktree.end) {
           await this.patchRecord(job.taskId, { changes });
         }
+        if (request.findings) await this.patchRecord(job.taskId, { findings: request.findings });
         if (state === 'completed' && job.checks.length > 0) {
           this.store.updateLetter(letter.id, { state: 'held' });
           await this.patchRecord(job.taskId, {
@@ -1382,8 +1405,10 @@ export class BridgeDispatcher
   /**
    * What the rules of the agent that handed a job over make of a call. A job handed over from
    * inside a job is bound by every agent up the chain: the call is theirs to allow only when it
-   * is each one's, and forbidden when any of them may not make it. A judge that throws, and a
-   * bridge without one, leave the call to the person: nothing is allowed by accident.
+   * is each one's, and forbidden when any of them may not make it. The conductor of a recipe has
+   * no rules of its own: a job it handed out is judged by the rules of whoever started the
+   * recipe, and on up. A judge that throws, and a bridge without one, leave the call to the
+   * person: nothing is allowed by accident.
    */
   private async rightsFor(number: number, ask: PermissionAsk): Promise<Rights> {
     if (!this.rights) return 'ask';
@@ -1392,10 +1417,15 @@ export class BridgeDispatcher
       for (let at: number | undefined = number; at !== undefined;) {
         const job = this.jobIfAny(at);
         if (!job) return 'ask';
-        const said = await this.rights({ job, delegator: this.store.getAgent(job.from), ask });
+        const delegator = this.store.getAgent(job.from);
+        at = job.parent;
+        if (this.conducts(delegator)) {
+          if (at === undefined) return 'ask';
+          continue;
+        }
+        const said = await this.rights({ job, delegator, ask });
         if (said === 'deny') return 'deny';
         if (said === 'ask') rights = 'ask';
-        at = job.parent;
       }
     } catch (error) {
       this.onError(asError(error));
@@ -1441,16 +1471,52 @@ export class BridgeDispatcher
    * from inside it waits for them.
    */
   private waitsForPerson(number: number): boolean {
-    const own = this.store.countLetters({
-      job: number,
-      needsPerson: true,
-      states: ['queued', 'delivered', 'read'],
-    });
-    if (own > 0) return true;
-    return this.store.jobTasks({ parent: number, states: ACTIVE_JOB_STATES }).some((task) => {
-      const child = jobOf(task);
-      return child !== undefined && this.waitsForPerson(child.number);
-    });
+    if (this.asksPerson(number)) return true;
+    const below = this.store
+      .jobTasks({ parent: number, states: ACTIVE_JOB_STATES })
+      .some((task) => {
+        const child = jobOf(task);
+        return child !== undefined && this.waitsForPerson(child.number);
+      });
+    if (below) return true;
+    const recipe = this.recipeAbove(number);
+    return recipe !== undefined && this.asksPerson(recipe.number);
+  }
+
+  /** Whether a letter of the job itself waits for the person. */
+  private asksPerson(number: number): boolean {
+    return (
+      this.store.countLetters({
+        job: number,
+        needsPerson: true,
+        states: ['queued', 'delivered', 'read'],
+      }) > 0
+    );
+  }
+
+  /**
+   * The recipe a job is a step of, while it runs. A question of a step reaches the person as a
+   * letter of the recipe's job, which the conductor passed on, so a step waits with its recipe.
+   */
+  private recipeAbove(number: number): BridgeJob | undefined {
+    const job = this.jobIfAny(number);
+    const parent = job?.parent === undefined ? undefined : this.jobIfAny(job.parent);
+    if (!parent || isFinishedJobState(parent.state)) return undefined;
+    return this.conducts(this.store.getAgent(parent.to)) ? parent : undefined;
+  }
+
+  /**
+   * The jobs that wait for the person with a job: those it is part of, and for the job of a
+   * recipe its steps that run.
+   */
+  private waitingWith(number: number): BridgeJob[] {
+    const chain = this.chainOf(number);
+    const own = chain.find((job) => job.number === number);
+    if (!own || !this.conducts(this.store.getAgent(own.to))) return chain;
+    const steps = this.store
+      .jobTasks({ parent: number, states: ACTIVE_JOB_STATES })
+      .flatMap((task) => jobOf(task) ?? []);
+    return [...chain, ...steps];
   }
 
   /** A job and the jobs it was handed over from inside of, the nearest first, while they run. */
@@ -1470,7 +1536,7 @@ export class BridgeDispatcher
    * of them is failed by its deadline while the wait lasts.
    */
   private async startWaiting(number: number, now: number): Promise<void> {
-    for (const job of this.chainOf(number)) {
+    for (const job of this.waitingWith(number)) {
       if (!job.personWaitSince) {
         await this.patchRecord(job.taskId, { personWaitSince: this.iso(now) });
       }
@@ -1486,7 +1552,7 @@ export class BridgeDispatcher
    * that still waits for another letter goes on waiting.
    */
   private async stopWaiting(number: number, now: number, answered: boolean): Promise<void> {
-    for (const job of this.chainOf(number)) {
+    for (const job of this.waitingWith(number)) {
       if (!job.personWaitSince) continue;
       const waited = Math.max(0, now - Date.parse(job.personWaitSince));
       const still = this.waitsForPerson(job.number);
@@ -1838,6 +1904,56 @@ export class BridgeDispatcher
   }
 
   /**
+   * Refuses a letter id of the kind the conductor names its own letters by, from anybody else:
+   * a recipe finds the job of a step again by that id, so nobody else may take one.
+   */
+  private checkOwnId(id: string | undefined, from: AgentRecord): void {
+    if (id === undefined || !RECIPE_LETTER_ID.test(id) || this.conducts(from)) return;
+    throw new BridgeError(
+      'invalid_letter',
+      'Letter ids that start with "recipe-" or "relay-" are kept for the recipes of the bridge. Give the letter another id',
+      { letter: id }
+    );
+  }
+
+  /** The harness words of the adapters that carry jobs out by recipes. */
+  private conductors(): string[] {
+    return [...this.adapters.values()]
+      .filter((adapter) => adapter.recipeProblem !== undefined)
+      .map((adapter) => adapter.harness);
+  }
+
+  /**
+   * Refuses a recipe the conductor cannot start, and a job for the conductor that names none.
+   * Every recipe gets a conductor of its own, so a recipe is addressed by the harness word of
+   * the conductor, never by the name of one that runs.
+   */
+  private checkRecipeAsked(resolution: AddressResolution, recipe: JobRecipe | undefined): void {
+    const harness = resolution.kind === 'agent' ? resolution.agent.harness : resolution.harness;
+    const adapter = this.adapters.get(harness);
+    if (!recipe) {
+      if (!adapter?.recipeProblem) return;
+      throw new BridgeError(
+        'invalid_input',
+        `${harness} carries out recipes only: name the recipe to start`,
+        { harness }
+      );
+    }
+    if (!adapter?.recipeProblem || resolution.kind === 'agent') {
+      const conductors = this.conductors();
+      throw new BridgeError(
+        'invalid_input',
+        conductors.length > 0
+          ? `A recipe is started by handing its job to the conductor of the bridge: address it to ${conductors.join(' or ')}`
+          : NO_CONDUCTOR,
+        { recipe: recipe.name }
+      );
+    }
+    const problem = adapter.recipeProblem(recipe);
+    if (problem) throw new BridgeError('invalid_input', problem, { recipe: recipe.name });
+  }
+
+  /**
    * Where a session that is about to be started for a job works: the worktree of the job, made
    * now, when the job asked for one. Resolves with the job as it is once it has its worktree and
    * with its first letter, which says so, and with nothing for a job that works where it was
@@ -1956,8 +2072,8 @@ export class BridgeDispatcher
               !this.rights
                 ? 'this bridge has no rules to judge a command by, and runs none without them'
                 : rights === 'deny'
-                  ? `the rules of ${job.from} forbid the command`
-                  : `the rules of ${job.from} do not allow the command without asking. Allow it in the settings of the project, or run it yourself`
+                  ? `the rules of ${this.ruledBy(job)} forbid the command`
+                  : `the rules of ${this.ruledBy(job)} do not allow the command without asking. Allow it in the settings of the project, or run it yourself`
             )
           );
           continue;
@@ -2009,7 +2125,8 @@ export class BridgeDispatcher
 
   /**
    * What a job changed in its worktree so far: the files, how much, and the patch. For the two
-   * agents of the job, while it runs and after, as long as its worktree is there.
+   * agents of the job, and for whoever started the recipe it is a step of, while it runs and
+   * after, as long as its worktree is there.
    *
    * @throws BridgeError `unknown_job`, `not_a_party`, `no_worktree` for a job without a worktree
    * of its own or whose work was taken or dropped already
@@ -2019,7 +2136,7 @@ export class BridgeDispatcher
     const { job, worktree } = await this.asCaller(caller, async () => {
       const agent = this.requireCaller(caller);
       const found = this.requireJob(request.job).job;
-      if (agent.name !== found.from && agent.name !== found.to) {
+      if (agent.name !== found.to && !this.handedOver(agent.name, found)) {
         throw new BridgeError(
           'not_a_party',
           `Job ${found.number} is between ${found.from} and ${found.to}`,
@@ -2051,8 +2168,8 @@ export class BridgeDispatcher
   }
 
   /**
-   * Takes the work of a finished job out of its worktree, as the agent that handed the job over.
-   * The changes, committed there or not, come into the checkout the caller works in as one
+   * Takes the work of a finished job out of its worktree, as the agent that handed the job over,
+   * or that started the recipe the job is a step of, once the recipe has reported. The changes, committed there or not, come into the checkout the caller works in as one
    * change that is staged and not committed: the commit is the caller's to make. With
    * `asBranch` they are left as a branch instead, for work that goes on as a pull request. The
    * worktree is removed either way. When the changes would leave files in conflict nothing is
@@ -2060,8 +2177,8 @@ export class BridgeDispatcher
    * never merges into a branch nobody is working on.
    *
    * @throws BridgeError `unknown_job`, `not_a_party` (only who handed the job over takes its
-   * work), `invalid_input` (the job still runs, its checks do, the caller is in another
-   * repository, or git refused), `no_worktree`
+   * work), `invalid_input` (the job still runs, its checks do, the recipe it is a step of does,
+   * the caller is in another repository, or git refused), `no_worktree`
    */
   async accept(caller: string, input: AcceptInput): Promise<AcceptResult> {
     const request = parse(AcceptInputSchema, input, 'Cannot take the work');
@@ -2147,11 +2264,12 @@ export class BridgeDispatcher
   }
 
   /**
-   * Drops the work of a finished job, as the agent that handed the job over: its worktree and
-   * the branch of it are removed with everything in them.
+   * Drops the work of a finished job, as the agent that handed the job over, or that started the
+   * recipe the job is a step of: its worktree and the branch of it are removed with everything
+   * in them.
    *
-   * @throws BridgeError `unknown_job`, `not_a_party`, `invalid_input` (the job still runs, or
-   * its checks do), `no_worktree`
+   * @throws BridgeError `unknown_job`, `not_a_party`, `invalid_input` (the job still runs, its
+   * checks do, or the recipe it is a step of does), `no_worktree`
    */
   async reject(caller: string, input: RejectInput): Promise<BridgeJob> {
     const request = parse(RejectInputSchema, input, 'Cannot drop the work');
@@ -2209,10 +2327,10 @@ export class BridgeDispatcher
   ): { job: BridgeJob; worktree: JobWorktreeRecord; agent: AgentRecord } {
     const agent = this.requireCaller(caller);
     const { job } = this.requireJob(number);
-    if (agent.name !== job.from) {
+    if (!this.handedOver(agent.name, job)) {
       throw new BridgeError(
         'not_a_party',
-        `Only ${job.from}, who handed job ${job.number} over, can ${what} its work`,
+        `Only ${job.from}, who handed job ${job.number} over, or whoever handed over a job it is part of, can ${what} its work`,
         { job: job.number }
       );
     }
@@ -2230,7 +2348,44 @@ export class BridgeDispatcher
         { job: job.number }
       );
     }
+    const recipe =
+      job.parent !== undefined && this.conducts(this.store.getAgent(job.from))
+        ? this.jobIfAny(job.parent)
+        : undefined;
+    if (recipe && !isFinishedJobState(recipe.state)) {
+      throw new BridgeError(
+        'invalid_input',
+        `Job ${job.number} is a step of the recipe of job ${recipe.number}, which still runs: later steps may work in the same worktree. Wait for the report of job ${recipe.number}, or cancel it first`,
+        { job: job.number, recipe: recipe.number }
+      );
+    }
     return { job, worktree: this.requireWorktree(job), agent };
+  }
+
+  /**
+   * Whether an agent handed a job over, or started the recipe the job is a step of: a job the
+   * conductor hands out for an agent is that agent's to look at and take, as the recipe is its
+   * own. A job another agent handed over from inside a job is that agent's alone.
+   */
+  private handedOver(agent: string, job: BridgeJob): boolean {
+    for (let at: BridgeJob | undefined = job; at;) {
+      if (at.from === agent) return true;
+      if (at.parent === undefined || !this.conducts(this.store.getAgent(at.from))) return false;
+      at = this.jobIfAny(at.parent);
+    }
+    return false;
+  }
+
+  /**
+   * The agent whose rules bind a job: whoever handed it over, and for a step of a recipe
+   * whoever started the recipe, since the conductor has no rules of its own.
+   */
+  private ruledBy(job: BridgeJob): string {
+    for (let at: BridgeJob | undefined = job; at;) {
+      if (at.parent === undefined || !this.conducts(this.store.getAgent(at.from))) return at.from;
+      at = this.jobIfAny(at.parent);
+    }
+    return job.from;
   }
 
   /** One taking, dropping or putting away of a job's worktree at a time. */
@@ -2572,41 +2727,45 @@ export class BridgeDispatcher
 
   /**
    * Whether the rules of an agent let it read a file without asking: its own, and those of every
-   * agent up the chain of the jobs it carries out. True on a bridge that was given no judge:
-   * what an agent names in its own project it could read itself.
+   * agent up the chain of the jobs it carries out. The conductor of a recipe reads what whoever
+   * started the recipe may. True on a bridge that was given no judge: what an agent names in its
+   * own project it could read itself.
    */
   private async mayRead(from: AgentRecord, cwd: string, path: string): Promise<boolean> {
     if (!this.rights) return true;
     const ask: PermissionAsk = { tool: 'Read', access: 'read', paths: [path], cwd };
     try {
       const now = this.iso();
-      const own = await this.rights({
-        job: {
-          number: 0,
-          taskId: '',
-          title: '',
-          from: from.name,
-          to: from.name,
-          project: from.project,
-          cwd,
-          checks: [],
-          budget: this.limits.budget,
-          lettersUsed: 0,
-          depth: 1,
-          createdAt: now,
-          deadlineAt: now,
-          state: 'submitted',
-          updatedAt: now,
-        },
-        delegator: from,
-        ask,
-      });
+      const own = this.conducts(from)
+        ? 'allow'
+        : await this.rights({
+            job: {
+              number: 0,
+              taskId: '',
+              title: '',
+              from: from.name,
+              to: from.name,
+              project: from.project,
+              cwd,
+              checks: [],
+              budget: this.limits.budget,
+              lettersUsed: 0,
+              depth: 1,
+              createdAt: now,
+              deadlineAt: now,
+              state: 'submitted',
+              updatedAt: now,
+            },
+            delegator: from,
+            ask,
+          });
       if (own !== 'allow') return false;
       const carried = await this.enqueue(async () =>
         this.store
           .jobTasks({ to: from.name, states: ACTIVE_JOB_STATES })
           .flatMap((task) => jobOf(task) ?? [])
       );
+      if (this.conducts(from) && carried.length === 0) return false;
       for (const job of carried) {
         if ((await this.rightsFor(job.number, ask)) !== 'allow') return false;
       }
@@ -2758,6 +2917,48 @@ export class BridgeDispatcher
     });
   }
 
+  /**
+   * The harnesses the bridge can start a session of for a job. The conductor of recipes is none
+   * of them: it takes a recipe, not a job.
+   */
+  async startable(): Promise<string[]> {
+    return [...this.adapters.values()]
+      .filter((adapter) => adapter.createSession !== undefined && !adapter.recipeProblem)
+      .map((adapter) => adapter.harness);
+  }
+
+  /**
+   * Whether an agent takes a letter by itself right now: it waits for its mail, or its harness
+   * hands the letter over and wakes the session for it.
+   */
+  async wakes(name: string): Promise<boolean> {
+    const agent = await this.enqueue(async () => this.store.getAgent(name));
+    if (agent?.status !== 'active') return false;
+    if (this.waiters.has(agent.name)) return true;
+    const adapter = this.adapters.get(agent.harness);
+    if (!adapter?.deliver || !adapter.capabilities.push) return false;
+    if (!adapter.wakesFor) return true;
+    try {
+      return await within(
+        adapter.wakesFor(agent),
+        this.limits.deliveryTimeoutMs,
+        `Asking whether ${agent.name} wakes for a letter`
+      );
+    } catch (error) {
+      this.onError(asError(error));
+      return false;
+    }
+  }
+
+  /**
+   * Whether an agent is a conductor: a session of an adapter that carries jobs out by recipes.
+   * It has no rules of its own, and the jobs it hands out are bound by those of whoever started
+   * its recipe.
+   */
+  private conducts(agent: AgentRecord | undefined): boolean {
+    return agent !== undefined && this.adapters.get(agent.harness)?.recipeProblem !== undefined;
+  }
+
   async status(): Promise<DispatcherStatus> {
     return this.enqueue(async () => ({
       agents: this.store.listAgents({ statuses: ['active', 'starting'] }).length,
@@ -2765,7 +2966,7 @@ export class BridgeDispatcher
       queuedLetters: this.store.countLetters({ states: ['queued'] }),
       adapters: [...this.adapters.keys()],
       startable: [...this.adapters.values()]
-        .filter((adapter) => adapter.createSession !== undefined)
+        .filter((adapter) => adapter.createSession !== undefined && !adapter.recipeProblem)
         .map((adapter) => adapter.harness),
       waiting: [...this.waiters.keys()].sort(),
     }));

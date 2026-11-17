@@ -6,6 +6,7 @@ import {
   type LetterKind,
   type RenderedLetter,
 } from './types.js';
+import { findingLine, findingsCount } from './findings.js';
 
 /** What the bridge waits for after a letter: its recipient taking it, an answer, or nothing. */
 export type LetterExpectation = 'pickup' | 'reply' | 'none';
@@ -97,7 +98,7 @@ export function renderLetter(letter: Letter, job: LetterJob): RenderedLetter {
 
 /** What of a job the text of its letters is made from. */
 export type LetterJob = Pick<BridgeJob, 'title'> &
-  Partial<Pick<BridgeJob, 'worktree' | 'changes' | 'verification' | 'checks'>>;
+  Partial<Pick<BridgeJob, 'worktree' | 'changes' | 'verification' | 'checks' | 'findings'>>;
 
 /** How many changed files a report names before it says how many more there are. */
 const PATHS_SHOWN = 12;
@@ -135,6 +136,15 @@ function aboutTheWork(letter: Pick<Letter, 'kind' | 'outcome'>, job: LetterJob):
       );
     }
     if (job.verification?.summary) lines.push(`Checks. ${job.verification.summary}`);
+    if (job.findings) {
+      lines.push(
+        job.findings.length === 0
+          ? 'Findings: none.'
+          : [`Findings: ${findingsCount(job.findings)}.`, ...job.findings.map(findingLine)].join(
+              '\n'
+            )
+      );
+    }
   }
   return lines;
 }
