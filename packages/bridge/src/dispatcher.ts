@@ -2626,7 +2626,7 @@ export class BridgeDispatcher
    */
   private async handoverFor(
     caller: string,
-    request: Pick<CreateJobInput, 'body' | 'title' | 'cwd' | 'context' | 'contextTokens'>
+    request: Pick<CreateJobInput, 'body' | 'title' | 'context' | 'contextTokens'>
   ): Promise<string | undefined> {
     const from = await this.enqueue(async () => this.store.getAgent(caller));
     if (!from) return undefined;
@@ -2636,7 +2636,6 @@ export class BridgeDispatcher
     const budget = Math.min(request.contextTokens ?? this.limits.contextTokens, room);
     if (budget <= 0) return undefined;
     const build = async (): Promise<string | undefined> => {
-      const cwd = jobFolder(from, request.cwd);
       const about = `${request.title ?? ''}\n${request.body}`.slice(0, ABOUT_CHARS);
       const board = this.board;
       const [facts, earlier] = board
@@ -2649,10 +2648,10 @@ export class BridgeDispatcher
         request.context,
         {
           from: from.name,
-          cwd,
+          cwd: from.cwd,
           roots: [from.project, findCheckoutRoot(from.cwd)],
-          top: findCheckoutRoot(cwd),
-          mayRead: (path) => this.mayRead(from, cwd, path),
+          top: findCheckoutRoot(from.cwd),
+          mayRead: (path) => this.mayRead(from, from.cwd, path),
           facts,
           earlier,
         },
