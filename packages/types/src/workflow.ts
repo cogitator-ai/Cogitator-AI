@@ -101,14 +101,38 @@ export interface Workflow<S = WorkflowState> {
 
 export type CheckpointStrategy = 'per-iteration' | 'per-node';
 
+/**
+ * Where a run stands between two node completions: `current` are the nodes of the step in flight
+ * that have not completed, `next` the nodes already queued for the step after it. A finished run
+ * has neither
+ */
+export interface WorkflowFrontier {
+  current: string[];
+  next: string[];
+}
+
 export interface WorkflowExecuteOptions {
   maxConcurrency?: number;
   maxIterations?: number;
   checkpoint?: boolean;
   checkpointStrategy?: CheckpointStrategy;
-  /** Nodes that already ran (when resuming): they are passed over, not run again */
+  /**
+   * Nodes that already ran (when resuming): they are passed over by name, not run again, for the
+   * whole run. A loop cannot pass through them again, so resume a run with `frontier` instead
+   */
   skipNodes?: Set<string>;
-  /** Outputs of the `skipNodes`, so the nodes after them get their inputs */
+  /**
+   * Where a resumed run goes on (see `WorkflowCheckpoint.frontier`): it starts there instead of
+   * at the entry point and passes over no node by name, so `skipNodes` is not used
+   */
+  frontier?: WorkflowFrontier;
+  /**
+   * With `frontier`: the nodes that completed before the run being resumed stopped, in the order
+   * they first completed. They are listed in the checkpoints of the resumed run and compensated
+   * if it fails
+   */
+  completedNodes?: string[];
+  /** Outputs of the nodes that already ran, so the nodes after them get their inputs */
   nodeResults?: Record<string, unknown>;
   /**
    * How many times each node completed before the run being resumed stopped (see
@@ -172,6 +196,13 @@ export interface WorkflowCheckpoint {
    * without it count each completed node once
    */
   nodeVisits?: Record<string, number>;
+  /**
+   * Where the run stood when the checkpoint was saved. A resumed run starts there, so a run that
+   * stopped inside a loop goes on in the pass it stopped in. Checkpoints saved before this field
+   * existed are resumed by passing over `completedNodes` by name, which cannot tell the passes of
+   * a loop apart
+   */
+  frontier?: WorkflowFrontier;
   timestamp: number;
   /** The user the checkpoint belongs to, set by servers */
   owner?: string;

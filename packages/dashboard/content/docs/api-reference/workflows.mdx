@@ -70,22 +70,22 @@ console.log(result.state.words, result.error);
 
 `ExecutorExecuteOptions` extends `WorkflowExecuteOptions`:
 
-| Option                                                           | Purpose                                                                                                       |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `maxConcurrency`, `maxIterations`                                | Parallel nodes, loop safety limit                                                                             |
-| `checkpoint`, `checkpointStrategy`                               | Save checkpoints (`'per-iteration'` or `'per-node'`)                                                          |
-| `onNodeStart`, `onNodeComplete`, `onNodeError`, `onNodeProgress` | Callbacks                                                                                                     |
-| `workflowId`, `skipNodes`, `nodeResults`                         | Identity and resumption                                                                                       |
-| `signal`                                                         | Cancel the run                                                                                                |
-| `tracer`, `metricsCollector`                                     | [Observability](#observability); default to the global tracer / collector when those are enabled              |
-| `defaultRetry`, `defaultCircuitBreaker`                          | Saga defaults for every node                                                                                  |
-| `deadLetterQueue`, `idempotencyStore`                            | Saga infrastructure                                                                                           |
-| `approvalStore`, `approvalNotifier`, `timerStore`                | Stores for human and timer nodes                                                                              |
-| `depth`                                                          | Subworkflow nesting depth                                                                                     |
-| `onApprovalRequired(request)`                                    | A human node opened an approval request (each chain step and escalation included)                             |
-| `onTimerScheduled(entry)`                                        | A timer node stored a persisted timer in the `timerStore` (`persist: true` configs only)                      |
-| `onDeadLetter(entry)`                                            | A node that finally failed was written to the `deadLetterQueue`                                               |
-| `onCompensationStart(nodeId)`, `onCompensationComplete(nodeId)`  | A node's `config.compensation` starts / finished rolling back (successfully or not) after a later node failed |
+| Option                                                                 | Purpose                                                                                                       |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `maxConcurrency`, `maxIterations`                                      | Parallel nodes, loop safety limit                                                                             |
+| `checkpoint`, `checkpointStrategy`                                     | Save checkpoints (`'per-iteration'` or `'per-node'`)                                                          |
+| `onNodeStart`, `onNodeComplete`, `onNodeError`, `onNodeProgress`       | Callbacks                                                                                                     |
+| `workflowId`, `frontier`, `completedNodes`, `skipNodes`, `nodeResults` | Identity and resumption                                                                                       |
+| `signal`                                                               | Cancel the run                                                                                                |
+| `tracer`, `metricsCollector`                                           | [Observability](#observability); default to the global tracer / collector when those are enabled              |
+| `defaultRetry`, `defaultCircuitBreaker`                                | Saga defaults for every node                                                                                  |
+| `deadLetterQueue`, `idempotencyStore`                                  | Saga infrastructure                                                                                           |
+| `approvalStore`, `approvalNotifier`, `timerStore`                      | Stores for human and timer nodes                                                                              |
+| `depth`                                                                | Subworkflow nesting depth                                                                                     |
+| `onApprovalRequired(request)`                                          | A human node opened an approval request (each chain step and escalation included)                             |
+| `onTimerScheduled(entry)`                                              | A timer node stored a persisted timer in the `timerStore` (`persist: true` configs only)                      |
+| `onDeadLetter(entry)`                                                  | A node that finally failed was written to the `deadLetterQueue`                                               |
+| `onCompensationStart(nodeId)`, `onCompensationComplete(nodeId)`        | A node's `config.compensation` starts / finished rolling back (successfully or not) after a later node failed |
 
 These five callbacks are the run observers of `WorkflowExecuteOptionsV2`, also accepted by the manager's `execute()`; one that throws is logged and does not break the run.
 

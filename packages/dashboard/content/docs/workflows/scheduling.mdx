@@ -81,7 +81,7 @@ await workflowManager.pause(runId); // status 'paused'
 await workflowManager.resume(runId); // resolves once the run is 'running' again
 ```
 
-`pause()` needs a manager with a `checkpointStore` (it throws otherwise — use `cancel()` to stop a run for good) and a run in status `running`. It aborts the run — nodes in flight get the abort signal — and the run stays `paused`; `cancel()` likewise keeps `cancelled`. `resume(runId, options?)` continues a paused run from its last checkpoint (from the start if it was paused before the first one), so nodes completed before that checkpoint do not run again. It resolves as soon as the run is running again; follow the rest with `onRunStateChange` or `getStatus`. `options` default to the ones the run was started with in this process, and `resume()` throws while the nodes that were running at the pause have not finished yet.
+`pause()` needs a manager with a `checkpointStore` (it throws otherwise — use `cancel()` to stop a run for good) and a run in status `running`. It aborts the run — nodes in flight get the abort signal — and the run stays `paused`; `cancel()` likewise keeps `cancelled`. `resume(runId, options?)` continues a paused run from its last checkpoint (from the start if it was paused before the first one), so nodes completed before that checkpoint do not run again, and a run paused inside a loop goes on in the round it was paused in. It resolves as soon as the run is running again; follow the rest with `onRunStateChange` or `getStatus`. `options` default to the ones the run was started with in this process, and `resume()` throws while the nodes that were running at the pause have not finished yet.
 
 ## Trigger Manager
 

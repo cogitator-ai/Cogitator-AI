@@ -887,8 +887,10 @@ interface WorkflowExecuteOptions {
   maxIterations?: number; // default: 100
   checkpoint?: boolean; // default: false
   checkpointStrategy?: 'per-iteration' | 'per-node'; // default: 'per-iteration'
-  skipNodes?: Set<string>; // nodes that already ran (when resuming)
-  nodeResults?: Record<string, unknown>; // outputs of skipNodes
+  frontier?: { current: string[]; next: string[] }; // where a resumed run goes on (from a checkpoint)
+  completedNodes?: string[]; // with frontier: nodes completed before the run stopped
+  skipNodes?: Set<string>; // nodes passed over by name (checkpoints without a frontier)
+  nodeResults?: Record<string, unknown>; // outputs of the nodes that already ran
   workflowId?: string;
   onNodeStart?: (node: string) => void;
   onNodeComplete?: (node: string, result: unknown, duration: number) => void;

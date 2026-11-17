@@ -9,6 +9,7 @@ import type {
   WorkflowResult,
   WorkflowExecuteOptions,
   WorkflowExecuteOptionsV2,
+  WorkflowCheckpoint,
   StreamingWorkflowEvent,
   CheckpointStore,
   NodeConfig,
@@ -80,6 +81,31 @@ export interface ExecutorExecuteOptions
   approvalNotifier?: ApprovalNotifier;
   /** Default store for persisted timers (`timerWorkflowNode`) */
   timerStore?: TimerStore;
+}
+
+/** Where a run continues from instead of the workflow's entry point */
+export interface ResumePoint extends Pick<
+  WorkflowExecuteOptions,
+  'skipNodes' | 'frontier' | 'completedNodes' | 'nodeVisits'
+> {
+  workflowId: string;
+  nodeResults: Record<string, unknown>;
+}
+
+/**
+ * The execute options that continue the run of a checkpoint: from its frontier when it has one,
+ * else, for a checkpoint saved before frontiers were recorded, by passing over its completed
+ * nodes by name.
+ */
+export function resumePoint(checkpoint: WorkflowCheckpoint): ResumePoint {
+  return {
+    workflowId: checkpoint.workflowId,
+    nodeResults: checkpoint.nodeResults,
+    ...(checkpoint.nodeVisits && { nodeVisits: checkpoint.nodeVisits }),
+    ...(checkpoint.frontier
+      ? { frontier: checkpoint.frontier, completedNodes: checkpoint.completedNodes }
+      : { skipNodes: new Set(checkpoint.completedNodes) }),
+  };
 }
 
 const DEFAULT_MAX_CONCURRENCY = 4;
@@ -293,7 +319,8 @@ export class WorkflowExecutor {
     const maxIterations = options?.maxIterations ?? DEFAULT_MAX_ITERATIONS;
     const shouldCheckpoint = options?.checkpoint ?? false;
     const checkpointStrategy: CheckpointStrategy = options?.checkpointStrategy ?? 'per-iteration';
-    const skipNodes = options?.skipNodes;
+    const frontier = options?.frontier;
+    const skipNodes = frontier ? undefined : options?.skipNodes;
 
     let state: S = { ...workflow.initialState, ...input } as S;
     const nodeResults = new Map<string, { output: unknown; duration: number }>(
@@ -302,11 +329,11 @@ export class WorkflowExecutor {
         { output, duration: 0 },
       ])
     );
-    const completedNodes = new Set<string>();
+    const completedNodes = new Set<string>(frontier ? options?.completedNodes : undefined);
     const nodeVisits = new Map<string, number>(
       options?.nodeVisits
         ? Object.entries(options.nodeVisits)
-        : [...(skipNodes ?? [])].map((node) => [node, 1])
+        : [...(skipNodes ?? completedNodes)].map((node) => [node, 1])
     );
     let iterations = 0;
     let checkpointId: string | undefined;
@@ -341,7 +368,14 @@ export class WorkflowExecutor {
         };
     metrics?.recordWorkflowStart(workflow.name);
 
-    let currentNodes = [workflow.entryPoint];
+    let currentNodes = frontier ? [...frontier.current] : [workflow.entryPoint];
+    let queuedNodes = frontier ? [...frontier.next] : [];
+    if (currentNodes.length === 0) {
+      currentNodes = queuedNodes;
+      queuedNodes = [];
+    }
+    let stepPending = new Set<string>();
+    let nextNodes: string[] = [];
 
     const trackCompensation = (nodeName: string, output: unknown) => {
       const config = workflow.nodes.get(nodeName)?.config?.compensation;
@@ -351,6 +385,9 @@ export class WorkflowExecutor {
       }
       compensation.markCompleted(nodeName, output);
     };
+    for (const nodeName of completedNodes) {
+      trackCompensation(nodeName, nodeResults.get(nodeName)?.output);
+    }
 
     const compensate = async (failedNode: string, cause: Error) => {
       await Promise.allSettled(inFlight);
@@ -392,6 +429,7 @@ export class WorkflowExecutor {
           Array.from(nodeResults.entries()).map(([k, v]) => [k, v.output])
         ),
         nodeVisits: Object.fromEntries(nodeVisits),
+        frontier: { current: [...stepPending], next: [...new Set(nextNodes)] },
         timestamp: lastCheckpointAt,
       });
     };
@@ -536,6 +574,7 @@ export class WorkflowExecutor {
       });
 
       completedNodes.add(nodeName);
+      stepPending.delete(nodeName);
       nodeVisits.set(nodeName, (nodeVisits.get(nodeName) ?? 0) + 1);
 
       if (result.next) {
@@ -581,7 +620,9 @@ export class WorkflowExecutor {
         );
 
         const tasks = runnable.map((nodeName) => createTask(nodeName, iterations));
-        const nextNodes: string[] = [...deferred];
+        stepPending = new Set(runnable);
+        nextNodes = [...queuedNodes, ...deferred];
+        queuedNodes = [];
 
         if (shouldCheckpoint && checkpointStrategy === 'per-node') {
           await this.scheduler.runParallelWithCallback(
@@ -687,7 +728,10 @@ export class WorkflowExecutor {
   }
 
   /**
-   * Resume a workflow from a checkpoint
+   * Resume a workflow from a checkpoint. The run goes on from the frontier the checkpoint
+   * recorded: the nodes that had not completed run, the ones before them do not, and a loop
+   * continues in the pass it stopped in. A checkpoint saved before frontiers were recorded is
+   * resumed by passing over its completed nodes by name.
    */
   async resume<S extends WorkflowState>(
     workflow: Workflow<S>,
@@ -706,11 +750,13 @@ export class WorkflowExecutor {
       );
     }
 
-    const allNodes = new Set(workflow.nodes.keys());
+    const { frontier } = checkpoint;
     const completed = new Set(checkpoint.completedNodes);
-    const pending = [...allNodes].filter((n) => !completed.has(n));
+    const finished = frontier
+      ? frontier.current.length === 0 && frontier.next.length === 0
+      : [...workflow.nodes.keys()].every((n) => completed.has(n));
 
-    if (pending.length === 0) {
+    if (finished) {
       return {
         workflowId: checkpoint.workflowId,
         workflowName: workflow.name,
@@ -725,10 +771,7 @@ export class WorkflowExecutor {
 
     return this.execute(workflow, checkpoint.state as Partial<S>, {
       ...options,
-      workflowId: checkpoint.workflowId,
-      skipNodes: completed,
-      nodeResults: checkpoint.nodeResults,
-      ...(checkpoint.nodeVisits && { nodeVisits: checkpoint.nodeVisits }),
+      ...resumePoint(checkpoint),
     });
   }
 
