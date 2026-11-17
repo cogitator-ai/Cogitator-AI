@@ -5,6 +5,7 @@ import { BridgeClient } from '../client.js';
 import { BridgeError, isBridgeError } from '../errors.js';
 import { oneLine } from '../letters.js';
 import { NEW_SESSION, aliasOfHarness } from '../registry.js';
+import type { JobDiff } from '../inputs.js';
 import type { AgentRecord, BridgeJob, CallerIdentity, JobState, Letter } from '../types.js';
 import { mailText } from '../waiter.js';
 import { callerOfToolCall, type ToolCallOrigin } from './caller.js';
@@ -35,6 +36,9 @@ const OPEN_STATES: readonly JobState[] = ['submitted', 'working', 'input-require
 /** How many letters of a job `job` shows, the newest. */
 const TRAIL_LETTERS = 10;
 
+/** How much of a patch `diff` shows. */
+const DIFF_CHARS = 60_000;
+
 /** How much of one letter `job` shows. The whole letter is in the inbox of who got it. */
 const TRAIL_BODY = 4_000;
 
@@ -45,8 +49,57 @@ function clock(at: string): string {
   return `${at.slice(0, 16).replace('T', ' ')} UTC`;
 }
 
+/** Where the result of a job stands, when the bridge checked it or keeps its work apart. */
+function resultOf(job: BridgeJob): string {
+  const marks: string[] = [];
+  if (job.checking) marks.push('its checks run');
+  else if (job.verification) marks.push(job.verification.verified ? 'verified' : 'not verified');
+  if (job.worktree) {
+    marks.push(job.worktree.end ? `work ${ENDED[job.worktree.end.how]}` : 'work in its worktree');
+  }
+  return marks.length > 0 ? `  (${marks.join(', ')})` : '';
+}
+
+const ENDED = {
+  accepted: 'taken',
+  branch: 'left as a branch',
+  rejected: 'dropped',
+  discarded: 'put away',
+} as const;
+
 function jobLine(job: BridgeJob): string {
-  return `#${job.number} ${job.state}  ${job.from} -> ${job.to}  "${oneLine(job.title)}"`;
+  return `#${job.number} ${job.state}  ${job.from} -> ${job.to}  "${oneLine(job.title)}"${resultOf(job)}`;
+}
+
+/** What the bridge knows of the work of a job: its worktree, what was changed there, the checks. */
+function workLines(job: BridgeJob): string[] {
+  const lines: string[] = [];
+  const { worktree, changes, verification } = job;
+  if (worktree) {
+    const end = worktree.end;
+    lines.push(
+      end
+        ? `Its work was ${ENDED[end.how]}${end.into ? ` into ${end.into}` : ''}${end.ref ? ` (${end.ref})` : ''} ${clock(end.at)}, the worktree is gone`
+        : `Done in a worktree of its own: ${worktree.path}, branch ${worktree.branch}`
+    );
+  } else if (job.isolation === 'worktree') {
+    lines.push('It gets a worktree of its own when its session starts');
+  }
+  if (changes) {
+    lines.push(
+      `Changed when it reported: ${changes.files} ${changes.files === 1 ? 'file' : 'files'}, +${changes.insertions} -${changes.deletions}`
+    );
+  }
+  if (job.checking) lines.push('Its checks run: the report comes with what they show');
+  if (verification?.summary) lines.push(`Checks. ${verification.summary}`);
+  return lines;
+}
+
+/** One changed file as a line: `M src/a.ts  +3 -1`. */
+function fileLine(file: JobDiff['files'][number]): string {
+  const mark = file.kind === 'added' ? 'A' : file.kind === 'deleted' ? 'D' : 'M';
+  const size = file.insertions === undefined ? 'binary' : `+${file.insertions} -${file.deletions}`;
+  return `${mark} ${file.path}  ${size}`;
 }
 
 function letterBlock(letter: Letter): string {
@@ -187,6 +240,19 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
         .describe(
           'The job this one is part of, when this session carries out several. Found by itself otherwise'
         ),
+      worktree: z
+        .boolean()
+        .optional()
+        .describe(
+          'Give the job a git worktree of its own, made from the last commit of your checkout, and a fresh session to work there. Ask for it when the job changes files while you or other agents change files too. What you have not committed is not there. The work comes back with the accept tool'
+        ),
+      checks: z
+        .array(z.string().min(1))
+        .max(50)
+        .optional()
+        .describe(
+          'Shell commands that show the job is done, such as the tests of what it touches. When the job is reported on, the bridge runs those your own rules allow without asking, where the job was done, and the report comes with what they showed'
+        ),
     }),
     annotations: WRITES,
     sideEffects: ['process'],
@@ -198,9 +264,16 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
           ...(args.title !== undefined && { title: args.title }),
           ...(args.cwd !== undefined && { cwd: args.cwd }),
           ...(args.parent !== undefined && { parent: args.parent }),
+          ...(args.worktree !== undefined && { worktree: args.worktree }),
+          ...(args.checks !== undefined && {
+            checks: args.checks.map((command) => ({ command })),
+          }),
         });
         return (
           `Job #${job.number} is with ${job.to} (${job.state})${duplicate ? ', handed over before: nothing was sent twice' : ''}. ` +
+          (job.isolation === 'worktree'
+            ? 'It is done in a git worktree of its own, off your last commit: its changes come to you with accept. '
+            : '') +
           'Its questions and its report arrive as letters. Say in one line what you handed over, then end your turn: do not wait or poll.'
         );
       }),
@@ -378,6 +451,7 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
         ];
         if (found.reason) lines.push(`Reason: ${found.reason}`);
         if (found.parent !== undefined) lines.push(`Part of job #${found.parent}`);
+        lines.push(...workLines(found));
         if (found.from !== self.name && found.to !== self.name) {
           lines.push('Its letters are between its two agents: this session is neither.');
           return lines.join('\n');
@@ -436,6 +510,104 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
       }),
   });
 
+  const diff = tool({
+    name: 'diff',
+    title: 'See what a job changed',
+    description:
+      'See what a job changed in the git worktree it was given: the files, how much, and the patch. Works while the job runs and after, until its work is taken or dropped. Reads only.',
+    parameters: z.looseObject({
+      job: JobNumber,
+      paths: z
+        .array(z.string().min(1))
+        .max(200)
+        .optional()
+        .describe('Only these files, paths from the top of the repository'),
+      filesOnly: z.boolean().optional().describe('The list of files without the patch'),
+    }),
+    annotations: READS,
+    sideEffects: [],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const found = await bridge.diff({
+          job: args.job,
+          ...(args.paths !== undefined && { paths: args.paths }),
+          maxChars: args.filesOnly ? 0 : DIFF_CHARS,
+        });
+        if (found.files.length === 0) {
+          return `Job #${found.job} changed nothing in its worktree, ${found.worktree}.`;
+        }
+        const lines = [
+          `Job #${found.job} changed ${found.files.length} ${found.files.length === 1 ? 'file' : 'files'}, +${found.insertions} -${found.deletions}, in ${found.worktree} (branch ${found.branch}, since commit ${found.base.slice(0, 10)}):`,
+          ...found.files.map(fileLine),
+        ];
+        if (!args.filesOnly) {
+          lines.push('', found.patch.trimEnd());
+          if (found.truncated) {
+            lines.push(
+              `[cut here: the patch is longer. Ask for some files with paths, or read them in ${found.worktree}]`
+            );
+          }
+        }
+        return lines.join('\n');
+      }),
+  });
+
+  const accept = tool({
+    name: 'accept',
+    title: 'Take the work of a job',
+    description:
+      'Take what a finished job changed in its git worktree into the checkout this session works in. The changes arrive as one change that is staged and not committed: look at it and commit it yourself. When files would conflict nothing is touched and the answer names them. The worktree is removed. Only for a job this session handed over.',
+    parameters: z.looseObject({
+      job: JobNumber,
+      asBranch: z
+        .union([z.boolean(), z.string().min(1)])
+        .optional()
+        .describe(
+          'Leave the work as a branch instead of bringing it into your checkout, for a change that goes on as a pull request: true for the branch of the worktree, or the name the branch is to have'
+        ),
+    }),
+    annotations: WRITES,
+    sideEffects: ['filesystem', 'process'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const taken = await bridge.accept({
+          job: args.job,
+          ...(args.asBranch !== undefined && { asBranch: args.asBranch }),
+        });
+        switch (taken.state) {
+          case 'accepted':
+            return `The work of job #${args.job} is in ${taken.into}: ${taken.files} ${taken.files === 1 ? 'file' : 'files'}, +${taken.insertions} -${taken.deletions}, staged and not committed. Look at it with git diff --cached and commit it yourself. The worktree is gone.`;
+          case 'branch':
+            return `The work of job #${args.job} is the branch ${taken.branch}, at commit ${taken.commit.slice(0, 10)}. Your checkout is as it was, and the worktree is gone.`;
+          case 'nothing':
+            return `Job #${args.job} changed nothing: there was nothing to take, and its worktree is gone.`;
+          case 'conflict':
+            return `Nothing was taken: the work of job #${args.job} would leave ${taken.files.length === 1 ? 'this file' : 'these files'} of ${taken.into} in conflict: ${taken.files.join(', ')}. Its worktree is still there. Take it as a branch and merge it by hand, hand over a job that brings it up to date, or drop it with reject.`;
+        }
+      }),
+  });
+
+  const reject = tool({
+    name: 'reject',
+    title: 'Drop the work of a job',
+    description:
+      'Drop what a finished job changed in its git worktree: the worktree and its branch are removed with everything in them, and nothing reaches your checkout. Only for a job this session handed over. It cannot be undone.',
+    parameters: z.looseObject({
+      job: JobNumber,
+      reason: z.string().optional().describe('Why, for the journal'),
+    }),
+    annotations: { ...WRITES, destructiveHint: true },
+    sideEffects: ['filesystem', 'process'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const dropped = await bridge.reject({
+          job: args.job,
+          ...(args.reason?.trim() && { reason: args.reason.trim() }),
+        });
+        return `The work of job #${dropped.number} is dropped, and its worktree is gone.`;
+      }),
+  });
+
   const agents = tool({
     name: 'agents',
     title: 'See who can take a job',
@@ -464,5 +636,19 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
       }),
   });
 
-  return [delegate, ask, answer, report, note, inbox, job, jobs, cancel, agents] as Tool[];
+  return [
+    delegate,
+    ask,
+    answer,
+    report,
+    note,
+    inbox,
+    job,
+    jobs,
+    cancel,
+    diff,
+    accept,
+    reject,
+    agents,
+  ] as Tool[];
 }
