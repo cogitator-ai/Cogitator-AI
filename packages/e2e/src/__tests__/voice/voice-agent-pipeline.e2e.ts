@@ -61,6 +61,15 @@ function textEchoTTS(): TTSProvider {
   };
 }
 
+/**
+ * The words of a text in their order, without the whitespace between them. The stand-in TTS
+ * speaks word by word with a space after each, so what it spoke has spaces the reply may not
+ * have, such as between two sentences of a language that writes none there.
+ */
+function wordsOf(text: string): string {
+  return text.replace(/\s+/g, '');
+}
+
 function tone(ms: number, amplitude: number): Buffer[] {
   const total = Math.round((SAMPLE_RATE * ms) / 1000);
   const chunks: Buffer[] = [];
@@ -258,9 +267,7 @@ describeLLM('Voice: VoiceAgent pipeline with a real Cogitator agent', () => {
     const response = client.log.messages.find((m) => m.type === 'agent_response');
     expect(typeof response?.text).toBe('string');
     expect(String(response!.text).trim().length).toBeGreaterThan(0);
-    expect(client.log.audio.split(/\s+/).join(' ').trim()).toBe(
-      String(response!.text).split(/\s+/).filter(Boolean).join(' ')
-    );
+    expect(wordsOf(client.log.audio)).toBe(wordsOf(String(response!.text)));
   });
 
   const itGoogle = GOOGLE_API_KEY ? it : it.skip;
@@ -428,9 +435,7 @@ for (const target of streamingTargets) {
 
           const response = String(log.messages.find((m) => m.type === 'agent_response')?.text);
           expect(response.trim().length).toBeGreaterThan(0);
-          expect(log.audio.split(/\s+/).join(' ').trim()).toBe(
-            response.split(/\s+/).filter(Boolean).join(' ')
-          );
+          expect(wordsOf(log.audio)).toBe(wordsOf(response));
           const deltas = log.messages.filter((m) => m.type === 'agent_response_delta');
           expect(deltas.map((m) => String(m.text)).join('')).toBe(response);
           if (scripted) {
@@ -443,6 +448,28 @@ for (const target of streamingTargets) {
             ['assistant', response],
           ]);
           expect(thread[1]!.metadata?.interrupted).toBeUndefined();
+        }
+      );
+
+      it.skipIf(!scripted)(
+        'speaks a reply that has no space between its sentences',
+        { timeout: 30_000 },
+        async () => {
+          backend.setStreamChunks([
+            { content: '海洋覆盖了地球表面的大部分区域。' },
+            { content: '它调节全球气候。', delay: 100 },
+            { content: 'Its waves never stop.', delay: 100 },
+          ]);
+          const { log } = await serve(textEchoTTS(), 'You are a voice assistant.');
+
+          ws!.send(JSON.stringify({ type: 'text', text: 'Tell me about the ocean.' }));
+          await waitUntil(() => log.order.includes('turn_end'), 20_000);
+
+          const response = String(log.messages.find((m) => m.type === 'agent_response')?.text);
+          expect(response).toBe(
+            '海洋覆盖了地球表面的大部分区域。它调节全球气候。Its waves never stop.'
+          );
+          expect(wordsOf(log.audio)).toBe(wordsOf(response));
         }
       );
 
