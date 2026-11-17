@@ -11,9 +11,10 @@
  * `mcp__<server>__<tool>` run, and one may replace the arguments (`updatedInput`). A background
  * session calls only the tools its settings allow: nobody sits there to be asked.
  */
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   CliError,
@@ -22,6 +23,7 @@ import {
   abandonWork,
   awaitJson,
   boundLife,
+  canonical,
   enqueue,
   flag,
   isAlive,
@@ -399,7 +401,7 @@ function sessionServers(record) {
 
 /** The settings a session goes by: `--settings` and the two settings files of its project */
 function settingsOf(record) {
-  const project = join(record.cwd, '.claude');
+  const project = join(record.projectDir ?? record.cwd, '.claude');
   const sources = [
     () => record.settings && readSettingsOption(record.settings, record.cwd),
     () => readJson(join(project, 'settings.json')),
@@ -498,6 +500,53 @@ function ruleCovers(rule, toolName, input) {
  * are told (Claude Code takes about six seconds).
  */
 async function leaveFor(session, toolName, input) {
+  const moved = toolName === 'Edit' ? isolate(session, input.file_path) : undefined;
+  const leave = await decideLeave(
+    session,
+    toolName,
+    moved ? { ...input, file_path: moved.file } : input
+  );
+  return moved ? { ...leave, ...moved } : leave;
+}
+
+function gitSays(cwd, args) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  return result.status === 0 ? result.stdout.trim() : undefined;
+}
+
+/**
+ * Moves a background session into a git worktree of its own before its first edit, the way
+ * Claude Code does: `.claude/worktrees/<name>` under the top of the repository, on a branch
+ * `worktree-<name>`. Not when its settings say `worktree.bgIsolation: "none"`, not outside a git
+ * repository, and not when it is in a linked worktree already. The settings of the project it
+ * was started in stay the ones it reads.
+ * @returns {{ cwd: string, file: string } | undefined} where the session is now and which file
+ * the edit means there, undefined for a session that stays where it is
+ */
+function isolate(session, file) {
+  const { record, files } = session;
+  if (record.kind !== 'background') return undefined;
+  if (settingsOf(record).some((settings) => settings.worktree?.bgIsolation === 'none')) {
+    return undefined;
+  }
+  const top = gitSays(record.cwd, ['rev-parse', '--show-toplevel']);
+  const isMain = top !== undefined && statSync(join(top, '.git')).isDirectory();
+  if (!isMain) return undefined;
+  const name = `session-${record.id}`;
+  const path = join(top, '.claude', 'worktrees', name);
+  if (gitSays(top, ['worktree', 'add', '-b', `worktree-${name}`, path, 'HEAD']) === undefined) {
+    return undefined;
+  }
+  const into = (place) =>
+    isWithin(place, top) ? join(path, relative(canonical(top), canonical(place))) : place;
+  const started = record.cwd;
+  record.projectDir = started;
+  record.cwd = into(started);
+  patchJson(files.record, { cwd: record.cwd, projectDir: started });
+  return { cwd: record.cwd, file: into(file) };
+}
+
+async function decideLeave(session, toolName, input) {
   const { record, files } = session;
   const mode = record.permissionMode ?? 'default';
   const refused = (message) => ({ allowed: false, message });
