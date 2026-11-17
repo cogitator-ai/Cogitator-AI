@@ -23,6 +23,12 @@ const ALIASES: Readonly<Record<string, string>> = {
   claude: HARNESSES.claudeCode,
 };
 
+/**
+ * The word a recipe is addressed by: the harness of the conductor of the bridge, which carries a
+ * job out by the steps of a recipe (`@cogitator-ai/bridge/recipes`).
+ */
+export const RECIPE_HARNESS = 'recipe';
+
 /** Asks for a fresh session in an address: `codex:new`. */
 export const NEW_SESSION = 'new';
 

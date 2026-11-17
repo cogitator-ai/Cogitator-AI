@@ -1225,6 +1225,22 @@ describe.skipIf(!posix)('the Codex adapter', () => {
     );
   });
 
+  it('says a thread wakes for its mail only while the local daemon runs', async () => {
+    const adapter = codex();
+    const threadId = await fakes.openCodexThread({ cwd: project, owner: 'none' });
+    const host = await startHost([adapter]);
+    const thread = await host.dispatcher.register({
+      harness: 'codex',
+      sessionId: threadId,
+      cwd: project,
+      project,
+    });
+    expect(await host.dispatcher.wakes(thread.name)).toBe(false);
+    await fakes.startCodexDaemon();
+    expect(await host.dispatcher.wakes(thread.name)).toBe(true);
+    expect(await host.dispatcher.wakes('nobody@nowhere')).toBe(false);
+  });
+
   it('reports what doctor shows: the version, the commands and the daemon', async () => {
     const adapter = codex();
 

@@ -466,6 +466,10 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
     createSession,
     identify,
     health,
+    async wakesFor(): Promise<boolean> {
+      const daemon = await runCommand(command, ['app-server', 'daemon', 'version'], { env });
+      return daemon.code === 0;
+    },
     async close(): Promise<void> {
       closed = true;
     },

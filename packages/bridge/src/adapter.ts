@@ -9,12 +9,13 @@ import type {
   WithdrawInput,
   WithdrawResult,
 } from './inputs.js';
-import type { LetterFilter } from './store/store.js';
+import type { AgentFilter, JobTaskFilter, LetterFilter } from './store/store.js';
 import type {
   AdapterCapabilities,
   AgentRecord,
   BridgeJob,
   CallerIdentity,
+  JobRecipe,
   Letter,
   PermissionAsk,
   RenderedLetter,
@@ -122,6 +123,16 @@ export interface BridgeCalls {
   acknowledge(caller: string, letterId: string): Promise<Letter>;
   cancel(caller: string, job: number, reason?: string): Promise<BridgeJob>;
   job(number: number): Promise<BridgeJob>;
+  jobs(filter?: JobTaskFilter): Promise<BridgeJob[]>;
+  agents(filter?: AgentFilter): Promise<AgentRecord[]>;
+  /** The harnesses the bridge can start a session of */
+  startable(): Promise<string[]>;
+  /**
+   * Whether an agent takes a letter by itself right now: it is there, and its harness wakes it
+   * for mail or it waits for mail itself. False for a session that would only find the letter
+   * when a person opens it
+   */
+  wakes(agent: string): Promise<boolean>;
   letters(filter?: LetterFilter): Promise<Letter[]>;
 }
 
@@ -180,6 +191,22 @@ export interface BridgeAdapter {
    * that was listed and no longer is for gone
    */
   liveSessions?(): Promise<LiveSession[]>;
+  /**
+   * Present on an adapter that carries jobs out by recipes, the conductor of the bridge: says
+   * what is wrong with the recipe a job names, such as a name it does not know or an input the
+   * recipe cannot start with. Undefined when the job can start. The bridge hands such an adapter
+   * only jobs that name a recipe, each to a session of its own, and takes its sessions for no
+   * party to the rules of a job: the jobs a recipe hands out are bound by the rules of whoever
+   * started the recipe
+   */
+  recipeProblem?(recipe: JobRecipe): string | undefined;
+  /**
+   * Whether a session of the harness wakes for a letter handed to it right now. Absent when
+   * every session `deliver` reaches does. A harness that only queues mail for some sessions,
+   * such as Codex for a thread that is open nowhere while no local daemon runs, says so here, and
+   * whoever needs the work done by itself starts a fresh session instead
+   */
+  wakesFor?(agent: AgentRecord): Promise<boolean>;
   /** What `cogitator bridge doctor` shows about the harness: its version, its commands, the folder */
   health?(context: HealthContext): Promise<HealthCheck[]>;
   /** Called once by the dispatcher that uses the adapter, with the calls its sessions may make */

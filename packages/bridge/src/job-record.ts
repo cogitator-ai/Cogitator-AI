@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { FindingsSchema } from './findings.js';
 import type { A2ATask } from '@cogitator-ai/a2a';
 import { taskTime } from '@cogitator-ai/a2a';
 import {
@@ -62,6 +63,8 @@ export const BridgeJobRecordSchema = z.object({
   project: z.string(),
   cwd: z.string(),
   taskLength: z.number().int().nonnegative().optional(),
+  recipe: z.object({ name: z.string(), input: z.unknown().optional() }).optional(),
+  findings: FindingsSchema.optional(),
   isolation: z.literal('worktree').optional(),
   worktree: JobWorktreeRecordSchema.optional(),
   changes: JobChangesSchema.optional(),

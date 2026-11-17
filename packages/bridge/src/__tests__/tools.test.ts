@@ -6,6 +6,7 @@ import type { Tool } from '@cogitator-ai/types';
 import { BridgeClient } from '../client';
 import { hostBridge, type BridgeHost } from '../host';
 import { memoryBoard } from '../memory';
+import { recipeAdapter } from '../recipes';
 import { bridgePaths, canonicalPath } from '../paths';
 import { TOOL_CALL_HINT_KEY } from '../tools/caller';
 import { BRIDGE_INSTRUCTIONS } from '../tools/guidance';
@@ -96,11 +97,13 @@ function jobNumber(text: string): number {
 }
 
 describe('bridgeTools', () => {
-  it('are the sixteen tools of the bridge, each saying what it does to the world', () => {
+  it('are the eighteen tools of the bridge, each saying what it does to the world', () => {
     const tools = bridgeTools({ socketPath: bridgePaths({ home }).socket });
 
     expect(tools.map((tool) => tool.name)).toEqual([
       'delegate',
+      'build',
+      'review',
       'ask',
       'answer',
       'report',
@@ -342,6 +345,77 @@ describe('bridgeTools', () => {
     );
     expect(next).not.toContain('Redis on port 6380');
     await board.close?.();
+  });
+
+  it('have a job built and reviewed by the conductor, and name the findings of a review', async () => {
+    let started = 0;
+    const adapter = new FakeAdapter({
+      harness: 'codex',
+      createSession: async () => ({
+        sessionId: `thread-${(started += 1)}`,
+        deliveredFirstLetter: true,
+      }),
+    });
+    await startHost({ adapters: [adapter, recipeAdapter({ pollMs: 20 })] });
+    const orchestrator = claude();
+    const ended = (job: number) =>
+      vi.waitFor(async () =>
+        expect(await orchestrator.call('job', { job })).toContain(`#${job} completed`)
+      );
+
+    const built = await orchestrator.call('build', {
+      to: 'codex',
+      task: 'Fix the limiter',
+      worktree: false,
+      by: 'codex',
+      rounds: 0,
+      threshold: 'minor',
+      context: { done: ['The burst test passes'] },
+    });
+    expect(built).toContain(
+      'Job #1 is the build (submitted): codex does the work, then it is checked and reviewed.'
+    );
+    expect(built).toContain('end your turn');
+    await vi.waitFor(() => expect(adapter.sessions).toHaveLength(1));
+    expect(adapter.sessions[0].firstLetter.text).toContain('Done when:\n- The burst test passes');
+    await codex('thread-1').call('report', { job: 2, result: 'Fixed' });
+
+    await vi.waitFor(() => expect(adapter.sessions).toHaveLength(2));
+    expect(adapter.sessions[1].firstLetter.text).toContain('Review the work of job #2');
+    expect(
+      await codex('thread-2').call('report', {
+        job: 3,
+        result: 'One thing',
+        findings: [
+          { severity: 'minor', summary: 'The name\nsays nothing', file: 'src/limiter.ts', line: 3 },
+        ],
+      })
+    ).toMatch(/Reported to recipe.+ is completed/);
+    await ended(1);
+    const mail = await orchestrator.call('inbox');
+    expect(mail).toContain(
+      'The review of job #2 is not clean: 1 minor at or above minor is still open.'
+    );
+    expect(mail).toContain(
+      '[agent bridge] Findings: 1 minor.\n[minor] src/limiter.ts:3 - The name says nothing'
+    );
+
+    const reviewed = await orchestrator.call('review', { job: 2, rounds: 0, focus: 'The names' });
+    expect(reviewed).toContain('Job #4 is the review of job #2 (submitted).');
+    await vi.waitFor(() => expect(adapter.sessions).toHaveLength(3));
+    expect(adapter.sessions[2].firstLetter.text).toContain('Look at this above all:\n> The names');
+    await codex('thread-3').call('report', { job: 5, result: 'Clean', findings: [] });
+    await ended(4);
+    expect(await orchestrator.call('inbox')).toContain('passed the review of codex-');
+
+    await expect(orchestrator.call('review', { job: 2, threshold: 'huge' })).rejects.toThrow();
+  });
+
+  it('say so when the bridge was given no conductor for its recipes', async () => {
+    await startHost({ adapters: [new FakeAdapter({ harness: 'codex' })] });
+    await expect(claude().call('build', { to: 'codex', task: 'Fix the limiter' })).rejects.toThrow(
+      'This bridge carries out no recipes'
+    );
   });
 
   it('report a job that failed as failed', async () => {

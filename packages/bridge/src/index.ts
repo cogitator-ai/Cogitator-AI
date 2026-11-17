@@ -49,6 +49,7 @@ export {
   HARNESS_ENV,
   HARNESS_SESSION_ENV,
   NEW_SESSION,
+  RECIPE_HARNESS,
   SESSION_NAME_ENV,
   aliasOfHarness,
   callerFromEnv,
@@ -139,6 +140,7 @@ export type {
   CallerIdentity,
   DeliveryState,
   JobBudget,
+  JobRecipe,
   JobChanges,
   JobCheck,
   JobCheckResult,
@@ -273,6 +275,18 @@ export {
   type FactSource,
   type NewBoardFact,
 } from './board.js';
+export {
+  FINDING_SEVERITIES,
+  FindingSchema,
+  FindingsSchema,
+  MAX_FINDINGS,
+  atLeast,
+  findingLine,
+  findingsCount,
+  parseFindings,
+  type Finding,
+  type FindingSeverity,
+} from './findings.js';
 export {
   JobContextSchema,
   buildHandover,
