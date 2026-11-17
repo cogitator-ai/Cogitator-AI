@@ -467,7 +467,8 @@ describe.skipIf(!posix)('bridge doctor', () => {
       codex: { version: 'ok', queue: 'ok', exec: 'ok', daemon: 'warn', tools: 'warn' },
     });
     const status = JSON.parse(cli(['status', '--json']).stdout) as BridgeStatus;
-    expect(status.adapters).toEqual(['claude-code', 'codex']);
+    expect(status.adapters).toEqual(['claude-code', 'codex', 'recipe']);
+    expect(status.startable).toEqual(['claude-code', 'codex']);
 
     const text = cli(['doctor']).stdout;
     expect(text).toContain('✓ Claude Code: 2.1.292 (Claude Code)');
