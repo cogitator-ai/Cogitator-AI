@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { Tool } from '@cogitator-ai/types';
 import { BridgeClient } from '../client';
 import { hostBridge, type BridgeHost } from '../host';
+import { memoryBoard } from '../memory';
 import { bridgePaths, canonicalPath } from '../paths';
 import { TOOL_CALL_HINT_KEY } from '../tools/caller';
 import { BRIDGE_INSTRUCTIONS } from '../tools/guidance';
@@ -95,7 +96,7 @@ function jobNumber(text: string): number {
 }
 
 describe('bridgeTools', () => {
-  it('are the thirteen tools of the bridge, each saying what it does to the world', () => {
+  it('are the sixteen tools of the bridge, each saying what it does to the world', () => {
     const tools = bridgeTools({ socketPath: bridgePaths({ home }).socket });
 
     expect(tools.map((tool) => tool.name)).toEqual([
@@ -111,6 +112,9 @@ describe('bridgeTools', () => {
       'diff',
       'accept',
       'reject',
+      'remember',
+      'recall',
+      'forget',
       'agents',
     ]);
     for (const tool of tools) {
@@ -255,6 +259,87 @@ describe('bridgeTools', () => {
       'The work of job #3 is dropped, and its worktree is gone.'
     );
     expect(existsSync(adapter.sessions[2].cwd)).toBe(false);
+  });
+
+  it('hand a job over with its context, keep notes on the board and bring them to the next job', async () => {
+    writeFileSync(
+      join(project, 'limiter.ts'),
+      'export const limit = 1;\nexport const burst = 1;\n'
+    );
+    const adapter = new FakeAdapter({ harness: 'codex' });
+    const board = await memoryBoard({ store: ':memory:' });
+    await startHost({ adapters: [adapter], board });
+    const orchestrator = claude();
+    const worker = codex();
+    await worker.call('inbox');
+    expect(await orchestrator.call('recall')).toBe('The board of this project is empty.');
+
+    const first = jobNumber(
+      await orchestrator.call('delegate', {
+        to: 'codex',
+        task: 'Raise the burst limit of the limiter to 3',
+        context: {
+          done: ['The burst test passes'],
+          constraints: ['Do not touch the public API'],
+          files: [{ path: 'limiter.ts', lines: '2', why: 'the constant' }],
+          unknown: 'left out',
+        },
+      })
+    );
+    const task = await worker.call('inbox');
+    expect(task).toContain('Done when:\n- The burst test passes');
+    expect(task).toContain(
+      '- limiter.ts lines 2-2 of 2: the constant\n  2| export const burst = 1;'
+    );
+
+    const kept = await worker.call('remember', {
+      note: 'The limiter tests need Redis on port 6380',
+    });
+    expect(kept).toMatch(/^Kept as \S+, for every agent of this project\.$/);
+    const own = await worker.call('remember', {
+      note: 'The flaky test is skipped on this job',
+      job: first,
+      jobOnly: true,
+    });
+    expect(own).toMatch(new RegExp(`^Kept as \\S+, for the two agents of job #${first}\\.$`));
+    await worker.call('report', {
+      job: first,
+      result: 'Raised it, the tests pass',
+      lessons: ['Mocking Redis hid a race in the limiter: run a real one'],
+    });
+
+    const looked = await vi.waitFor(async () => {
+      const text = await orchestrator.call('recall', { about: 'limiter redis' });
+      expect(text).toContain('Mocking Redis hid a race');
+      return text;
+    });
+    expect(looked).toMatch(
+      /^\S+ {2}The limiter tests need Redis on port 6380 \(fact from codex@\S+, job #1, \d{4}-\d{2}-\d{2}\)$/m
+    );
+    expect(await orchestrator.call('recall', { kind: 'lesson' })).toMatch(
+      /^\S+ {2}Mocking Redis hid a race in the limiter: run a real one \(lesson from codex@\S+, job #1, /
+    );
+    expect(await orchestrator.call('recall', { about: 'kubernetes' })).toBe(
+      'Nothing on the board fits that.'
+    );
+
+    const id = /^Kept as (\S+),/.exec(kept)?.[1] ?? '';
+    await expect(orchestrator.call('forget', { id })).rejects.toThrow(/only they, or the person/);
+    expect(await worker.call('forget', { id })).toBe(
+      `The note ${id} is off the board: The limiter tests need Redis on port 6380`
+    );
+
+    await orchestrator.call('delegate', {
+      to: 'codex',
+      task: 'Lower the burst limit of the limiter again',
+    });
+    const next = await worker.call('inbox');
+    expect(next).toContain('What earlier jobs like this one showed:');
+    expect(next).toContain(
+      '- Mocking Redis hid a race in the limiter: run a real one (lesson from codex@'
+    );
+    expect(next).not.toContain('Redis on port 6380');
+    await board.close?.();
   });
 
   it('report a job that failed as failed', async () => {
