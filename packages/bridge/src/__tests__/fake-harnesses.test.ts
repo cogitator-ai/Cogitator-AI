@@ -1031,11 +1031,69 @@ describe('fake claude permission dialogs', () => {
       transcript_path: expect.stringContaining(`${sessionId}.jsonl`),
       cwd: work,
       hook_event_name: 'Notification',
-      message: 'Claude needs your permission to use Bash',
+      message: 'Claude needs your permission',
       title: 'Permission needed',
       notification_type: 'permission_prompt',
     });
     expect(existsSync(join(work, 'never'))).toBe(false);
+  });
+
+  it('is listed as waiting for leave, and says so to its Notification hooks, while a hook still decides', async () => {
+    const decide =
+      'cat > /dev/null; until [ -e decide ]; do sleep 0.05; done; echo \'{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}\'';
+    settings({
+      hooks: {
+        PermissionRequest: [{ matcher: 'Bash', hooks: [{ type: 'command', command: decide }] }],
+        Notification: [
+          {
+            matcher: 'permission_prompt',
+            hooks: [{ type: 'command', command: 'cat > told.json' }],
+          },
+        ],
+      },
+    });
+    fakes.trustFolder(work);
+    const id = await background('bash: echo held');
+    const sessionId = (await sessionOf(id)).sessionId;
+
+    await until(() => existsSync(join(work, 'told.json')), 'the hook to be told');
+    expect(await sessionOf(id)).toMatchObject({
+      status: 'waiting',
+      state: 'blocked',
+      waitingFor: 'permission prompt',
+    });
+    await expect(fakes.run('claude', ['__answer', sessionId, 'allow'])).resolves.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining('shows no permission dialog'),
+    });
+    writeFileSync(join(work, 'decide'), '');
+
+    expect((await first(sessionId))[0]).toMatchObject({ command: 'echo held', code: 0 });
+    expect(await sessionOf(id)).not.toHaveProperty('waitingFor');
+    expect(JSON.parse(readText('told.json'))).toMatchObject({
+      session_id: sessionId,
+      notification_type: 'permission_prompt',
+    });
+  });
+
+  it('keeps a prompt that was settled at once from its Notification hooks', async () => {
+    const allow =
+      'cat > /dev/null; echo \'{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}\'';
+    settings({
+      hooks: {
+        PermissionRequest: [{ matcher: 'Bash', hooks: [{ type: 'command', command: allow }] }],
+        Notification: [{ hooks: [{ type: 'command', command: 'touch told' }] }],
+      },
+    });
+    const sessionId = await fakes.openClaudeWindow({
+      cwd: work,
+      env: { FAKE_CLAUDE_NOTIFY_MS: '5000' },
+    });
+
+    await fakes.say(sessionId, 'bash: echo quick');
+
+    expect((await first(sessionId))[0]).toMatchObject({ command: 'echo quick', code: 0 });
+    expect(existsSync(join(work, 'told'))).toBe(false);
   });
 });
 

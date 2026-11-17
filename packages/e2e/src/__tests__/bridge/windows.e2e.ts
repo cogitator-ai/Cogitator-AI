@@ -148,7 +148,7 @@ describe.skipIf(!posix)('a Claude Code session the bridge starts', () => {
     expect(asks).toContain('Allow: cogitator bridge allow 1');
     expect(readFileSync(join(project, 'notes.txt'), 'utf8')).toBe('edited\n');
     const [session] = await fakes.claudeSessions();
-    expect(session).not.toHaveProperty('waitingFor');
+    expect(session).toMatchObject({ state: 'blocked', waitingFor: 'permission prompt' });
 
     const allowed = cli(['allow', '1', 'The', 'branch', 'is', 'reviewed']);
 
@@ -160,6 +160,7 @@ describe.skipIf(!posix)('a Claude Code session the bridge starts', () => {
       ['echo pushed', 0, 'pushed\n'],
     ]);
     expect(cli(['asks']).stdout).toContain('Nothing waits for you');
+    expect((await fakes.claudeSessions())[0]).not.toHaveProperty('waitingFor');
     await until(
       () => readFileSync(join(bridgeDir, 'inbox.json'), 'utf8').includes('"archived"'),
       'the item of the request to be put away'
@@ -221,7 +222,7 @@ describe.skipIf(!posix)('a Claude Code window a person opened', () => {
     }, 'the note that the window waits');
 
     expect(note.body).toContain(`${window.name} waits for a person at its own window`);
-    expect(note.body).toContain('> Claude needs your permission to use Bash');
+    expect(note.body).toContain('> Claude needs your permission');
     await until(() => {
       const inbox = join(bridgeDir, 'inbox.json');
       return (

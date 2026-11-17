@@ -782,4 +782,62 @@ describe('an agent that waits for a person at its own window', () => {
       `${codex.name} waits for you at its own window: It waits for: permission prompt`,
     ]);
   });
+
+  it('is no news while the call it holds waits for a verdict through the bridge', async () => {
+    const person = new NoticedRoute();
+    const waitingFor: { value?: string } = {};
+    const { bridge, claude, codex, job, ask } = await asking({
+      person,
+      rights: judge('ask'),
+      adapters: [
+        new FakeAdapter({
+          harness: 'codex',
+          liveSessions: async () => [
+            {
+              sessionId: 'thread-codex',
+              ...(waitingFor.value && { waitingFor: waitingFor.value }),
+            },
+          ],
+        }),
+      ],
+    });
+    await bridge.inbox(claude.name);
+    await bridge.sweep();
+    const sent = await ask();
+    await bridge.inbox(claude.name);
+
+    waitingFor.value = 'permission prompt';
+    kit.clock.advance(DEFAULT_LIMITS.presenceCheckMs + 1);
+    await bridge.sweep();
+    await bridge.idle();
+
+    expect(await bridge.stuck(codex.name, { what: 'Claude needs your permission' })).toEqual([]);
+    await bridge.idle();
+    expect(await bridge.inbox(claude.name)).toEqual([]);
+    expect(person.told).toEqual([]);
+
+    await bridge.personAnswer({ letter: sent.letter.id, verdict: 'allow', body: 'Go on' });
+    expect(await bridge.stuck(codex.name, { what: 'Claude needs your permission' })).toEqual([
+      job.number,
+    ]);
+    await bridge.idle();
+    expect(person.told.map((notice) => notice.text)).toEqual([
+      `${codex.name} waits for you at its own window: Claude needs your permission`,
+    ]);
+  });
+
+  it('is still news when the request it sent holds no call', async () => {
+    const person = new NoticedRoute();
+    kit = await makeKit({ person });
+    const { bridge, claude, codex } = kit;
+    const { job } = await bridge.createJob(claude.name, { to: 'codex', body: 'Ship the fix' });
+    await bridge.inbox(codex.name);
+    await bridge.send(codex.name, {
+      job: job.number,
+      kind: 'permission',
+      body: 'May I push when the tests pass?',
+    });
+
+    expect(await bridge.stuck(codex.name, { what: 'A dialog' })).toEqual([job.number]);
+  });
 });
