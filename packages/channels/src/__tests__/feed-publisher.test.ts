@@ -281,19 +281,30 @@ describe('FeedPublisher', () => {
   });
 
   it('extends its claim while a slow feed publishes, so no other worker takes the job', async () => {
-    const store = new MemoryPublishStore();
-    const bluesky = fakeFeed('bluesky');
-    const publisher = new FeedPublisher({ feeds: [bluesky], store, claimTtl: 60 });
-    let takenOver: boolean | undefined;
-    bluesky.during = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      const [job] = await store.list();
-      takenOver = job ? await store.claim(job.id, { owner: 'other-worker', ttl: 60 }) : undefined;
-    };
-    const outcome = await publisher.publish({ text: 'Slow' });
-    expect(takenOver).toBe(false);
-    expect(outcome.job.deliveries[0]?.status).toBe('published');
-    expect((await store.get(outcome.job.id))?.deliveries[0]?.status).toBe('published');
+    vi.useFakeTimers();
+    try {
+      const claimTtl = 60_000;
+      const slowFor = claimTtl * 2.5;
+      const store = new MemoryPublishStore();
+      const bluesky = fakeFeed('bluesky');
+      const publisher = new FeedPublisher({ feeds: [bluesky], store, claimTtl });
+      let takenOver: boolean | undefined;
+      bluesky.during = async () => {
+        await new Promise((resolve) => setTimeout(resolve, slowFor));
+        const [job] = await store.list();
+        takenOver = job
+          ? await store.claim(job.id, { owner: 'other-worker', ttl: claimTtl })
+          : undefined;
+      };
+      const publishing = publisher.publish({ text: 'Slow' });
+      await vi.advanceTimersByTimeAsync(slowFor);
+      const outcome = await publishing;
+      expect(takenOver).toBe(false);
+      expect(outcome.job.deliveries[0]?.status).toBe('published');
+      expect((await store.get(outcome.job.id))?.deliveries[0]?.status).toBe('published');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('stops, without overwriting, once another worker took the job over', async () => {
