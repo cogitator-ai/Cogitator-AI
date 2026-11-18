@@ -18,6 +18,7 @@ export type BridgeErrorCode =
   | 'no_worktree'
   | 'no_board'
   | 'worktree_limit'
+  | 'limit_reached'
   | 'already_running'
   | 'not_running'
   | 'storage';

@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   CLAUDE_TOOLS_PERMISSION,
+  claudeLimitHook,
   claudeStuckHook,
   claudeToolsHook,
   claudeWaitHook,
@@ -40,6 +41,7 @@ type Json = Record<string, unknown>;
 const WAITS = /\bbridge\s+wait\b/;
 const NAMES_CALLER = /\bbridge\s+caller\b/;
 const SAYS_STUCK = /\bbridge\s+stuck\b/;
+const SAYS_LIMITED = /\bbridge\s+limited\b/;
 
 function isObject(value: unknown): value is Json {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -93,6 +95,7 @@ export function withoutBridgeSettings(settings: Json): Json {
     hooks = setOrDrop(hooks, 'Stop', withoutHooks(hooks.Stop, WAITS));
     hooks = setOrDrop(hooks, 'PreToolUse', withoutHooks(hooks.PreToolUse, NAMES_CALLER));
     hooks = setOrDrop(hooks, 'Notification', withoutHooks(hooks.Notification, SAYS_STUCK));
+    hooks = setOrDrop(hooks, 'StopFailure', withoutHooks(hooks.StopFailure, SAYS_LIMITED));
     next = setOrDrop(next, 'hooks', hooks);
   }
   if (isObject(settings.permissions) && Array.isArray(settings.permissions.allow)) {
@@ -109,6 +112,8 @@ export interface BridgeSettings {
   tools: ReturnType<typeof claudeToolsHook>;
   /** The command of the hook that says a session waits for a person at its window */
   stuck: ReturnType<typeof claudeStuckHook>;
+  /** The command of the hook that says a session ran into the limit of its subscription */
+  limit: ReturnType<typeof claudeLimitHook>;
   /** Whether the tools run without a permission prompt */
   allow: boolean;
 }
@@ -128,6 +133,7 @@ export function withBridgeSettings(settings: Json, bridge: BridgeSettings): Json
   const stop = Array.isArray(hooks.Stop) ? hooks.Stop : [];
   const before = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [];
   const notified = Array.isArray(hooks.Notification) ? hooks.Notification : [];
+  const failed = Array.isArray(hooks.StopFailure) ? hooks.StopFailure : [];
   const next: Json = {
     ...base,
     hooks: {
@@ -135,6 +141,7 @@ export function withBridgeSettings(settings: Json, bridge: BridgeSettings): Json
       Stop: [...stop, ...bridge.wait.hooks.Stop],
       PreToolUse: [...before, ...bridge.tools.hooks.PreToolUse],
       Notification: [...notified, ...bridge.stuck.hooks.Notification],
+      StopFailure: [...failed, ...bridge.limit.hooks.StopFailure],
     },
   };
   if (!bridge.allow && !had) return next;
@@ -157,6 +164,9 @@ function bridgeLines(settings: Json, sign: '+' | '-'): string[] {
     ),
     ...commandsOf(hooks.Notification, SAYS_STUCK).map(
       (command) => `${sign} hooks.Notification: ${command}`
+    ),
+    ...commandsOf(hooks.StopFailure, SAYS_LIMITED).map(
+      (command) => `${sign} hooks.StopFailure: ${command}`
     ),
     ...(allowed ? [`${sign} permissions.allow: ${CLAUDE_TOOLS_PERMISSION}`] : []),
   ];
@@ -281,12 +291,13 @@ export function claudeSetup(options: ClaudeSetupOptions): AdapterSetup {
       }),
       tools: claudeToolsHook(hook),
       stuck: claudeStuckHook(hook),
+      limit: claudeLimitHook(hook),
       allow: context.allowTools,
     });
     if (!same(before, after)) {
       const kept = new Set(bridgeLines(before, '+'));
       steps.push({
-        title: `Edit ${place.settings}: the hooks that wake a session for its mail, name it to the tools and say when it waits for you`,
+        title: `Edit ${place.settings}: the hooks that wake a session for its mail, name it to the tools, and say when it waits for you or ran into its limit`,
         lines: bridgeLines(after, '+').filter((line) => !kept.has(line)),
         apply: async () => writeSettings(place.settings, after),
       });

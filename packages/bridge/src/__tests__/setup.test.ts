@@ -14,7 +14,12 @@ import { codexSetup } from '../setup/codex';
 import type { InstallContext, SetupStep } from '../setup/setup';
 import { installFakeHarnesses, type FakeHarnesses } from '../testing/fake-harnesses';
 import { BRIDGE_NOTES_END, BRIDGE_NOTES_START, bridgeNotes } from '../tools/guidance';
-import { claudeStuckHook, claudeToolsHook, claudeWaitHook } from '../adapters/claude';
+import {
+  claudeLimitHook,
+  claudeStuckHook,
+  claudeToolsHook,
+  claudeWaitHook,
+} from '../adapters/claude';
 import { socketDir } from './helpers';
 
 const TSX = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
@@ -96,7 +101,7 @@ describe.skipIf(!posix)('setting Claude Code up for a project', () => {
 
     expect(steps.map((step) => step.title)).toEqual([
       "Register the bridge's server of tools with Claude Code, for you in this project",
-      `Edit ${join(project, '.claude', 'settings.local.json')}: the hooks that wake a session for its mail, name it to the tools and say when it waits for you`,
+      `Edit ${join(project, '.claude', 'settings.local.json')}: the hooks that wake a session for its mail, name it to the tools, and say when it waits for you or ran into its limit`,
       `Add the notes of the bridge in ${join(project, 'CLAUDE.md')} (a new file)`,
     ]);
     expect(steps[0].lines).toEqual([
@@ -106,6 +111,7 @@ describe.skipIf(!posix)('setting Claude Code up for a project', () => {
       `+ hooks.Stop: ${BRIDGE_COMMAND} wait --hook claude-code --timeout 43140 --home ${home} --tools`,
       `+ hooks.PreToolUse: ${BRIDGE_COMMAND} caller --hook claude-code`,
       `+ hooks.Notification: ${BRIDGE_COMMAND} stuck --hook claude-code --home ${home}`,
+      `+ hooks.StopFailure: ${BRIDGE_COMMAND} limited --hook claude-code --home ${home}`,
       '+ permissions.allow: mcp__bridge',
     ]);
     expect(steps[2].lines[0]).toBe(`+ ${BRIDGE_NOTES_START}`);
@@ -126,6 +132,8 @@ describe.skipIf(!posix)('setting Claude Code up for a project', () => {
         PreToolUse: claudeToolsHook({ bridgeCommand: BRIDGE_COMMAND }).hooks.PreToolUse,
         Notification: claudeStuckHook({ bridgeCommand: BRIDGE_COMMAND, bridgeHome: home }).hooks
           .Notification,
+        StopFailure: claudeLimitHook({ bridgeCommand: BRIDGE_COMMAND, bridgeHome: home }).hooks
+          .StopFailure,
       },
       permissions: { allow: ['mcp__bridge'] },
     });
@@ -305,7 +313,7 @@ describe.skipIf(!posix)('taking Claude Code out of the bridge again', () => {
       `Remove ${join(project, 'CLAUDE.md')}, which holds only the notes of the bridge`,
     ]);
     expect(steps[0].lines).toEqual(['claude mcp remove bridge --scope local']);
-    expect(steps[1].lines).toHaveLength(4);
+    expect(steps[1].lines).toHaveLength(5);
     expect(steps[1].lines.every((line) => line.startsWith('- '))).toBe(true);
     await apply(steps);
 
@@ -349,6 +357,7 @@ describe('the settings of Claude Code with and without the bridge', () => {
     wait: claudeWaitHook({ tools: true }),
     tools: claudeToolsHook(),
     stuck: claudeStuckHook(),
+    limit: claudeLimitHook(),
     allow: true,
   };
 

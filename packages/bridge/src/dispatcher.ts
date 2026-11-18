@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import type { z } from 'zod';
-import { TaskManager, textPart, toMessage, type A2ATask } from '@cogitator-ai/a2a';
+import { TASK_AGENT_KEY, TaskManager, textPart, toMessage, type A2ATask } from '@cogitator-ai/a2a';
 import { MAX_RECALL_LIMIT, type BoardFact, type FactBoard, type NewBoardFact } from './board.js';
 import { runCheck, skippedCheck, summarizeChecks } from './checks.js';
 import { BridgeError } from './errors.js';
@@ -28,6 +28,7 @@ import {
   JobsFilterSchema,
   JournalQuerySchema,
   LettersFilterSchema,
+  LimitedInputSchema,
   PersonAnswerInputSchema,
   SendLetterInputSchema,
   StuckInputSchema,
@@ -49,6 +50,8 @@ import {
   type DiffInput,
   type ForgetInput,
   type JobDiff,
+  type LimitedInput,
+  type LimitedResult,
   type RecallInput,
   type RejectInput,
   type RememberInput,
@@ -72,6 +75,7 @@ import {
 import { parseFindings, type Finding } from './findings.js';
 import { HANDOVER_GAP, buildHandover } from './handover.js';
 import { isFinishedJobState, jobOf, jobRecordOf } from './job-record.js';
+import { limitClock, limitOf, type LimitSignal } from './limit.js';
 import {
   expectationOf,
   forHistory,
@@ -106,6 +110,7 @@ import {
   NEW_SESSION,
   aliasOfHarness,
   allocateAgentName,
+  harnessOfAlias,
   autoAddressOf,
   resolveAddress,
   type AddressResolution,
@@ -134,6 +139,7 @@ import {
   type BridgeLimits,
   type CallerIdentity,
   type DeliveryState,
+  type HarnessLimit,
   type JobChanges,
   type JobCheckResult,
   type JobFailure,
@@ -180,6 +186,8 @@ export interface BridgeDispatcherOptions {
    * with what its caller named alone
    */
   board?: FactBoard;
+  /** Who takes a job nobody is named for, or whose agent can go no further */
+  routing?: BridgeRouting;
   /** Ms since the epoch, `Date.now` by default */
   now?: () => number;
   /** The id of a letter whose sender gave none */
@@ -192,6 +200,17 @@ export interface BridgeDispatcherOptions {
    * while its process slept writes nothing after it wakes
    */
   assertWritable?: () => void;
+}
+
+/** Who takes a job the bridge has to find an agent for. */
+export interface BridgeRouting {
+  /**
+   * Harnesses that take such a job only when no other can: `auto` passes them over while any
+   * other harness takes jobs, and a job whose agent ran into its limit goes to them last. For
+   * an agent that costs money by the call, such as one on an API key, next to agents on a
+   * subscription
+   */
+  fallback?: readonly string[];
 }
 
 export type { CreateJobResult, SendLetterResult } from './inputs.js';
@@ -211,6 +230,8 @@ export interface DispatcherStatus {
   adapters: string[];
   /** The harnesses it can start a session of, for a job handed to one that has none */
   startable: string[];
+  /** The harnesses that ran into their limit and take no job until it is over */
+  limited: HarnessLimit[];
   /** The agents with a waiter armed: a letter for one of them wakes its session at once */
   waiting: string[];
 }
@@ -446,6 +467,15 @@ const RECIPE_LETTER_ID = /^(recipe|relay)-/;
 /** How many finished jobs the scoreboard reads, the newest: more than a machine ends in its window. */
 const SCORED_JOBS = 5_000;
 
+/** How far ahead the end of a limit may lie to be believed: a monthly cap resets within this. */
+const LIMIT_MAX_AHEAD_MS = 32 * 86_400_000;
+
+/** A limit in words: `out of its limit until 15:07 (You've hit your usage limit)`. */
+function limitWords(limit: HarnessLimit, now: number): string {
+  const until = limitClock(Date.parse(limit.until), now);
+  return `out of its limit until ${until}${limit.told ? '' : ', when the bridge tries it again'}${limit.detail ? ` (${limit.detail})` : ''}`;
+}
+
 /** How many reviews of its work the record of a job keeps, the first ones. */
 const REVIEWS_KEPT = 20;
 
@@ -512,6 +542,7 @@ export class BridgeDispatcher
   private readonly rights: RightsJudge | undefined;
   private readonly person: PersonRoute | undefined;
   private readonly board: FactBoard | undefined;
+  private readonly fallback: readonly string[];
   /** When each agent's other parties were last told it waits at its window, see `stuck` */
   private readonly stuckTold = new Map<string, number>();
   /** The agents a listing of their harness showed waiting at their window, until it shows them not */
@@ -567,6 +598,9 @@ export class BridgeDispatcher
     this.rights = options.rights;
     this.person = options.person;
     this.board = options.board;
+    this.fallback = (options.routing?.fallback ?? []).map((harness) =>
+      parse(HarnessNameSchema, harness, 'Cannot use the fallback')
+    );
     for (const adapter of options.adapters ?? []) {
       const harness = parse(HarnessNameSchema, adapter.harness, 'Cannot use the adapter');
       if (this.adapters.has(harness)) {
@@ -738,6 +772,19 @@ export class BridgeDispatcher
         : undefined;
       const resolution = taken?.resolution ?? resolveAddress(this.store, request.to, addressed);
       this.checkRecipeAsked(resolution, request.recipe);
+      const limited = this.limitRefusal(resolution);
+      if (limited) {
+        this.journal(tx, {
+          type: 'letter.rejected',
+          agent: from.name,
+          data: {
+            reason: limited.code,
+            to: request.to,
+            title: request.title ?? titleOf(request.body),
+          },
+        });
+        return new Refusal(limited);
+      }
       if (this.closing && resolution.kind === 'spawn') {
         throw new BridgeError(
           'not_running',
@@ -1107,6 +1154,9 @@ export class BridgeDispatcher
       }
       if (request.kind === 'report') {
         const state = letter.outcome === 'failed' ? 'failed' : 'completed';
+        if (state === 'completed') {
+          this.liftLimit(tx, from.harness, `${from.name} finished a job`);
+        }
         await this.transition(tx, job.number, state, forHistory(request.body, letter.id));
         if (state === 'failed')
           await this.patchRecord(job.taskId, {
@@ -3271,6 +3321,295 @@ export class BridgeDispatcher
   }
 
   /**
+   * Notes that the harness of the calling session ran into the limit of its subscription or its
+   * key: an adapter says so when a turn fails with it, a hook of the harness when the harness
+   * tells one. Until the limit is over (the time the harness named, `limits.limitRetryMs` from
+   * now when it named none) no job is handed to that harness: `auto` passes it over, and a job
+   * addressed to it is refused with `limit_reached`. The jobs the session carries out go to
+   * another agent, the one `suggest` names for their type among those that take jobs, with what
+   * the session left in the folder of each. A job nobody else can take fails, and not by the
+   * doing of its agent.
+   *
+   * A time that is past, or further ahead than a limit lasts, is taken for no time at all.
+   *
+   * @throws BridgeError `not_registered`
+   */
+  async limited(caller: string, input: LimitedInput = {}): Promise<LimitedResult> {
+    const request = parse(LimitedInputSchema, input, 'Cannot note the limit');
+    const now = this.now();
+    const said = request.until === undefined ? undefined : Date.parse(request.until);
+    const until =
+      said !== undefined && said > now && said - now <= LIMIT_MAX_AHEAD_MS ? said : undefined;
+    await this.asCaller(caller, async () => this.requireCaller(caller));
+    return this.outOfLimit(
+      caller,
+      { ...(until !== undefined && { until }), detail: request.detail ?? '' },
+      false
+    );
+  }
+
+  /** The harnesses that are out of their limit right now. */
+  async limitsInForce(): Promise<HarnessLimit[]> {
+    return this.enqueue(async () => this.limitsNow());
+  }
+
+  /**
+   * Takes the limit of a harness back before its time: the person knows it is over, such as
+   * after they changed their plan. `agent` is a harness word (`codex`, `claude`) or the name of
+   * one of its agents. Returns whether there was a limit.
+   *
+   * @throws BridgeError `unknown_agent` for a name nobody has
+   */
+  async unlimit(agent: string): Promise<boolean> {
+    return this.mutate(async (tx) => {
+      const harness = agent.includes('@')
+        ? this.store.getAgent(agent.trim())?.harness
+        : parse(HarnessNameSchema, harnessOfAlias(agent), 'Cannot lift the limit');
+      if (harness === undefined) {
+        throw new BridgeError('unknown_agent', `There is no agent ${agent}`, { address: agent });
+      }
+      return this.liftLimit(tx, harness, 'the person said it is over');
+    });
+  }
+
+  private limitsNow(): HarnessLimit[] {
+    const now = this.now();
+    return this.store.listLimits().filter((limit) => Date.parse(limit.until) > now);
+  }
+
+  private limitOfHarness(harness: string): HarnessLimit | undefined {
+    return this.limitsNow().find((limit) => limit.harness === harness);
+  }
+
+  /** Why a job cannot go to the harness an address names, when that harness is out of its limit. */
+  private limitRefusal(resolution: AddressResolution): BridgeError | undefined {
+    const harness = resolution.kind === 'agent' ? resolution.agent.harness : resolution.harness;
+    const limit = this.limitOfHarness(harness);
+    if (!limit) return undefined;
+    return new BridgeError(
+      'limit_reached',
+      `${aliasOfHarness(harness)} is ${limitWords(limit, this.now())}. Hand the job to another agent, or to ${AUTO_ADDRESS} for the one that takes jobs now`,
+      { harness, until: limit.until }
+    );
+  }
+
+  /** Forgets the limit of a harness. Returns whether it had one. */
+  private liftLimit(tx: Transaction, harness: string, why: string): boolean {
+    if (!this.store.listLimits().some((limit) => limit.harness === harness)) return false;
+    this.store.dropLimit(harness);
+    this.journal(tx, { type: 'harness.unlimited', data: { harness, why } });
+    return true;
+  }
+
+  /**
+   * What the bridge does when the harness of an agent ran into its limit: notes the limit, and
+   * hands the jobs the agent carries out to others. A limit that is noted already stays as it is
+   * unless the new one lasts longer: a session that names no time must not cut short the time
+   * another one named. `unstarted` says the session never came up, so the agent is gone and not
+   * merely out of work. So is the session of a harness that waits for its mail itself, such as
+   * Claude Code: a turn that ended on an error runs no hook that waits, so nothing wakes the
+   * session until a person opens it, and it is back in the book as soon as it calls.
+   */
+  private async outOfLimit(
+    agentName: string,
+    signal: LimitSignal,
+    unstarted: boolean
+  ): Promise<LimitedResult> {
+    const noted = await this.mutate(async (tx) => {
+      const agent = this.store.getAgent(agentName);
+      if (!agent) throw new BridgeError('not_registered', `There is no agent ${agentName}`);
+      const now = this.now();
+      const before = this.limitOfHarness(agent.harness);
+      const until = signal.until ?? now + this.limits.limitRetryMs;
+      const limit: HarnessLimit =
+        before && Date.parse(before.until) >= until
+          ? before
+          : {
+              harness: agent.harness,
+              until: this.iso(until),
+              told: signal.until !== undefined,
+              detail: oneLine(signal.detail).slice(0, 300),
+              since: before?.since ?? this.iso(now),
+              agent: agent.name,
+            };
+      this.store.putLimit(limit);
+      const adapter = this.adapters.get(agent.harness);
+      const deaf = adapter !== undefined && adapter.deliver === undefined;
+      if ((unstarted && agent.status === 'starting') || (deaf && agent.status === 'active')) {
+        this.waiters.get(agent.name)?.end('closed');
+        this.store.putAgent({ ...agent, status: 'gone' });
+        this.journal(tx, {
+          type: 'agent.gone',
+          agent: agent.name,
+          data: {
+            error: unstarted
+              ? `the ${agent.harness} session did not start: ${limit.detail}`
+              : `its turn ended on the limit of ${agent.harness}, and nothing wakes the session until it is opened again`,
+          },
+        });
+      }
+      const jobs = this.store
+        .jobTasks({ to: agent.name, states: ACTIVE_JOB_STATES })
+        .flatMap((task) => jobOf(task) ?? [])
+        .sort((a, b) => a.number - b.number);
+      this.journal(tx, {
+        type: 'harness.limited',
+        agent: agent.name,
+        data: {
+          harness: agent.harness,
+          until: limit.until,
+          told: limit.told,
+          detail: limit.detail,
+        },
+      });
+      if (!before) {
+        tx.notices.push({
+          agent: agent.name,
+          jobs,
+          text: `${aliasOfHarness(agent.harness)} is ${limitWords(limit, now)}. The bridge hands it no job until then${jobs.length > 0 ? ', and its jobs go to other agents' : ''}`,
+        });
+      }
+      return { agent, limit, jobs: jobs.map((job) => ({ number: job.number, type: job.type })) };
+    });
+
+    const redirected: LimitedResult['redirected'] = [];
+    const failed: number[] = [];
+    for (const job of noted.jobs) {
+      const suggestion = await this.suggest(job.type === undefined ? {} : { type: job.type });
+      const to = await this.mutate((tx) =>
+        this.redirect(tx, job.number, noted.agent, noted.limit, suggestion)
+      );
+      if (to === undefined) continue;
+      if (to === null) failed.push(job.number);
+      else redirected.push({ job: job.number, to });
+    }
+    return { limit: noted.limit, redirected, failed };
+  }
+
+  /**
+   * Hands a job whose agent ran into the limit of its harness to a fresh session of another
+   * harness, which goes on in the folder of the job with what is there and gets the time of the
+   * job anew. The letters of the job that waited are done with, the jobs handed over from inside
+   * it are canceled, and whoever handed the job over is told. The agent that had it is told only
+   * when its sessions fetch their mail themselves: a letter pushed to a session that is out of
+   * its limit would start a turn that fails on it again. Returns the new agent, null when nobody
+   * could take the job and it failed, undefined when the job needs no new agent any more.
+   */
+  private async redirect(
+    tx: Transaction,
+    number: number,
+    old: AgentRecord,
+    limit: HarnessLimit,
+    suggestion: Suggestion
+  ): Promise<string | null | undefined> {
+    const { job } = this.requireJob(number);
+    if (isFinishedJobState(job.state) || job.to !== old.name) return undefined;
+    const now = this.now();
+    const next = suggestion.candidates
+      .filter((candidate) => candidate.available && candidate.harness !== old.harness)
+      .sort(
+        (a, b) =>
+          Number(b.harness === suggestion.best) - Number(a.harness === suggestion.best) ||
+          Number(this.fallback.includes(a.harness)) - Number(this.fallback.includes(b.harness))
+      )
+      .find((candidate) => this.adapters.get(candidate.harness)?.createSession !== undefined);
+    const why = `ran into the limit of ${aliasOfHarness(old.harness)} (${limit.detail || 'it takes no more requests'})`;
+    if (!next) {
+      await this.failJob(
+        tx,
+        number,
+        `${old.name} ${why}, and no other agent takes jobs now. ${aliasOfHarness(old.harness)} is back at ${limitClock(Date.parse(limit.until), now)}`
+      );
+      return null;
+    }
+
+    const adapter = this.adapters.get(next.harness);
+    const to: AgentRecord = {
+      name: allocateAgentName(this.store, next.harness, job.project),
+      harness: next.harness,
+      sessionId: '',
+      project: job.project,
+      cwd: job.cwd,
+      delivery: adapter?.delivery ?? INBOX_DELIVERY,
+      capabilities: adapter?.capabilities ?? NO_CAPABILITIES,
+      status: 'starting',
+      registeredAt: this.iso(now),
+      lastSeenAt: this.iso(now),
+    };
+    this.store.putAgent(to);
+
+    this.closeLetters(tx, number);
+    await this.stopWaiting(number, now, false);
+    await this.cancelChildren(tx, job);
+    if (job.state === 'input-required') {
+      await this.transition(tx, number, 'working', `Handed to ${to.name}`);
+    }
+    const task = await this.store.tasks.get(job.taskId);
+    const record = task && jobRecordOf(task);
+    if (!task || !record) throw new BridgeError('storage', `Job ${number} lost its record`);
+    const { reportAskedAt: _asked, ...kept } = record;
+    const parent = record.parent === undefined ? undefined : this.jobIfAny(record.parent);
+    await this.store.tasks.update(job.taskId, {
+      metadata: {
+        ...task.metadata,
+        [TASK_AGENT_KEY]: to.name,
+        [BRIDGE_JOB_KEY]: {
+          ...kept,
+          to: to.name,
+          lettersUsed: record.lettersUsed + 1,
+          deadlineAt: this.iso(
+            Math.min(
+              now + record.budget.durationMs,
+              parent ? Date.parse(parent.deadlineAt) : Infinity
+            )
+          ),
+          redirects: [
+            ...(record.redirects ?? []),
+            { from: old.name, to: to.name, at: this.iso(now), why },
+          ],
+        },
+      },
+    });
+
+    const [first] = this.store.listLetters({ job: number, kinds: ['task'], limit: 1 });
+    if (!first) throw new BridgeError('storage', `The first letter of job ${number} is lost`);
+    const letter = this.acceptLetter(tx, {
+      id: this.letterId(),
+      job: number,
+      kind: 'task',
+      from: job.from,
+      to: to.name,
+      body: first.body,
+      replyDueAt: this.iso(now + job.budget.replyTimeoutMs),
+    });
+    tx.wake.delete(to.name);
+    tx.spawns.push({ agent: to.name, job: number, letter: letter.id });
+
+    const fresh = this.requireJob(number).job;
+    this.journal(tx, {
+      type: 'job.redirected',
+      job: number,
+      agent: old.name,
+      data: { from: old.name, to: to.name, why },
+    });
+    this.systemNote(
+      tx,
+      fresh,
+      job.from,
+      `Job #${number}: ${old.name} ${why}, so the bridge handed the job to ${to.name}, which goes on in the folder of the job with what is there. Its questions and its report come from ${to.name} now. Nothing for you to do.`
+    );
+    if (this.adapters.get(old.harness)?.deliver === undefined) {
+      this.systemNote(
+        tx,
+        fresh,
+        old.name,
+        `Job #${number} is no longer yours: your harness ran into its limit, and the bridge handed the job to ${to.name}. Stop working on it.`
+      );
+    }
+    return to.name;
+  }
+
+  /**
    * What became of the jobs that ended within the window of the scoreboard
    * (`limits.scoreWindowMs`), newest first: who carried each out, its type, whether anything
    * confirmed its result, what its reviews found, how long it took, how many letters, and how
@@ -3298,16 +3637,26 @@ export class BridgeDispatcher
    */
   async suggest(input: SuggestInput = {}): Promise<Suggestion> {
     const request = parse(SuggestInputSchema, input, 'Cannot suggest an agent');
-    const { results, harnesses } = await this.enqueue(async () => ({
-      results: this.scored(),
-      harnesses: this.routable(),
-    }));
+    const { results, harnesses, limits } = await this.enqueue(async () => {
+      const limited = new Map(this.limitsNow().map((limit) => [limit.harness, limit]));
+      const usual = this.routable().filter((harness) => !this.fallback.includes(harness));
+      const last = this.routable().filter((harness) => this.fallback.includes(harness));
+      return {
+        results: this.scored(),
+        harnesses: usual.some((harness) => !limited.has(harness)) ? usual : [...usual, ...last],
+        limits: limited,
+      };
+    });
+    const now = this.now();
     return suggestFrom(results, {
       ...(request.type !== undefined && { type: request.type }),
       minJobs: this.limits.scoreMinJobs,
       windowMs: this.limits.scoreWindowMs,
       harnesses,
-      unavailable: () => undefined,
+      unavailable: (harness) => {
+        const limit = limits.get(harness);
+        return limit && limitWords(limit, now);
+      },
     });
   }
 
@@ -3363,6 +3712,7 @@ export class BridgeDispatcher
         .filter((adapter) => adapter.createSession !== undefined && !adapter.recipeProblem)
         .map((adapter) => adapter.harness),
       waiting: [...this.waiters.keys()].sort(),
+      limited: this.limitsNow(),
     }));
   }
 
@@ -3458,6 +3808,9 @@ export class BridgeDispatcher
         failed.push(job.number);
       }
 
+      for (const limit of this.store.listLimits()) {
+        if (Date.parse(limit.until) <= now) this.liftLimit(tx, limit.harness, 'its time is over');
+      }
       failed.push(...(await this.remindOfReports(tx, now)));
       failed.push(...(await this.retireAgents(tx, now)));
       for (const agent of this.store.queuedRecipients()) tx.wake.add(agent);
@@ -4406,6 +4759,11 @@ export class BridgeDispatcher
       if (!created.sessionId.trim()) throw new Error('the adapter returned no session id');
     } catch (error) {
       const message = asError(error).message;
+      const signal = limitOf(message, this.now());
+      if (signal) {
+        await this.outOfLimit(agentName, signal, true);
+        return;
+      }
       await this.mutate(async (tx) => {
         const agent = this.store.getAgent(agentName);
         if (agent?.status !== 'starting') return;

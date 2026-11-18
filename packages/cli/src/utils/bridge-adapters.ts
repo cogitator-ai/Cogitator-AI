@@ -4,6 +4,7 @@ import {
   claudeSetup,
   codexAdapter,
   codexSetup,
+  harnessOfAlias,
   shellQuote,
   type AdapterSetup,
   type BridgeAdapter,
@@ -62,6 +63,25 @@ export function bridgeToolsServerOf(
   return script
     ? { command: process.execPath, args: [script, 'bridge', ...tail] }
     : { command: 'cogitator', args: ['bridge', ...tail] };
+}
+
+/** Names the agents that take a job only when no other can, when no flag does: `codex,qwen`. */
+export const BRIDGE_FALLBACK_ENV = 'COGITATOR_BRIDGE_FALLBACK';
+
+/**
+ * The harnesses of last resort: what the flag names, else `COGITATOR_BRIDGE_FALLBACK`, by the
+ * words agents are addressed with (`claude` is Claude Code).
+ */
+export function bridgeFallbackOf(
+  env: NodeJS.ProcessEnv = process.env,
+  flag: readonly string[] = []
+): string[] {
+  const named = flag.length > 0 ? flag : (env[BRIDGE_FALLBACK_ENV] ?? '').split(',');
+  return [
+    ...new Set(
+      named.map((word) => word.trim()).flatMap((word) => (word ? [harnessOfAlias(word)] : []))
+    ),
+  ];
 }
 
 /** Names the sandbox of the Codex threads the bridge starts, when no flag does. */

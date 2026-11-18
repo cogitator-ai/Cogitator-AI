@@ -834,6 +834,43 @@ describe.skipIf(!posix)('the Claude Code adapter', () => {
     expect(errors).toEqual([]);
   });
 
+  it('hears from its hook that a turn ended on the limit, and the job goes to another agent', async () => {
+    fakes.trustFolder(project);
+    const limited = {
+      ...env(),
+      FAKE_CLAUDE_TURN_ERROR: 'rate_limit',
+      FAKE_CLAUDE_TURN_ERROR_TEXT: "You've hit your session limit · resets 3:45pm",
+    };
+    const host = await startHost([claudeAdapter({ env: limited }), codex()]);
+    const conductor = await orchestrator();
+
+    const { job } = await conductor.createJob({ to: 'claude', body: 'Review the diff\nsay: Fine' });
+    expect(job.to).toMatch(/^claude/);
+
+    const handed = await until(async () => {
+      const current = await conductor.job(1);
+      return current.to === job.to ? undefined : current;
+    }, 'the job to go to another agent');
+    expect(handed.to).toMatch(/^codex/);
+    expect(handed.redirects?.[0]).toMatchObject({
+      from: job.to,
+      why: "ran into the limit of claude (You've hit your session limit · resets 3:45pm)",
+    });
+    const [limit] = (await host.dispatcher.status()).limited;
+    expect(limit).toMatchObject({ harness: 'claude-code', told: true, agent: job.to });
+    const until345 = new Date(limit.until);
+    expect([until345.getHours(), until345.getMinutes()]).toEqual([15, 45]);
+
+    const done = await until(async () => {
+      const current = await conductor.job(1);
+      return current.state === 'completed' ? current : undefined;
+    }, 'the job to be done by the other agent');
+    expect(done.to).toBe(handed.to);
+    const [report] = await conductor.letters({ job: 1, kinds: ['report'] });
+    expect(report).toMatchObject({ from: handed.to, body: 'Fine' });
+    expect(errors).toEqual([]);
+  });
+
   it('starts a session without the tools when it was given no server for them', async () => {
     fakes.trustFolder(project);
     await startHost([claudeAdapter()]);
@@ -1128,7 +1165,7 @@ describe.skipIf(!posix)('the Codex adapter', () => {
 
   it('fails the job with what Codex said when the turn of its thread fails', async () => {
     await startHost([
-      codex({ env: { ...env(), FAKE_CODEX_TURN_FAIL: 'Error: usage limit reached' } }),
+      codex({ env: { ...env(), FAKE_CODEX_TURN_FAIL: 'Error: stream disconnected' } }),
     ]);
     const conductor = await orchestrator();
 
@@ -1142,9 +1179,45 @@ describe.skipIf(!posix)('the Codex adapter', () => {
     const [report] = await conductor.letters({ job: 1, kinds: ['report'] });
     expect(report).toMatchObject({
       from: job.to,
-      body: 'codex exec failed before the thread finished its turn: Error: usage limit reached',
+      body: 'codex exec failed before the thread finished its turn: Error: stream disconnected',
       outcome: 'failed',
     });
+    expect(errors).toEqual([]);
+  });
+
+  it('tells the bridge of the usage limit a turn ended on, which fails no job by it', async () => {
+    const host = await startHost([
+      codex({
+        env: {
+          ...env(),
+          FAKE_CODEX_TURN_FAIL: 'You\u2019ve hit your usage limit. Try again later.',
+        },
+      }),
+    ]);
+    const conductor = await orchestrator();
+
+    const { job } = await conductor.createJob({ to: 'codex', body: 'Write the tests' });
+
+    const failed = await until(async () => {
+      const current = await conductor.job(1);
+      return current.state === 'failed' ? current : undefined;
+    }, 'the job to end');
+    expect(failed.failure).toBe('other');
+    expect(failed.reason).toContain(`${job.to} ran into the limit of codex`);
+    expect(failed.reason).toContain('and no other agent takes jobs now');
+    expect(await conductor.letters({ job: 1, kinds: ['report'] })).toEqual([]);
+    const { limited } = await host.dispatcher.status();
+    expect(limited).toMatchObject([
+      {
+        harness: 'codex',
+        told: false,
+        detail: "You've hit your usage limit. Try again later.",
+        agent: job.to,
+      },
+    ]);
+    await expect(
+      conductor.createJob({ to: 'codex:new', body: 'Another one' })
+    ).rejects.toMatchObject({ code: 'limit_reached' });
     expect(errors).toEqual([]);
   });
 

@@ -160,6 +160,53 @@ describe('sessions the host runs', () => {
     ]);
   });
 
+  it('tells the bridge when the provider of the agent takes no more requests, and fails no job by it', async () => {
+    const agent = scripted();
+    const other = scripted();
+    kit = await makeKit({
+      adapters: [
+        hostedAdapter({ harness: 'deepseek', open: agent.open }),
+        hostedAdapter({ harness: 'qwen', open: other.open }),
+      ],
+    });
+    const { bridge, claude } = kit;
+    await bridge.createJob(claude.name, { to: 'deepseek', body: 'Draft the parser' });
+    await settle(kit);
+    await bridge.createJob(claude.name, { to: 'deepseek@demo', body: 'Draft the printer' });
+    await settle(kit);
+    expect(agent.turns).toHaveLength(1);
+
+    agent.turns[0].fail(
+      Object.assign(new Error('[deepseek] Rate limit exceeded'), {
+        code: 'LLM_RATE_LIMITED',
+        retryAfter: 120_000,
+      })
+    );
+    const job = await vi.waitFor(async () => {
+      const now = await bridge.job(1);
+      expect(now.to).toBe('qwen@demo');
+      return now;
+    });
+    await settle(kit);
+    expect(job.state).toBe('working');
+    expect(job.redirects?.[0]).toMatchObject({
+      from: 'deepseek@demo',
+      why: 'ran into the limit of deepseek ([deepseek] Rate limit exceeded)',
+    });
+    expect((await bridge.status()).limited).toMatchObject([{ harness: 'deepseek', told: true }]);
+    await vi.waitFor(async () => expect((await bridge.job(2)).to).toMatch(/^qwen/));
+    await settle(kit);
+    expect(agent.turns).toHaveLength(1);
+    expect(other.turns).toHaveLength(2);
+    expect(other.turns[0].text).toContain('deepseek@demo had this job before you');
+    other.turns[0].end('Drafted');
+    other.turns[1].end('Drafted too');
+    await settle(kit);
+    expect((await bridge.job(1)).state).toBe('completed');
+    expect((await bridge.job(2)).state).toBe('completed');
+    expect(kit.errors).toEqual([]);
+  });
+
   it('hears an agent that answers at once, or cannot even start its turn', async () => {
     const adapter = hostedAdapter({
       harness: 'qwen',

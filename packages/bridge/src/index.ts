@@ -15,6 +15,7 @@ export { BridgeDispatcher } from './dispatcher.js';
 export type {
   BridgeDispatcherEvents,
   BridgeDispatcherOptions,
+  BridgeRouting,
   CreateJobResult,
   DispatcherStatus,
   SendLetterResult,
@@ -72,6 +73,8 @@ export type {
   EscalateInput,
   ForgetInput,
   JobDiff,
+  LimitedInput,
+  LimitedResult,
   RecallInput,
   RejectInput,
   RememberInput,
@@ -149,7 +152,10 @@ export type {
   JobRecipe,
   JobChanges,
   JobCheck,
+  HarnessLimit,
   JobCheckResult,
+  JobFailure,
+  JobRedirect,
   JobReview,
   JobState,
   JobVerification,
@@ -191,6 +197,9 @@ export {
   claudePermissionCall,
   claudePermitCommand,
   claudePermitHook,
+  claudeLimitCall,
+  claudeLimitCommand,
+  claudeLimitHook,
   claudeStuckCall,
   claudeStuckCommand,
   claudeStuckHook,
@@ -294,6 +303,7 @@ export {
   type Finding,
   type FindingSeverity,
 } from './findings.js';
+export { limitClock, limitOf, limitOfError, limitResetOf, type LimitSignal } from './limit.js';
 export {
   percent,
   resultLine,

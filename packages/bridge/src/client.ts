@@ -20,6 +20,8 @@ import {
   type ForgetInput,
   type InboxInput,
   type JobDiff,
+  type LimitedInput,
+  type LimitedResult,
   type PersonAnswerInput,
   type RecallInput,
   type RejectInput,
@@ -278,6 +280,16 @@ export class BridgeClient {
   /** Lets a note of the board go, see `BridgeDispatcher.forget` */
   forget(input: ForgetInput): Promise<BoardFact> {
     return this.call(BRIDGE_METHODS.forget, input);
+  }
+
+  /** Says the harness of this session ran into its limit, see `BridgeDispatcher.limited` */
+  limited(input: LimitedInput = {}): Promise<LimitedResult> {
+    return this.call(BRIDGE_METHODS.limited, input);
+  }
+
+  /** Takes the limit of a harness back as the person, see `BridgeDispatcher.unlimit` */
+  unlimit(agent: string): Promise<boolean> {
+    return this.call(BRIDGE_METHODS.unlimit, { agent });
   }
 
   /** Who a job should go to by how earlier jobs went, see `BridgeDispatcher.suggest` */

@@ -512,6 +512,8 @@ describe('the command line', () => {
       'forget',
       'inbox',
       'install',
+      'limited',
+      'limits',
       'log',
       'mcp',
       'permit',

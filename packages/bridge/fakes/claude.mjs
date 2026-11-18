@@ -5,6 +5,11 @@
  * and `__say` exist only here and play a person at an open window. The behaviour was measured
  * on Claude Code 2.1.292 and 2.1.325.
  *
+ * With FAKE_CLAUDE_TURN_ERROR set to an API error such as `rate_limit`, every turn of a session
+ * ends on that error: it does nothing, and the `StopFailure` hooks whose matcher fits the error
+ * run instead of the Stop hooks, with FAKE_CLAUDE_TURN_ERROR_TEXT as what Claude Code shows of
+ * it. This part follows the hooks reference of Claude Code and was not measured.
+ *
  * MCP servers: a session has the servers of `--mcp-config` and of `mcp add` (local, project and
  * user scope). A server is started once for the session, with the environment of the session
  * and the id the session had then. Before a tool call the `PreToolUse` hooks whose matcher fits
@@ -362,6 +367,22 @@ async function runSession(argv) {
   });
   for (;;) {
     const message = await nextMessage(files.spool);
+    const failure = turnError();
+    if (failure) {
+      recordTurn(
+        files.transcript,
+        {
+          at: new Date().toISOString(),
+          input: message.text,
+          ran: [],
+          tools: [],
+          answer: failure.shown,
+        },
+        message.wokenBy
+      );
+      await fireStopFailureHooks(session, failure);
+      continue;
+    }
     setActivity(session, 'busy');
     const outcome = await performTurn({
       input: message.text,
@@ -791,6 +812,34 @@ async function fireStopHooks(session, answer, wokenByHook) {
     const ended = runHook(session, hook, payload);
     if (hook.asyncRewake === true) void ended.then((result) => wake(files, rewakeText(result)));
     else if (hook.async !== true) wake(files, blockingText(await ended));
+  }
+}
+
+/** The API error every turn ends on, when the environment names one, and what is shown of it */
+function turnError() {
+  const error = process.env.FAKE_CLAUDE_TURN_ERROR?.trim();
+  if (!error) return undefined;
+  return { error, shown: process.env.FAKE_CLAUDE_TURN_ERROR_TEXT || `API Error: ${error}` };
+}
+
+/**
+ * Runs the StopFailure hooks whose matcher is the error a turn ended on. What they print and
+ * exit with changes nothing: the session waits for a plain hook and leaves an `async` one running.
+ */
+async function fireStopFailureHooks(session, failure) {
+  const { record, files } = session;
+  const payload = JSON.stringify({
+    session_id: record.sessionId,
+    transcript_path: files.transcript,
+    cwd: record.cwd,
+    hook_event_name: 'StopFailure',
+    error: failure.error,
+    last_assistant_message: failure.shown,
+  });
+  for (const { matcher, hook } of eventHooks(record, 'StopFailure')) {
+    if (matcher !== '.*' && !matcher.split('|').includes(failure.error)) continue;
+    const ended = runHook(session, hook, payload);
+    if (hook.async !== true) await ended;
   }
 }
 

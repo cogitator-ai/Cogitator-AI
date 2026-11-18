@@ -13,6 +13,7 @@ import type {
   PermissionHookCall,
 } from '../adapter.js';
 import { oneLine } from '../letters.js';
+import { limitResetOf, type LimitSignal } from '../limit.js';
 import { canonicalPath, findProjectRoot } from '../paths.js';
 import { describeAsk } from '../permit.js';
 import { TOOL_CALL_HINT_KEY, type ToolCallHint } from '../tools/caller.js';
@@ -409,6 +410,118 @@ export function claudeStuckCall(
   };
 }
 
+export interface ClaudeLimitHookSettings {
+  hooks: {
+    StopFailure: {
+      matcher: string;
+      hooks: { type: 'command'; command: string; timeout: number; async: true }[];
+    }[];
+  };
+}
+
+/**
+ * The errors a turn of Claude Code ends on that mean its limit: the requests of the subscription
+ * or the key are used up (`rate_limit`), or the credit of the account is (`billing_error`).
+ */
+const LIMIT_ERRORS: readonly string[] = ['rate_limit', 'billing_error'];
+
+/** Seconds the hook that says a session ran into its limit may take. */
+const LIMIT_HOOK_TIMEOUT_S = 30;
+
+export interface ClaudeLimitHookOptions extends ClaudeStuckHookOptions {
+  /**
+   * The name the bridge gave a session it started. With it the hook speaks as that agent even
+   * when its turn ended before the bridge learned the id of the session
+   */
+  agentName?: string;
+}
+
+/** The command a hook of a Claude Code session runs when a turn ends on an error of the API. */
+export function claudeLimitCommand(options: ClaudeLimitHookOptions = {}): string {
+  return [
+    options.bridgeCommand ?? 'cogitator bridge',
+    'limited',
+    `--hook ${HARNESSES.claudeCode}`,
+    ...(options.agentName ? [`--agent ${shellQuote(options.agentName)}`] : []),
+    ...(options.bridgeHome ? [`--home ${shellQuote(options.bridgeHome)}`] : []),
+  ].join(' ');
+}
+
+/**
+ * The settings that tell the bridge a Claude Code session ran into the limit of its subscription
+ * or its key: a `StopFailure` hook, which Claude Code runs instead of `Stop` when a turn ends on
+ * an error of the API, for the errors that mean a limit. The hook runs in the background and
+ * decides nothing: the bridge then hands that harness no job until the limit is over, and the
+ * jobs of the session go to other agents.
+ */
+export function claudeLimitHook(options: ClaudeLimitHookOptions = {}): ClaudeLimitHookSettings {
+  return {
+    hooks: {
+      StopFailure: [
+        {
+          matcher: LIMIT_ERRORS.join('|'),
+          hooks: [
+            {
+              type: 'command',
+              command: claudeLimitCommand(options),
+              timeout: LIMIT_HOOK_TIMEOUT_S,
+              async: true,
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+const StopFailureInputSchema = z.object({
+  session_id: z.string().min(1),
+  cwd: z.string().min(1).optional(),
+  hook_event_name: z.literal('StopFailure'),
+  error: z.string().optional(),
+  error_details: z.string().optional(),
+  last_assistant_message: z.string().optional(),
+});
+
+/**
+ * What Claude Code wrote to a `StopFailure` hook when a turn ended on its limit: the session,
+ * what Claude Code showed of it, and when it said the limit is over, which it tells only in
+ * that text (`You've hit your session limit · resets 3:45pm`). Undefined for any other input,
+ * turns that ended on another error included.
+ *
+ * @param hookInput what Claude Code wrote to the hook's stdin
+ * @param now ms since the epoch, to turn a time of day into a moment
+ */
+export function claudeLimitCall(
+  hookInput: string,
+  now: number = Date.now()
+): { caller: CallerIdentity; limit: LimitSignal } | undefined {
+  let input: unknown;
+  try {
+    input = JSON.parse(hookInput);
+  } catch {
+    return undefined;
+  }
+  const parsed = StopFailureInputSchema.safeParse(input);
+  if (!parsed.success || !LIMIT_ERRORS.includes(parsed.data.error ?? '')) return undefined;
+  const { error, error_details: details, last_assistant_message: shown } = parsed.data;
+  const said = [shown, details].map((text) => text?.trim()).filter((text) => text);
+  const until = said.map((text) => limitResetOf(text ?? '', now)).find((at) => at !== undefined);
+  const cwd = resolve(parsed.data.cwd ?? process.cwd());
+  return {
+    caller: {
+      harness: HARNESSES.claudeCode,
+      sessionId: parsed.data.session_id,
+      cwd,
+      project: findProjectRoot(cwd),
+    },
+    limit: {
+      ...(until !== undefined && { until }),
+      detail: oneLine(said[0] ?? error ?? 'limit').slice(0, 300),
+    },
+  };
+}
+
 const PermissionHookInputSchema = z.object({
   session_id: z.string().min(1),
   cwd: z.string().min(1).optional(),
@@ -710,13 +823,19 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
     const tools = options.toolsServer;
     const waits = claudeWaitHook({ ...hook, agentName: request.agentName, tools: !!tools });
     const permit = claudePermitHook({ ...hook, agentName: request.agentName });
+    const limit = claudeLimitHook({ ...hook, agentName: request.agentName });
     const settings = tools
       ? {
           ...CLAUDE_WORKS_IN_PLACE,
-          hooks: { ...waits.hooks, ...claudeToolsHook(hook).hooks, ...permit.hooks },
+          hooks: {
+            ...waits.hooks,
+            ...claudeToolsHook(hook).hooks,
+            ...permit.hooks,
+            ...limit.hooks,
+          },
           permissions: { allow: [CLAUDE_TOOLS_PERMISSION] },
         }
-      : { ...CLAUDE_WORKS_IN_PLACE, hooks: { ...waits.hooks, ...permit.hooks } };
+      : { ...CLAUDE_WORKS_IN_PLACE, hooks: { ...waits.hooks, ...permit.hooks, ...limit.hooks } };
     const servers = tools && {
       mcpServers: {
         [BRIDGE_TOOLS_SERVER]: {
@@ -956,6 +1075,8 @@ export function claudeCodeAdapter(options: ClaudeCodeAdapterOptions = {}): Bridg
       context.hookInput === undefined ? undefined : claudePermissionCall(context.hookInput),
     stuckHook: (context) =>
       context.hookInput === undefined ? undefined : claudeStuckCall(context.hookInput),
+    limitHook: (context) =>
+      context.hookInput === undefined ? undefined : claudeLimitCall(context.hookInput),
     health,
   };
 }

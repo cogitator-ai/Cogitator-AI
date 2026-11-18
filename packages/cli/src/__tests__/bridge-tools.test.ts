@@ -29,6 +29,7 @@ import {
   createBridgeMcpServer,
   runBridgeCaller,
   runBridgePermit,
+  runBridgeLimited,
   runBridgeStuck,
   type BridgeCallerContext,
 } from '../commands/bridge-tools.js';
@@ -369,6 +370,58 @@ describe('bridge stuck', () => {
     const codexHook = hook(notification('permission_prompt'));
     expect(await runBridgeStuck({ hook: 'codex' }, codexHook.context)).toBe(1);
     expect(failed()).toContain('No adapter knows when a session of "codex" waits for a person');
+  });
+
+  it('as bridge limited tells the bridge of the limit a turn ended on, and nothing of any other error', async () => {
+    const host = await hostBridge({ home: bridgeDir, tickMs: 25 });
+    hosts.push(host);
+    const failure = (error: string, shown: string) =>
+      JSON.stringify({
+        session_id: 'worker-1',
+        transcript_path: '/tmp/worker-1.jsonl',
+        cwd: project,
+        hook_event_name: 'StopFailure',
+        error,
+        last_assistant_message: shown,
+      });
+    const connect = (harness: string, sessionId: string) =>
+      BridgeClient.connect({
+        socketPath: bridgePaths({ home: bridgeDir }).socket,
+        caller: { harness, sessionId, cwd: project },
+      });
+    const conductor = await connect('conductor', 'conductor-1');
+    const worker = await connect('claude-code', 'worker-1');
+    try {
+      const { job } = await conductor.createJob({ to: 'claude', body: 'Ship the fix' });
+      await worker.inbox();
+
+      const other = hook(failure('server_error', 'API Error: Overloaded'));
+      expect(await runBridgeLimited({ hook: 'claude-code' }, other.context)).toBe(0);
+      expect((await conductor.status()).limited).toEqual([]);
+
+      const hit = hook(failure('rate_limit', "You've hit your session limit · resets 3:45pm"));
+      expect(await runBridgeLimited({ hook: 'claude-code', agent: 'nobody' }, hit.context)).toBe(0);
+      expect(hit.written).toEqual([]);
+
+      const [limit] = (await conductor.status()).limited;
+      expect(limit).toMatchObject({
+        harness: 'claude-code',
+        told: true,
+        detail: "You've hit your session limit · resets 3:45pm",
+      });
+      const until = new Date(limit.until);
+      expect([until.getHours(), until.getMinutes()]).toEqual([15, 45]);
+      expect(await conductor.job(job.number)).toMatchObject({ state: 'failed', failure: 'other' });
+    } finally {
+      await conductor.close();
+      await worker.close();
+    }
+
+    const alone = hook(failure('rate_limit', 'Rate limit reached'));
+    await Promise.all(hosts.splice(0).map((running) => running.close()));
+    expect(await runBridgeLimited({ hook: 'claude-code' }, alone.context)).toBe(0);
+    expect(await runBridgeLimited({ hook: 'codex' }, alone.context)).toBe(1);
+    expect(failed()).toContain('No adapter knows when a session of "codex" ran into its limit');
   });
 });
 

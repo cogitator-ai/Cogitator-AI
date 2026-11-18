@@ -110,6 +110,64 @@ export interface BridgeStuckFlags {
   home?: string;
 }
 
+export interface BridgeLimitedFlags extends BridgeStuckFlags {
+  /** The name the bridge gave the session it started */
+  agent?: string;
+}
+
+/**
+ * cogitator bridge limited --hook <harness>: the hook a harness runs when a turn of a session
+ * ends on an error. When the error is the limit of the subscription or the key, it tells the
+ * bridge, which hands that harness no job until the limit is over and gives the jobs of the
+ * session to other agents. Any other error is none of the bridge's business. It says nothing to
+ * the harness, and without a dispatcher there is nobody to tell, which is fine.
+ */
+export async function runBridgeLimited(
+  flags: BridgeLimitedFlags,
+  context: BridgeCallerContext = defaultCallerContext()
+): Promise<number> {
+  try {
+    const harness = flags.hook.trim().toLowerCase();
+    const adapters =
+      context.adapters ?? bridgeAdapters(context.env, { ...(flags.home && { home: flags.home }) });
+    const adapter = adapters.find((candidate) => candidate.harness === harness);
+    if (!adapter?.limitHook) {
+      throw new CommandError(
+        `No adapter knows when a session of "${flags.hook}" ran into its limit`
+      );
+    }
+    const hookInput = await context.stdin();
+    const hit =
+      hookInput === undefined
+        ? undefined
+        : adapter.limitHook({ env: context.env, cwd: context.cwd, hookInput });
+    if (!hit) return 0;
+    let client: BridgeClient;
+    try {
+      client = await BridgeClient.connect({
+        socketPath: bridgePaths({ ...(flags.home && { home: flags.home }), env: context.env })
+          .socket,
+        caller: { ...hit.caller, ...(flags.agent && { agentName: flags.agent }) },
+      });
+    } catch (error) {
+      if (isBridgeError(error) && error.code === 'not_running') return 0;
+      throw error;
+    }
+    try {
+      await client.limited({
+        ...(hit.limit.until !== undefined && { until: new Date(hit.limit.until).toISOString() }),
+        detail: hit.limit.detail,
+      });
+    } finally {
+      await client.close();
+    }
+    return 0;
+  } catch (error) {
+    reportFailure(error, { json: false });
+    return EXIT.failed;
+  }
+}
+
 /**
  * cogitator bridge stuck --hook <harness>: the hook a harness runs when a session begins to
  * wait for a person at its own window, such as with its permission dialog open. It tells the

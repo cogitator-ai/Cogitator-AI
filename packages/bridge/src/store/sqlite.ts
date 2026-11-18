@@ -16,9 +16,11 @@ import { jobRecordOf } from '../job-record.js';
 import {
   AdapterCapabilitiesSchema,
   BRIDGE_JOB_KEY,
+  HarnessLimitSchema,
   type AgentRecord,
   type AgentStatus,
   type DeliveryState,
+  type HarnessLimit,
   type JournalEntry,
   type JournalEntryType,
   type Letter,
@@ -61,6 +63,9 @@ const UPGRADES: readonly string[] = [
 
 const MEMORY_PATH = ':memory:';
 const LEASE_KEY = 'lease';
+
+/** What the key of a harness's limit in `meta` starts with. */
+const LIMIT_KEY = 'limit:';
 
 const SCHEMA = `
   CREATE TABLE meta (
@@ -612,6 +617,30 @@ export class SqliteBridgeStore implements BridgeStore {
       .prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?')
       .get(LEASE_KEY);
     return row ? (JSON.parse(row.value) as Lease) : undefined;
+  }
+
+  putLimit(limit: HarnessLimit): void {
+    this.db
+      .prepare(
+        'INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value'
+      )
+      .run(`${LIMIT_KEY}${limit.harness}`, JSON.stringify(limit));
+  }
+
+  listLimits(): HarnessLimit[] {
+    return this.db
+      .prepare<[number, string], { value: string }>(
+        'SELECT value FROM meta WHERE substr(key, 1, ?) = ? ORDER BY key'
+      )
+      .all(LIMIT_KEY.length, LIMIT_KEY)
+      .flatMap((row) => {
+        const parsed = HarnessLimitSchema.safeParse(JSON.parse(row.value));
+        return parsed.success ? [parsed.data] : [];
+      });
+  }
+
+  dropLimit(harness: string): void {
+    this.db.prepare('DELETE FROM meta WHERE key = ?').run(`${LIMIT_KEY}${harness}`);
   }
 
   nextJobNumber(): number {

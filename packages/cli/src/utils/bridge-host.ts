@@ -4,7 +4,7 @@ import {
   type BridgeAdapter,
   type BridgeHost,
 } from '@cogitator-ai/bridge';
-import { bridgeAdapters } from './bridge-adapters.js';
+import { bridgeAdapters, bridgeFallbackOf } from './bridge-adapters.js';
 import { bridgeBoard, bridgeConductor, bridgePerson } from './bridge-person.js';
 import { BRIDGE_HOST_ENV } from './daemon.js';
 import { log } from './logger.js';
@@ -38,6 +38,7 @@ export async function hostBridgeInDaemon(
     const reach = bridgePerson(env, { onError });
     const board = await bridgeBoard(env, { onError });
     const conductor = adapters ? undefined : bridgeConductor(env, { onError });
+    const fallback = bridgeFallbackOf(env);
     const host = await hostBridge({
       env,
       adapters: adapters ?? [
@@ -47,6 +48,7 @@ export async function hostBridgeInDaemon(
       rights: reach.rights,
       person: reach.person,
       ...(board && { board }),
+      ...(fallback.length > 0 && { routing: { fallback } }),
       onError,
     }).catch(async (error: unknown) => {
       await board?.close?.().catch(() => undefined);

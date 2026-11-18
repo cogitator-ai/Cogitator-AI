@@ -89,6 +89,33 @@ export interface AgentRecord {
   permissionMode?: string;
 }
 
+/**
+ * A harness that ran into the limit of its subscription or its key: the bridge hands it no job
+ * until `until`.
+ */
+export interface HarnessLimit {
+  harness: string;
+  /** ISO 8601 time the bridge takes the limit to be over at */
+  until: string;
+  /** Whether the harness named that time itself. When not, the bridge tries again then */
+  told: boolean;
+  /** What the harness said, on one line */
+  detail: string;
+  /** ISO 8601 time the bridge learned of it */
+  since: string;
+  /** The agent whose turn ran into it */
+  agent?: string;
+}
+
+export const HarnessLimitSchema = z.object({
+  harness: z.string().min(1),
+  until: z.string(),
+  told: z.boolean(),
+  detail: z.string(),
+  since: z.string(),
+  agent: z.string().optional(),
+});
+
 /** Who calls the bridge, as read from the caller's environment. */
 export interface CallerIdentity {
   /** The harness, compared without regard to case: letters, digits, `.`, `_` and `-` */
@@ -283,6 +310,16 @@ export type JobFailure = 'reported' | 'silent' | 'timeout' | 'other';
 
 export const JOB_FAILURES: readonly JobFailure[] = ['reported', 'silent', 'timeout', 'other'];
 
+/** A job the bridge took from one agent and handed to another. */
+export interface JobRedirect {
+  from: string;
+  to: string;
+  /** ISO 8601 */
+  at: string;
+  /** Why, in a few words */
+  why: string;
+}
+
 /** What a review of the work of a job found, counted, as the record of the reviewed job keeps it. */
 export interface JobReview {
   /** The job that was the review */
@@ -349,6 +386,11 @@ export interface BridgeJobRecord {
    * each kind apart
    */
   type?: string;
+  /**
+   * Who had the job before, when the bridge took it from an agent whose harness ran into its
+   * limit and handed it to another, oldest first
+   */
+  redirects?: JobRedirect[];
   /** What a review found, when the job was one and its report named findings */
   findings?: Finding[];
   /** The job whose work this one reviews: what it finds is counted on the record of that job */
@@ -552,6 +594,9 @@ export type JournalEntryType =
   | 'job.accepted'
   | 'job.rejected'
   | 'job.discarded'
+  | 'job.redirected'
+  | 'harness.limited'
+  | 'harness.unlimited'
   | 'fact.remembered'
   | 'fact.forgotten'
   | 'letter.queued'
@@ -647,6 +692,11 @@ export interface BridgeLimits {
    */
   reportReminderMs: number;
   /**
+   * How long a harness that ran into its limit takes no job when it did not say when the limit
+   * is over, in ms. After that the bridge hands it jobs again, and learns anew when it is not
+   */
+  limitRetryMs: number;
+  /**
    * How far back the scoreboard looks, in ms: a job that ended longer ago says little about an
    * agent whose model and harness have changed since
    */
@@ -693,6 +743,11 @@ export const BridgeLimitsSchema = z.strictObject({
   contextTokens: z.number().int().positive().max(50_000),
   contextTimeoutMs: z.number().int().positive().max(600_000),
   reportReminderMs: z.number().int().positive().max(86_400_000),
+  limitRetryMs: z
+    .number()
+    .int()
+    .positive()
+    .max(32 * 86_400_000),
   scoreWindowMs: z
     .number()
     .int()
@@ -724,6 +779,7 @@ export const DEFAULT_LIMITS: BridgeLimits = {
   contextTokens: 6_000,
   contextTimeoutMs: 10_000,
   reportReminderMs: 60_000,
+  limitRetryMs: 30 * 60_000,
   scoreWindowMs: 60 * 86_400_000,
   scoreMinJobs: 5,
 };

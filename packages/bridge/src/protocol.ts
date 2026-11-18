@@ -31,6 +31,8 @@ export const BRIDGE_METHODS = {
   personAnswer: 'person/answer',
   listAgents: 'agents/list',
   stuck: 'agents/stuck',
+  limited: 'agents/limited',
+  unlimit: 'agents/unlimit',
   remember: 'facts/remember',
   recall: 'facts/recall',
   forget: 'facts/forget',
@@ -62,6 +64,8 @@ export const CancelJobParamsSchema = z.object({
   job: z.number().int().positive(),
   reason: z.string().max(2000).optional(),
 });
+
+export const UnlimitParamsSchema = z.object({ agent: z.string().trim().min(1).max(512) });
 
 export const AcknowledgeParamsSchema = z.object({ letter: z.string().min(1).max(128) });
 

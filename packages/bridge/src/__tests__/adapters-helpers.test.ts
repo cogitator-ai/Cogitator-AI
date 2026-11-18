@@ -5,6 +5,9 @@ import {
   CLAUDE_TOOLS_PERMISSION,
   claudeCallerCommand,
   claudeCodeAdapter,
+  claudeLimitCall,
+  claudeLimitCommand,
+  claudeLimitHook,
   claudeToolCallHook,
   claudeToolsHook,
   claudeToolsScope,
@@ -207,6 +210,91 @@ describe('the hook that names the session of a bridge tool call', () => {
     expect(claudeCodeAdapter().toolCallHook?.({ env: {}, cwd: '/work', hookInput })).toBe(
       claudeToolCallHook(hookInput)
     );
+  });
+});
+
+describe('the hook that says a Claude Code session ran into its limit', () => {
+  const now = new Date(2026, 10, 18, 10, 30).getTime();
+  const input = (more: Record<string, unknown>): string =>
+    JSON.stringify({
+      session_id: 'session-1',
+      transcript_path: '/tmp/session-1.jsonl',
+      cwd: '/work/demo',
+      hook_event_name: 'StopFailure',
+      ...more,
+    });
+
+  it('runs for the errors that mean a limit, in the background', () => {
+    expect(claudeLimitHook({ bridgeCommand: 'node cli.js bridge', bridgeHome: '/b home' })).toEqual(
+      {
+        hooks: {
+          StopFailure: [
+            {
+              matcher: 'rate_limit|billing_error',
+              hooks: [
+                {
+                  type: 'command',
+                  command: "node cli.js bridge limited --hook claude-code --home '/b home'",
+                  timeout: 30,
+                  async: true,
+                },
+              ],
+            },
+          ],
+        },
+      }
+    );
+    expect(claudeLimitCommand()).toBe('cogitator bridge limited --hook claude-code');
+    expect(claudeLimitCommand({ agentName: 'claude-2@my app' })).toBe(
+      "cogitator bridge limited --hook claude-code --agent 'claude-2@my app'"
+    );
+  });
+
+  it('reads who ran into the limit, what Claude Code showed and when it said the limit is over', () => {
+    expect(
+      claudeLimitCall(
+        input({
+          error: 'rate_limit',
+          error_details: '429 Too Many Requests',
+          last_assistant_message: "You've hit your session limit · resets 3:45pm",
+        }),
+        now
+      )
+    ).toEqual({
+      caller: {
+        harness: 'claude-code',
+        sessionId: 'session-1',
+        cwd: '/work/demo',
+        project: '/work/demo',
+      },
+      limit: {
+        until: new Date(2026, 10, 18, 15, 45).getTime(),
+        detail: "You've hit your session limit · resets 3:45pm",
+      },
+    });
+    expect(
+      claudeLimitCall(
+        input({ error: 'billing_error', error_details: 'Credit balance is too low' }),
+        now
+      )?.limit
+    ).toEqual({ detail: 'Credit balance is too low' });
+    expect(claudeLimitCall(input({ error: 'rate_limit' }), now)?.limit).toEqual({
+      detail: 'rate_limit',
+    });
+  });
+
+  it('is none of the bridge for a turn that ended on another error, or another hook', () => {
+    expect(
+      claudeLimitCall(
+        input({ error: 'server_error', last_assistant_message: 'rate limit, I think' }),
+        now
+      )
+    ).toBeUndefined();
+    expect(claudeLimitCall(input({}), now)).toBeUndefined();
+    expect(
+      claudeLimitCall(input({ hook_event_name: 'Stop', error: 'rate_limit' }), now)
+    ).toBeUndefined();
+    expect(claudeLimitCall('not json', now)).toBeUndefined();
   });
 });
 
@@ -419,8 +507,8 @@ describe('what a codex exec that ended leaves to report', () => {
   });
 
   it('is a failure with what codex said when it did not end well', () => {
-    expect(codexTurnReport(`${started}\nError: usage limit reached\n`, 1)).toEqual({
-      body: 'codex exec failed before the thread finished its turn: Error: usage limit reached',
+    expect(codexTurnReport(`${started}\nError: stream disconnected\n`, 1)).toEqual({
+      body: 'codex exec failed before the thread finished its turn: Error: stream disconnected',
       failed: true,
     });
     expect(codexTurnReport(started, null)).toEqual({
@@ -435,15 +523,56 @@ describe('what a codex exec that ended leaves to report', () => {
     });
   });
 
+  it('tells a turn that ended on the usage limit from one that failed', () => {
+    const now = new Date(2026, 10, 18, 10, 30).getTime();
+    const limited = [
+      started,
+      message('The limiter has to keep its window, and a usage limit of its own'),
+      '{"type":"turn.failed","error":{"message":"You\u2019ve hit your usage limit. Try again at 3:07 PM."}}',
+    ].join('\n');
+    expect(codexTurnReport(limited, 1, now)).toMatchObject({
+      failed: true,
+      limit: {
+        until: new Date(2026, 10, 18, 15, 7).getTime(),
+        detail: "You've hit your usage limit. Try again at 3:07 PM.",
+      },
+    });
+    expect(codexTurnReport(`${started}\nError: usage limit reached\n`, 1, now).limit).toEqual({
+      detail: 'Error: usage limit reached',
+    });
+
+    const spoken = [started, message('You have hit your usage limit, I think')].join('\n');
+    expect(codexTurnReport(spoken, 0, now)).toEqual({
+      body: 'You have hit your usage limit, I think',
+      failed: false,
+    });
+    expect(codexTurnReport(`${spoken}\n`, 2, now).limit).toBeUndefined();
+
+    const retried = [
+      started,
+      '{"type":"error","message":"Rate limit reached, reconnecting 1/5"}',
+    ].join('\n');
+    expect(codexTurnReport(retried, 1, now)).toEqual({
+      body: 'codex exec failed before the thread finished its turn: Rate limit reached, reconnecting 1/5',
+      failed: true,
+    });
+    const other = [
+      started,
+      '{"type":"error","message":"Rate limit reached, reconnecting 1/5"}',
+      '{"type":"turn.failed","error":{"message":"stream disconnected"}}',
+    ].join('\n');
+    expect(codexTurnReport(other, 1, now).limit).toBeUndefined();
+  });
+
   it('takes a turn codex calls failed for a failure, whatever the exit code', () => {
     const output = [
       started,
       '{"type":"error","message":"stream disconnected"}',
-      '{"type":"turn.failed","error":{"message":"You have hit your usage limit"}}',
+      '{"type":"turn.failed","error":{"message":"The model refused the request"}}',
     ].join('\n');
 
     expect(codexTurnReport(output, 0)).toEqual({
-      body: 'codex exec failed before the thread finished its turn: You have hit your usage limit',
+      body: 'codex exec failed before the thread finished its turn: The model refused the request',
       failed: true,
     });
     expect(codexTurnReport(`${started}\n{"type":"error","message":"reconnecting"}`, 0)).toEqual({

@@ -273,6 +273,39 @@ describe('the conductor of the bridge', () => {
     expect(kit.errors).toEqual([]);
   });
 
+  it('hands the fixes to another agent when the harness of the author ran into its limit', async () => {
+    const { kit, claude, codex } = await rig();
+    await kit.bridge.createJob(kit.claude.name, {
+      to: 'recipe',
+      body: 'Add a rate limiter',
+      recipe: { name: 'build', input: { ...BUILD, rounds: 1 } },
+    });
+    await taskOf(codex, 2);
+    await kit.bridge.send(kit.codex.name, { job: 2, kind: 'report', body: 'Done' });
+    const review = await taskOf(claude, 3);
+    await kit.bridge.limited(kit.codex.name, { detail: "You've hit your usage limit." });
+    await kit.bridge.send(review.agent, {
+      job: 3,
+      kind: 'report',
+      body: '[major] src/limiter.ts:12 - The window never resets',
+    });
+
+    const fix = await taskOf(claude, 4);
+    expect(fix.agent).not.toBe(review.agent);
+    expect(fix.agent).not.toBe(kit.claude.name);
+    expect(fix.text).toContain('To fix:\n[major] src/limiter.ts:12 - The window never resets');
+    expect(fix.text).toContain('You did not do that job yourself. It was:\n> Add a rate limiter');
+    expect((await kit.bridge.job(4)).routed).toBeDefined();
+    expect(tasksOf(codex).map((task) => task.job)).toEqual([2]);
+    await kit.bridge.send(fix.agent, { job: 4, kind: 'report', body: 'Fixed' });
+
+    const again = await taskOf(claude, 5);
+    expect(again.agent).toBe(review.agent);
+    await kit.bridge.send(review.agent, { job: 5, kind: 'report', body: '[none]' });
+    expect((await finished(kit, 1)).state).toBe('completed');
+    expect(kit.errors).toEqual([]);
+  });
+
   it('says so when the rounds run out with findings still open', async () => {
     const { kit, claude, codex } = await rig();
     await kit.bridge.createJob(kit.claude.name, {
