@@ -58,7 +58,8 @@ const OWN_FAILURES: readonly JobFailure[] = ['reported', 'silent', 'timeout'];
  * major finding. Otherwise it is `good` when its checks passed, a review found nothing that
  * heavy, or its work was taken out of its worktree. A job that ended with none of that is
  * `unknown`: an agent saying it is done is no evidence, and neither is a failure that was not
- * the agent's doing, such as a session that could not be started.
+ * the agent's doing, such as a session that could not be started. Checks that pass in a
+ * worktree the job changed nothing in are no evidence either: they passed before it began.
  */
 export function resultOf(job: BridgeJob, harness: string): JobResult | undefined {
   if (job.recipe || job.checking) return undefined;
@@ -71,8 +72,9 @@ export function resultOf(job: BridgeJob, harness: string): JobResult | undefined
   if (failed && own) bad.push(failed);
 
   const checked = checkedOf(job);
+  const untouched = job.changes?.files === 0 && job.changes.commits === 0;
   if (checked?.failed) bad.push('a check did not pass');
-  else if (checked?.verified) good.push('its checks passed');
+  else if (checked?.verified && !untouched) good.push('its checks passed');
 
   let findings: Record<FindingSeverity, number> | undefined;
   if (job.reviews && job.reviews.length > 0) {
@@ -468,8 +470,10 @@ export function suggestionLines(suggestion: Suggestion): string[] {
   const lines = candidates.map((candidate, index) => {
     const parts = [standingWords(candidate, minJobs)];
     if (candidate.medianMs !== undefined && candidate.jobs > 0) {
+      const letters = average(candidate.letters ?? 0);
+      const calls = average(candidate.person ?? 0);
       parts.push(
-        `median ${formatDuration(candidate.medianMs)}, ${average(candidate.letters ?? 0)} letters and ${average(candidate.person ?? 0)} calls for the person a job`
+        `median ${formatDuration(candidate.medianMs)}, ${letters} ${letters === '1' ? 'letter' : 'letters'} and ${calls} ${calls === '1' ? 'call' : 'calls'} for the person a job`
       );
     }
     if (candidate.unknown > 0 && candidate.scored > 0) {
