@@ -66,6 +66,7 @@
   },
   "dependencies": {
     "@cogitator-ai/a2a": "workspace:*",
+    "@cogitator-ai/evals": "workspace:*",
     "@cogitator-ai/server-shared": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "zod": "^4.6.6"

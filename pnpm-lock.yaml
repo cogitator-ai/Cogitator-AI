@@ -428,6 +428,9 @@ importers:
       '@cogitator-ai/a2a':
         specifier: workspace:*
         version: link:../a2a
+      '@cogitator-ai/evals':
+        specifier: workspace:*
+        version: link:../evals
       '@cogitator-ai/server-shared':
         specifier: workspace:*
         version: link:../server-shared

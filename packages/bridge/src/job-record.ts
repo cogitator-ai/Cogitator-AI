@@ -4,11 +4,13 @@ import type { A2ATask } from '@cogitator-ai/a2a';
 import { taskTime } from '@cogitator-ai/a2a';
 import {
   BRIDGE_JOB_KEY,
+  JOB_FAILURES,
   JOB_STATES,
   JobBudgetSchema,
   JobCheckSchema,
   type BridgeJob,
   type BridgeJobRecord,
+  type JobFailure,
   type JobState,
 } from './types.js';
 
@@ -54,6 +56,16 @@ const JobWorktreeRecordSchema = z.object({
     .optional(),
 });
 
+const JobReviewSchema = z.object({
+  job: z.number().int().positive(),
+  by: z.string(),
+  at: z.string(),
+  blocker: z.number().int().nonnegative(),
+  major: z.number().int().nonnegative(),
+  minor: z.number().int().nonnegative(),
+  nit: z.number().int().nonnegative(),
+});
+
 /** The record of a job as it lies in the metadata of its A2A task. */
 export const BridgeJobRecordSchema = z.object({
   number: z.number().int().positive(),
@@ -64,7 +76,12 @@ export const BridgeJobRecordSchema = z.object({
   cwd: z.string(),
   taskLength: z.number().int().nonnegative().optional(),
   recipe: z.object({ name: z.string(), input: z.unknown().optional() }).optional(),
+  type: z.string().optional(),
   findings: FindingsSchema.optional(),
+  reviewOf: z.number().int().positive().optional(),
+  reviews: z.array(JobReviewSchema).optional(),
+  personNeeded: z.number().int().nonnegative().optional(),
+  routed: z.string().optional(),
   isolation: z.literal('worktree').optional(),
   worktree: JobWorktreeRecordSchema.optional(),
   changes: JobChangesSchema.optional(),
@@ -80,6 +97,7 @@ export const BridgeJobRecordSchema = z.object({
   personWaitSince: z.string().optional(),
   reportAskedAt: z.string().optional(),
   reason: z.string().optional(),
+  failure: z.enum(JOB_FAILURES as [JobFailure, ...JobFailure[]]).optional(),
   verification: JobVerificationSchema.optional(),
 });
 

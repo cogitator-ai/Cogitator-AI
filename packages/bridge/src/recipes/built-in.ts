@@ -25,7 +25,10 @@ import {
 } from './recipe.js';
 import {
   Address,
+  FIX_TYPE,
+  REVIEW_TYPE,
   TASK_LENGTH,
+  WORK_TYPE,
   checkedOf,
   clip,
   endOf,
@@ -232,12 +235,14 @@ async function review(
 ): Promise<Partial<ReviewState>> {
   const work = state.work;
   if (!work || state.stopped) return {};
+  const before = state.rounds.at(-1);
   const job: Omit<RecipeJob, 'to'> = {
     title: `Review of job #${work.job}${round > 1 ? `, round ${round}` : ''}`,
     cwd: work.cwd,
     body: reviewText(work, plan, state, round),
+    type: REVIEW_TYPE,
+    reviewOf: before?.fix ?? work.job,
   };
-  const before = state.rounds.at(-1);
   const reviewer = before ? await run.agent(before.reviewer) : undefined;
   const outcome =
     before && reviewer
@@ -287,6 +292,7 @@ async function fix(
       cwd: work.cwd,
       checks: work.checks,
       body: fixText(work, plan, state),
+      type: FIX_TYPE,
     },
     `You did not do that job yourself. It was:\n${quoted(clip(work.task, TASK_LENGTH))}\n\n${whereText(work)}`
   );
@@ -506,6 +512,7 @@ export const buildRecipe: Recipe = defineRecipe({
         to: input.to,
         title: run.job.title,
         body: run.task,
+        type: run.job.type ?? WORK_TYPE,
         ...(input.worktree !== false && { worktree: true }),
         ...(input.checks && { checks: input.checks }),
         ...(input.context && { context: input.context }),

@@ -4,12 +4,20 @@ import { z } from 'zod';
 import { BridgeClient } from '../client.js';
 import { BridgeError, isBridgeError } from '../errors.js';
 import { oneLine } from '../letters.js';
-import { NEW_SESSION, RECIPE_HARNESS, aliasOfHarness } from '../registry.js';
+import { AUTO_ADDRESS, NEW_SESSION, RECIPE_HARNESS, aliasOfHarness } from '../registry.js';
+import { resultLine, resultOf as scoreOf, suggestionLines } from '../scoreboard.js';
 import { factLine } from '../board.js';
 import { FINDING_SEVERITIES, type Finding, type FindingSeverity } from '../findings.js';
 import type { JobContext } from '../handover.js';
 import type { JobDiff } from '../inputs.js';
-import type { AgentRecord, BridgeJob, CallerIdentity, JobState, Letter } from '../types.js';
+import {
+  DEFAULT_JOB_TYPE,
+  type AgentRecord,
+  type BridgeJob,
+  type CallerIdentity,
+  type JobState,
+  type Letter,
+} from '../types.js';
 import { mailText } from '../waiter.js';
 import { callerOfToolCall, type ToolCallOrigin } from './caller.js';
 
@@ -145,6 +153,18 @@ const ContextParam = z
   .optional()
   .describe(
     'What you know and the other agent does not. The bridge puts it under the task in one block, with the lines of the files you point at and the notes of the board that fit, so the other agent does not start by finding out what you already know'
+  );
+
+/**
+ * The kind of work a job is, as a model names it. The bridge reads the word itself: a word it
+ * does not take is refused with what it does take.
+ */
+const TypeParam = z
+  .string()
+  .min(1)
+  .optional()
+  .describe(
+    `The kind of work, one lower-case word: "code", "fix", "review", "docs", "test", "research" or your own. The bridge keeps how each kind went with each agent, which is what "${AUTO_ADDRESS}" and the suggest tool go by. Use the same word for the same kind of work`
   );
 
 const Severity = z.enum(FINDING_SEVERITIES as [FindingSeverity, ...FindingSeverity[]]);
@@ -315,7 +335,7 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
         .string()
         .min(1)
         .describe(
-          `Who gets the job: "codex" or "claude" for the session of that agent in this project (one is started when none is open), "codex:${NEW_SESSION}" for a fresh one, or an agent name from the agents tool such as "codex-2@app"`
+          `Who gets the job: "codex" or "claude" for the session of that agent in this project (one is started when none is open), "codex:${NEW_SESSION}" for a fresh one, an agent name from the agents tool such as "codex-2@app", or "${AUTO_ADDRESS}" to let the bridge take the agent whose jobs of this type held best so far`
         ),
       task: z
         .string()
@@ -324,6 +344,15 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
           'The job: what to do, and what done looks like. The other agent sees nothing of this conversation, so name the files, the constraints and the decisions already made'
         ),
       title: z.string().optional().describe('A short name of the job, its first line by default'),
+      type: TypeParam,
+      reviewOf: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          'When this job is a review of the work of another job: the number of that job. What the review finds is then counted for the agent that did the work'
+        ),
       cwd: z
         .string()
         .optional()
@@ -355,10 +384,12 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
     sideEffects: ['process'],
     execute: async (args, context) =>
       asCaller(args, context, async (bridge) => {
-        const { job, duplicate } = await bridge.createJob({
+        const { job, duplicate, routed } = await bridge.createJob({
           to: args.to,
           body: args.task,
           ...(args.title !== undefined && { title: args.title }),
+          ...(args.type?.trim() && { type: args.type.trim() }),
+          ...(args.reviewOf !== undefined && { reviewOf: args.reviewOf }),
           ...(args.cwd !== undefined && { cwd: args.cwd }),
           ...(args.parent !== undefined && { parent: args.parent }),
           ...(args.worktree !== undefined && { worktree: args.worktree }),
@@ -369,6 +400,7 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
         });
         return (
           `Job #${job.number} is with ${job.to} (${job.state})${duplicate ? ', handed over before: nothing was sent twice' : ''}. ` +
+          (routed ? `Why ${job.to}: ${routed}. ` : '') +
           (job.isolation === 'worktree'
             ? 'It is done in a git worktree of its own, off your last commit: its changes come to you with accept. '
             : '') +
@@ -387,7 +419,7 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
         .string()
         .min(1)
         .describe(
-          'Who does the work: "codex" or "claude" for a session of that agent, started for the job'
+          `Who does the work: "codex" or "claude" for a session of that agent, started for the job, or "${AUTO_ADDRESS}" for the agent whose jobs of this type held best so far`
         ),
       task: z
         .string()
@@ -396,6 +428,7 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
           'The job: what to do, and what done looks like. The agents see nothing of this conversation, so name the files, the constraints and the decisions already made'
         ),
       title: z.string().optional().describe('A short name of the job, its first line by default'),
+      type: TypeParam,
       cwd: z
         .string()
         .optional()
@@ -424,6 +457,7 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
           to: RECIPE_HARNESS,
           body: args.task,
           ...(args.title !== undefined && { title: args.title }),
+          ...(args.type?.trim() && { type: args.type.trim() }),
           ...(args.cwd !== undefined && { cwd: args.cwd }),
           recipe: {
             name: 'build',
@@ -485,6 +519,7 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
           'The job: what to do, and what done looks like. The agents see nothing of this conversation, so name the files, the constraints and the decisions already made'
         ),
       title: z.string().optional().describe('A short name of the job, its first line by default'),
+      type: TypeParam,
       cwd: z
         .string()
         .optional()
@@ -513,6 +548,7 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
           to: RECIPE_HARNESS,
           body: args.task,
           ...(args.title !== undefined && { title: args.title }),
+          ...(args.type?.trim() && { type: args.type.trim() }),
           ...(args.cwd !== undefined && { cwd: args.cwd }),
           recipe: {
             name: 'race',
@@ -803,7 +839,13 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
         ];
         if (found.reason) lines.push(`Reason: ${found.reason}`);
         if (found.parent !== undefined) lines.push(`Part of job #${found.parent}`);
+        if (found.reviewOf !== undefined) lines.push(`A review of job #${found.reviewOf}`);
+        if (found.routed) lines.push(`Why ${found.to}: ${found.routed}`);
         lines.push(...workLines(found));
+        const result = scoreOf(found, '');
+        if (result) {
+          lines.push(`Result as a ${found.type ?? DEFAULT_JOB_TYPE} job: ${resultLine(result)}`);
+        }
         if (found.from !== self.name && found.to !== self.name) {
           lines.push('Its letters are between its two agents: this session is neither.');
           return lines.join('\n');
@@ -1072,6 +1114,21 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
       }),
   });
 
+  const suggest = tool({
+    name: 'suggest',
+    title: 'See who a job should go to',
+    description: `See how the jobs of each agent went so far and which one the bridge would give a job to now: the share of jobs whose result held among those somebody checked, with the interval that share lies in, and the time, letters and calls for the person a job took. It says so when there are too few checked jobs to tell the agents apart. Handing a job to "${AUTO_ADDRESS}" takes the same choice. Reads only.`,
+    parameters: z.looseObject({ type: TypeParam }),
+    annotations: READS,
+    sideEffects: [],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) =>
+        suggestionLines(
+          await bridge.suggest(args.type?.trim() ? { type: args.type.trim() } : {})
+        ).join('\n')
+      ),
+  });
+
   return [
     delegate,
     build,
@@ -1093,5 +1150,6 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
     recall,
     forget,
     agents,
+    suggest,
   ] as Tool[];
 }

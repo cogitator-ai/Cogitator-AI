@@ -5,6 +5,7 @@ import {
   JOB_STATES,
   JobBudgetSchema,
   JobCheckSchema,
+  JobTypeSchema,
   LETTER_KINDS,
   PermissionAskSchema,
   type BridgeJob,
@@ -55,6 +56,8 @@ export const CreateJobInputSchema = z
     title: z.string().trim().min(1).max(200).regex(NO_CONTROL, 'A title is one line').optional(),
     cwd: z.string().min(1).max(4096).optional(),
     checks: z.array(JobCheckSchema).max(50).optional(),
+    type: JobTypeSchema.optional(),
+    reviewOf: JobNumberSchema.optional(),
     worktree: z.boolean().optional(),
     context: JobContextSchema.optional(),
     contextTokens: z.number().int().min(200).max(50_000).optional(),
@@ -79,6 +82,10 @@ export const CreateJobInputSchema = z
     parent: JobNumberSchema.optional(),
     letterId: LetterIdSchema.optional(),
   })
+  .refine((input) => input.recipe === undefined || input.reviewOf === undefined, {
+    message: 'A recipe is no review of a job: its review step names the job it reviews itself',
+    path: ['reviewOf'],
+  })
   .refine(
     (input) =>
       input.recipe === undefined ||
@@ -95,7 +102,10 @@ export const CreateJobInputSchema = z
 
 /** What an agent says to hand a job over. */
 export interface CreateJobInput {
-  /** Who gets the job: an agent's name, or a harness word such as `codex` or `claude:reviewer` */
+  /**
+   * Who gets the job: an agent's name, a harness word such as `codex` or `claude:reviewer`, or
+   * `auto` for the agent the scoreboard rates best for the type of the job
+   */
   to: string;
   /** The job itself: what to do, and what done looks like */
   body: string;
@@ -111,6 +121,17 @@ export interface CreateJobInput {
    * rules of the caller allow without asking, and hands the report over with what they showed
    */
   checks?: JobCheck[];
+  /**
+   * The kind of work the job is, one word such as `code`, `fix`, `review`, `docs` or
+   * `research`, `general` when absent. The scoreboard keeps the results of each kind apart
+   */
+  type?: string;
+  /**
+   * The job whose work this one reviews. The findings its report names are counted on that job,
+   * which is how the scoreboard learns whether the work held. The caller must be a party to
+   * that job, or have handed it over
+   */
+  reviewOf?: number;
   /**
    * Whether the job is done in a git worktree of its own, off the commit the caller's checkout
    * is at, by a session started for it. For jobs that change files while others do too: the
@@ -222,6 +243,8 @@ export interface SendLetterInput {
 export interface CreateJobResult {
   job: BridgeJob;
   letter: Letter;
+  /** Set when the job went to `auto`: why the bridge gave it to the agent it did */
+  routed?: string;
   /** True when the job was created before with the same `letterId`, and nothing changed now */
   duplicate: boolean;
 }
@@ -564,6 +587,40 @@ export const JournalQuerySchema = z.strictObject({
   limit: z.number().int().positive().max(5000).optional(),
   tail: z.number().int().positive().max(5000).optional(),
 });
+
+export const SuggestInputSchema = z.strictObject({
+  type: JobTypeSchema.optional(),
+});
+
+/** A question to the scoreboard: who should a job go to. */
+export interface SuggestInput {
+  /** The kind of work, to go by the jobs of that kind. Every job counts without it */
+  type?: string;
+}
+
+export const ResultsInputSchema = z.strictObject({
+  type: JobTypeSchema.optional(),
+  harness: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .transform((harness) => harnessOfAlias(harness))
+    .optional(),
+  agent: z.string().trim().min(1).max(512).optional(),
+  limit: z.number().int().positive().max(1000).optional(),
+});
+
+/** Which results of finished jobs to list. */
+export interface ResultsInput {
+  type?: string;
+  /** Only the jobs agents of this harness carried out */
+  harness?: string;
+  /** Only the jobs this agent carried out, by its name */
+  agent?: string;
+  /** The most results to return, the newest, 200 by default */
+  limit?: number;
+}
 
 export const VerificationInputSchema = z.strictObject({
   verified: z.boolean(),

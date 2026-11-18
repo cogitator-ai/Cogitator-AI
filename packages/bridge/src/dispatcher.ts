@@ -39,6 +39,8 @@ import {
   RecallInputSchema,
   RejectInputSchema,
   RememberInputSchema,
+  ResultsInputSchema,
+  SuggestInputSchema,
   WaitInputSchema,
   WithdrawInputSchema,
   type AcceptInput,
@@ -50,6 +52,8 @@ import {
   type RecallInput,
   type RejectInput,
   type RememberInput,
+  type ResultsInput,
+  type SuggestInput,
   type CreateJobResult,
   type EscalateInput,
   type InboxInput,
@@ -65,6 +69,7 @@ import {
   type WithdrawInput,
   type WithdrawResult,
 } from './inputs.js';
+import { parseFindings, type Finding } from './findings.js';
 import { HANDOVER_GAP, buildHandover } from './handover.js';
 import { isFinishedJobState, jobOf, jobRecordOf } from './job-record.js';
 import {
@@ -96,7 +101,17 @@ import {
   squashInto,
   type WorktreeChanges,
 } from './worktree.js';
-import { allocateAgentName, resolveAddress, type AddressResolution } from './registry.js';
+import {
+  AUTO_ADDRESS,
+  NEW_SESSION,
+  aliasOfHarness,
+  allocateAgentName,
+  autoAddressOf,
+  resolveAddress,
+  type AddressResolution,
+  type ResolveAddressContext,
+} from './registry.js';
+import { resultOf, suggestFrom, type JobResult, type Suggestion } from './scoreboard.js';
 import type {
   AgentFilter,
   BridgeStore,
@@ -121,7 +136,9 @@ import {
   type DeliveryState,
   type JobChanges,
   type JobCheckResult,
+  type JobFailure,
   type JobRecipe,
+  type JobReview,
   type JobState,
   type JobVerification,
   type JobWorktreeEnd,
@@ -426,6 +443,16 @@ function asError(error: unknown): Error {
 /** The ids the conductor of a recipe gives the letters it writes. */
 const RECIPE_LETTER_ID = /^(recipe|relay)-/;
 
+/** How many reviews of its work the record of a job keeps, the first ones. */
+const REVIEWS_KEPT = 20;
+
+/** What `auto` goes by for one job, see `BridgeDispatcher.choiceFor`. */
+interface AutoChoice {
+  suggestion: Suggestion;
+  /** The agents of the caller's project that would not wake for a letter */
+  asleep: ReadonlySet<string>;
+}
+
 const NO_CONDUCTOR =
   'This bridge carries out no recipes: its host gave it no conductor (recipeAdapter of @cogitator-ai/bridge/recipes)';
 
@@ -484,6 +511,8 @@ export class BridgeDispatcher
   private readonly board: FactBoard | undefined;
   /** When each agent's other parties were last told it waits at its window, see `stuck` */
   private readonly stuckTold = new Map<string, number>();
+  /** The agents a listing of their harness showed waiting at their window, until it shows them not */
+  private readonly stuckNow = new Set<string>();
   /** Those waiting for the verdict of a permission request, by its id, see `verdict` */
   private readonly verdictWaiters = new Map<string, Set<() => void>>();
   /** What the person route is told, one thing after another */
@@ -645,6 +674,14 @@ export class BridgeDispatcher
   async createJob(caller: string, input: CreateJobInput): Promise<CreateJobResult> {
     const request = parse(CreateJobInputSchema, input, 'Cannot create the job');
     this.checkBody(request.body);
+    const auto = autoAddressOf(request.to);
+    if (auto && request.recipe) {
+      throw new BridgeError(
+        'invalid_input',
+        `A recipe goes to the conductor of the bridge, not to ${AUTO_ADDRESS}: name ${AUTO_ADDRESS} in the input of the recipe, where it says who does a step`
+      );
+    }
+    const choice = auto ? await this.choiceFor(caller, request) : undefined;
     const handover = request.recipe ? undefined : await this.handoverFor(caller, request);
     const withContext = handover ? `${request.body}${HANDOVER_GAP}${handover}` : request.body;
     const body = withContext.length <= this.limits.maxBodyLength ? withContext : request.body;
@@ -666,20 +703,37 @@ export class BridgeDispatcher
               { letter: request.letterId }
             );
           }
-          return { job: this.requireJob(sent.job).job, letter: sent, duplicate: true };
+          const known = this.requireJob(sent.job).job;
+          return {
+            job: known,
+            letter: sent,
+            duplicate: true,
+            ...(known.routed && { routed: known.routed }),
+          };
         }
       }
 
       if (request.recipe && this.conductors().length === 0) {
         throw new BridgeError('invalid_input', NO_CONDUCTOR, { recipe: request.recipe.name });
       }
-      const resolution = resolveAddress(this.store, request.to, {
+      const addressed: ResolveAddressContext = {
         project: from.project,
         caller: from.name,
         now: this.now(),
         canSpawn: (harness) => this.adapters.get(harness)?.createSession !== undefined,
-        fresh: request.worktree === true || request.recipe !== undefined,
-      });
+        fresh: request.worktree === true || request.recipe !== undefined || auto?.fresh === true,
+      };
+      const reviewed =
+        request.reviewOf === undefined ? undefined : this.checkReviewAsked(from, request.reviewOf);
+      const taken = choice
+        ? this.takeChoice(
+            choice,
+            from,
+            addressed,
+            reviewed && this.store.getAgent(reviewed.to)?.harness
+          )
+        : undefined;
+      const resolution = taken?.resolution ?? resolveAddress(this.store, request.to, addressed);
       this.checkRecipeAsked(resolution, request.recipe);
       if (this.closing && resolution.kind === 'spawn') {
         throw new BridgeError(
@@ -737,7 +791,7 @@ export class BridgeDispatcher
       if (request.worktree) this.checkWorktreeAsked(from, resolution, cwd);
 
       const now = this.now();
-      const refusal = this.handOverRefusal(from, resolution, request.body, cwd, now);
+      const refusal = this.handOverRefusal(from, resolution, request.body, cwd, now, !!taken);
       if (refusal) {
         this.journal(tx, {
           type: 'letter.rejected',
@@ -781,7 +835,10 @@ export class BridgeDispatcher
         project: from.project,
         cwd,
         ...(body !== request.body && { taskLength: request.body.length }),
+        ...(request.type && { type: request.type }),
         ...(request.recipe && { recipe: request.recipe }),
+        ...(request.reviewOf !== undefined && { reviewOf: request.reviewOf }),
+        ...(taken && { routed: taken.reason }),
         ...(request.worktree && { isolation: 'worktree' as const }),
         checks: request.checks ?? [],
         budget,
@@ -803,7 +860,15 @@ export class BridgeDispatcher
         type: 'job.created',
         job: number,
         agent: from.name,
-        data: { title: record.title, from: from.name, to: to.name, depth, cwd },
+        data: {
+          title: record.title,
+          from: from.name,
+          to: to.name,
+          depth,
+          cwd,
+          ...(record.type && { type: record.type }),
+          ...(taken && { routed: taken.reason }),
+        },
       });
 
       const letter = this.acceptLetter(tx, {
@@ -819,7 +884,12 @@ export class BridgeDispatcher
         tx.wake.delete(to.name);
         tx.spawns.push({ agent: to.name, job: number, letter: letter.id });
       }
-      return { job: this.jobFrom(task), letter, duplicate: false };
+      return {
+        job: this.jobFrom(task),
+        letter,
+        duplicate: false,
+        ...(taken && { routed: taken.reason }),
+      };
     });
     if (outcome instanceof Refusal) throw outcome.error;
     return outcome;
@@ -965,7 +1035,7 @@ export class BridgeDispatcher
           exhausted === 'letters'
             ? `the job used all ${job.budget.letters} letters of its budget`
             : ranOutOfTime(job);
-        await this.failJob(tx, job.number, reason);
+        await this.failJob(tx, job.number, reason, exhausted === 'letters' ? 'other' : 'timeout');
         return new Refusal(
           new BridgeError(
             'budget_exhausted',
@@ -1024,6 +1094,7 @@ export class BridgeDispatcher
       if (forPerson) {
         tx.asked.push({ letter: letter.id, again: false });
         await this.startWaiting(job.number, now);
+        await this.neededPerson(job.number);
       }
 
       if (answered && request.kind === 'answer') {
@@ -1035,11 +1106,20 @@ export class BridgeDispatcher
         const state = letter.outcome === 'failed' ? 'failed' : 'completed';
         await this.transition(tx, job.number, state, forHistory(request.body, letter.id));
         if (state === 'failed')
-          await this.patchRecord(job.taskId, { reason: `reported as failed by ${from.name}` });
+          await this.patchRecord(job.taskId, {
+            reason: `reported as failed by ${from.name}`,
+            failure: 'reported',
+          });
         if (changes && job.worktree && !job.worktree.end) {
           await this.patchRecord(job.taskId, { changes });
         }
-        if (request.findings) await this.patchRecord(job.taskId, { findings: request.findings });
+        const findings =
+          request.findings ??
+          (job.reviewOf !== undefined ? parseFindings(request.body) : undefined);
+        if (findings) await this.patchRecord(job.taskId, { findings });
+        if (findings && state === 'completed' && job.reviewOf !== undefined) {
+          await this.noteReview(job, from.name, findings, now);
+        }
         if (state === 'completed' && job.checks.length > 0) {
           this.store.updateLetter(letter.id, { state: 'held' });
           await this.patchRecord(job.taskId, {
@@ -1143,6 +1223,7 @@ export class BridgeDispatcher
       });
       tx.asked.push({ letter: letter.id, again: false });
       await this.startWaiting(job.number, now);
+      await this.neededPerson(job.number);
       return updated;
     });
   }
@@ -1221,20 +1302,35 @@ export class BridgeDispatcher
   async stuck(caller: string, input: StuckInput): Promise<number[]> {
     const request = parse(StuckInputSchema, input, 'Cannot note that the session waits');
     return this.asCaller(caller, async (tx) =>
-      this.noteStuck(tx, this.requireCaller(caller), request.what)
+      this.noteStuck(tx, this.requireCaller(caller), request.what, 'hook')
     );
   }
 
-  private noteStuck(tx: Transaction, agent: AgentRecord, what: string): number[] {
+  /**
+   * Notes that a session waits for a person at its own window. `seen` says how the bridge
+   * learned of it: a `hook` runs once for each dialog, a `listing` of the harness shows the same
+   * wait again every time it is asked, so only the first sight of it counts as one more time
+   * the jobs of the session needed the person. Whoever handed those jobs over is told, and not
+   * again within `limits.windowNoticeMs`.
+   */
+  private async noteStuck(
+    tx: Transaction,
+    agent: AgentRecord,
+    what: string,
+    seen: 'hook' | 'listing'
+  ): Promise<number[]> {
     const now = this.now();
-    const told = this.stuckTold.get(agent.name);
-    if (told !== undefined && now - told < this.limits.windowNoticeMs) return [];
     const jobs = this.store
       .jobTasks({ to: agent.name, states: ACTIVE_JOB_STATES })
       .flatMap((task) => jobOf(task) ?? [])
       .filter((job) => !this.holdsCall(agent.name, job.number))
       .sort((a, b) => a.number - b.number);
     if (jobs.length === 0) return [];
+    const again = seen === 'listing' && this.stuckNow.has(agent.name);
+    this.stuckNow.add(agent.name);
+    if (!again) for (const job of jobs) await this.neededPerson(job.number);
+    const told = this.stuckTold.get(agent.name);
+    if (told !== undefined && now - told < this.limits.windowNoticeMs) return [];
     this.stuckTold.set(agent.name, now);
     for (const job of jobs) {
       this.systemNote(
@@ -1926,6 +2022,221 @@ export class BridgeDispatcher
     return [...this.adapters.values()]
       .filter((adapter) => adapter.recipeProblem !== undefined)
       .map((adapter) => adapter.harness);
+  }
+
+  /**
+   * A review names the job it reviews, and only somebody with a say in that job may: one of its
+   * two agents, whoever handed it over, or the conductor of a recipe, which reviews by the word
+   * of whoever started it.
+   */
+  private checkReviewAsked(from: AgentRecord, reviewed: number): BridgeJob {
+    const { job } = this.requireJob(reviewed);
+    if (job.recipe) {
+      throw new BridgeError(
+        'invalid_input',
+        `Job ${reviewed} is a recipe: review the job of the step that did the work`,
+        { job: reviewed }
+      );
+    }
+    const party = from.name === job.from || from.name === job.to;
+    if (party || this.conducts(from) || this.handedOver(from.name, job)) return job;
+    throw new BridgeError(
+      'not_a_party',
+      `Job ${reviewed} is between ${job.from} and ${job.to}: only they, or whoever handed it over, have its work reviewed`,
+      { job: reviewed }
+    );
+  }
+
+  /**
+   * Counts what a review found on the record of the job it reviewed, once for each review. A
+   * review by the agent that did the work, and one that agent had made of its own work, count
+   * for nothing: nobody rates itself. The first reviews of a job are the ones kept, so a later
+   * one cannot push an earlier one out.
+   */
+  private async noteReview(
+    review: BridgeJob,
+    by: string,
+    findings: readonly Finding[],
+    now: number
+  ): Promise<void> {
+    if (review.reviewOf === undefined) return;
+    const task = this.store.taskOfJob(review.reviewOf);
+    const reviewed = task && jobOf(task);
+    if (!reviewed || by === reviewed.to || this.ruledBy(review) === reviewed.to) return;
+    const known = reviewed.reviews ?? [];
+    if (known.length >= REVIEWS_KEPT || known.some((kept) => kept.job === review.number)) return;
+    const counted: JobReview = {
+      job: review.number,
+      by,
+      at: this.iso(now),
+      blocker: 0,
+      major: 0,
+      minor: 0,
+      nit: 0,
+    };
+    for (const finding of findings) counted[finding.severity] += 1;
+    await this.patchRecord(reviewed.taskId, { reviews: [...known, counted] });
+  }
+
+  /** Notes that a job needed the person once more: the scoreboard counts how often it did. */
+  private async neededPerson(number: number): Promise<void> {
+    const { job } = this.requireJob(number);
+    await this.patchRecord(job.taskId, { personNeeded: (job.personNeeded ?? 0) + 1 });
+  }
+
+  /** The harnesses a job can be handed to with nobody named, in the order of the adapters. */
+  private routable(): string[] {
+    return [...this.adapters.values()]
+      .filter((adapter) => adapter.createSession !== undefined && !adapter.recipeProblem)
+      .map((adapter) => adapter.harness);
+  }
+
+  /** What became of the jobs that ended within the window of the scoreboard, newest first. */
+  private scored(): JobResult[] {
+    const harnesses = new Map<string, string | undefined>();
+    const harnessOf = (agent: string): string | undefined => {
+      if (!harnesses.has(agent)) harnesses.set(agent, this.store.getAgent(agent)?.harness);
+      return harnesses.get(agent);
+    };
+    return this.store
+      .jobTasks({
+        states: ['completed', 'failed'],
+        createdSince: this.now() - this.limits.scoreWindowMs,
+      })
+      .flatMap((task) => {
+        const job = jobOf(task);
+        const harness = job && harnessOf(job.to);
+        if (!job || !harness || this.adapters.get(harness)?.recipeProblem) return [];
+        return resultOf(job, harness) ?? [];
+      });
+  }
+
+  /**
+   * Who a job handed to `auto` goes to, worked out before the job is created: the suggestion of
+   * the scoreboard, and the sessions of the caller's project that would not wake for a letter,
+   * which `auto` passes over for a fresh session. Undefined for a job that was handed over
+   * before under the same letter id: it is with whoever got it then.
+   */
+  private async choiceFor(
+    caller: string,
+    request: Pick<CreateJobInput, 'type' | 'letterId'>
+  ): Promise<AutoChoice | undefined> {
+    const { letterId, type } = request;
+    const known = await this.enqueue(async () => ({
+      sent: letterId !== undefined && this.store.getLetter(letterId) !== undefined,
+      project: this.store.getAgent(caller)?.project,
+      harnesses: this.routable(),
+    }));
+    if (known.sent) return undefined;
+    const suggestion = await this.suggest(type === undefined ? {} : { type });
+    const { project, harnesses } = known;
+    const sessions =
+      project === undefined
+        ? []
+        : await this.enqueue(async () =>
+            this.store
+              .listAgents({ project, statuses: ['active'] })
+              .filter((agent) => agent.name !== caller && harnesses.includes(agent.harness))
+          );
+    const asleep = new Set<string>();
+    for (const agent of sessions) {
+      if (!(await this.wakes(agent.name))) asleep.add(agent.name);
+    }
+    return { suggestion, asleep };
+  }
+
+  /** The agents a caller works for: those that handed it its jobs, and those above them. */
+  private worksFor(caller: string): Set<string> {
+    const above = new Set<string>();
+    for (const task of this.store.jobTasks({ to: caller, states: ACTIVE_JOB_STATES })) {
+      const job = jobOf(task);
+      if (!job) continue;
+      for (const link of this.chainOf(job.number)) above.add(link.from);
+    }
+    return above;
+  }
+
+  /**
+   * Finds the agent a job handed to `auto` goes to: the best of the suggestion first, then the
+   * others a job can go to. Each is tried by its harness word, and by a fresh session where the
+   * session that is there would not wake, several fit, or the session is one the caller works
+   * for, which would then wait for the caller while the caller waits for it. A harness the
+   * bridge cannot start a session of right now is passed over for the next. `avoid` names a
+   * harness to take last: the one that did the work a review is of.
+   *
+   * @throws BridgeError `no_session` when the job can go to none of them
+   */
+  private takeChoice(
+    choice: AutoChoice,
+    from: AgentRecord,
+    context: ResolveAddressContext,
+    avoid: string | undefined
+  ): { resolution: AddressResolution; reason: string } {
+    const { suggestion, asleep } = choice;
+    const open = suggestion.candidates.filter((candidate) => candidate.available);
+    const first = open.find((candidate) => candidate.harness === suggestion.best);
+    const ranked = first ? [first, ...open.filter((candidate) => candidate !== first)] : open;
+    const order = [
+      ...ranked.filter((candidate) => candidate.harness !== avoid),
+      ...ranked.filter((candidate) => candidate.harness === avoid),
+    ];
+    const above = this.worksFor(from.name);
+    const passed: string[] = [];
+    for (const candidate of order) {
+      const name = aliasOfHarness(candidate.harness);
+      let refused: string | undefined;
+      for (const address of [candidate.harness, `${candidate.harness}:${NEW_SESSION}`]) {
+        let resolution: AddressResolution;
+        try {
+          resolution = resolveAddress(this.store, address, context);
+        } catch (error) {
+          if (
+            !(error instanceof BridgeError) ||
+            (error.code !== 'ambiguous_agent' && error.code !== 'no_session')
+          ) {
+            throw error;
+          }
+          if (error.code === 'no_session') refused = error.message;
+          continue;
+        }
+        if (resolution.kind === 'agent') {
+          const { agent } = resolution;
+          if (asleep.has(agent.name) || above.has(agent.name)) continue;
+        } else {
+          const full = this.startingRefusal();
+          if (full) {
+            refused = full.message;
+            continue;
+          }
+        }
+        const reason =
+          candidate.harness === suggestion.best
+            ? suggestion.reason
+            : `${suggestion.reason}. ${
+                passed.length > 0
+                  ? `The job could not go there (${passed.join('. ')})`
+                  : `${aliasOfHarness(avoid ?? '')} did the work this job reviews`
+              }, so ${name} took it`;
+        return { resolution, reason };
+      }
+      passed.push(`${name}: ${refused ?? 'its session would not wake for the job'}`);
+    }
+    throw new BridgeError(
+      'no_session',
+      `${AUTO_ADDRESS} found no agent the job can go to. ${passed.length > 0 ? passed.join('. ') : suggestion.reason}`,
+      { harnesses: order.map((candidate) => candidate.harness) }
+    );
+  }
+
+  /** Why the bridge starts no session right now, when too many are being started already. */
+  private startingRefusal(): BridgeError | undefined {
+    const starting = this.store.listAgents({ statuses: ['starting'] }).length;
+    if (starting < this.limits.maxStartingSessions) return undefined;
+    return new BridgeError(
+      'no_session',
+      `The bridge is already starting ${starting} sessions, the most at once. Hand the job over again when they are up`,
+      { starting, max: this.limits.maxStartingSessions }
+    );
   }
 
   /**
@@ -2954,6 +3265,47 @@ export class BridgeDispatcher
   }
 
   /**
+   * What became of the jobs that ended within the window of the scoreboard
+   * (`limits.scoreWindowMs`), newest first: who carried each out, its type, whether anything
+   * confirmed its result, what its reviews found, how long it took, how many letters, and how
+   * many times it needed the person. Canceled jobs and recipes are not among them.
+   */
+  async results(input: ResultsInput = {}): Promise<JobResult[]> {
+    const request = parse(ResultsInputSchema, input, 'Cannot list the results');
+    return this.enqueue(async () =>
+      this.scored()
+        .filter(
+          (result) =>
+            (request.type === undefined || result.type === request.type) &&
+            (request.harness === undefined || result.harness === request.harness) &&
+            (request.agent === undefined || result.agent === request.agent)
+        )
+        .slice(0, request.limit ?? DEFAULT_LIST_LIMIT)
+    );
+  }
+
+  /**
+   * Who a job should go to, by how earlier jobs went: every harness the bridge can start a
+   * session of with its rate of jobs that held and the interval of that rate, the one `auto`
+   * would take now, and why. With too few checked jobs it says so, and goes by the order of the
+   * adapters instead of a rating it does not have.
+   */
+  async suggest(input: SuggestInput = {}): Promise<Suggestion> {
+    const request = parse(SuggestInputSchema, input, 'Cannot suggest an agent');
+    const { results, harnesses } = await this.enqueue(async () => ({
+      results: this.scored(),
+      harnesses: this.routable(),
+    }));
+    return suggestFrom(results, {
+      ...(request.type !== undefined && { type: request.type }),
+      minJobs: this.limits.scoreMinJobs,
+      windowMs: this.limits.scoreWindowMs,
+      harnesses,
+      unavailable: () => undefined,
+    });
+  }
+
+  /**
    * The harnesses the bridge can start a session of for a job. The conductor of recipes is none
    * of them: it takes a recipe, not a job.
    */
@@ -3028,7 +3380,7 @@ export class BridgeDispatcher
       for (const late of overdue) {
         if (isFinishedJobState(this.requireJob(late.number).job.state)) continue;
         if (this.waitsForPerson(late.number)) continue;
-        await this.failJob(tx, late.number, ranOutOfTime(late));
+        await this.failJob(tx, late.number, ranOutOfTime(late), 'timeout');
         failed.push(late.number);
       }
 
@@ -3094,7 +3446,8 @@ export class BridgeDispatcher
         await this.failJob(
           tx,
           job.number,
-          `${letter.to} did not ${pickup ? 'take' : 'answer'} the ${letter.kind} ${letter.id} in ${formatDuration(2 * job.budget.replyTimeoutMs)}`
+          `${letter.to} did not ${pickup ? 'take' : 'answer'} the ${letter.kind} ${letter.id} in ${formatDuration(2 * job.budget.replyTimeoutMs)}`,
+          letter.to === job.to ? 'silent' : 'other'
         );
         failed.push(job.number);
       }
@@ -3136,7 +3489,8 @@ export class BridgeDispatcher
       await this.failJob(
         tx,
         job.number,
-        `${job.to} ended its turn without a report and did not react to the reminder in ${formatDuration(patience)}`
+        `${job.to} ended its turn without a report and did not react to the reminder in ${formatDuration(patience)}`,
+        'silent'
       );
       failed.push(job.number);
     }
@@ -3235,10 +3589,13 @@ export class BridgeDispatcher
                 new Set(sessions.flatMap((session) => (session.busy ? [session.sessionId] : [])))
               );
               for (const session of sessions) {
-                if (!session.waitingFor) continue;
                 const agent = this.store.agentOfSession(harness, session.sessionId);
+                if (!session.waitingFor) {
+                  if (agent) this.stuckNow.delete(agent.name);
+                  continue;
+                }
                 if (agent?.status !== 'active') continue;
-                this.noteStuck(tx, agent, `It waits for: ${session.waitingFor}`);
+                await this.noteStuck(tx, agent, `It waits for: ${session.waitingFor}`, 'listing');
               }
             })
           )
@@ -3573,11 +3930,20 @@ export class BridgeDispatcher
     }
   }
 
-  private async failJob(tx: Transaction, number: number, reason: string): Promise<void> {
+  /**
+   * Fails a job. `failure` says whose doing it was: the scoreboard holds only what its agent did
+   * against the agent.
+   */
+  private async failJob(
+    tx: Transaction,
+    number: number,
+    reason: string,
+    failure: JobFailure = 'other'
+  ): Promise<void> {
     const { job } = this.requireJob(number);
     if (isFinishedJobState(job.state)) return;
     await this.transition(tx, number, 'failed', reason);
-    await this.patchRecord(job.taskId, { reason });
+    await this.patchRecord(job.taskId, { reason, failure });
     this.closeLetters(tx, number);
     await this.stopWaiting(number, this.now(), false);
     this.noteOutcome(tx, number);
@@ -3623,24 +3989,28 @@ export class BridgeDispatcher
 
   /**
    * Why an agent may not hand this job over right now, if it may not: it is the job it already
-   * handed to the same agent and that is still in progress, it has too many jobs out, it hands
-   * jobs over too fast, or too many sessions are being started.
+   * handed to the same agent and that is still in progress (for a job left to `auto`: one it
+   * left to `auto` before, whoever got it), it has too many jobs out, it hands jobs over too
+   * fast, or too many sessions are being started.
    */
   private handOverRefusal(
     from: AgentRecord,
     resolution: ReturnType<typeof resolveAddress>,
     body: string,
     cwd: string,
-    now: number
+    now: number,
+    routed = false
   ): BridgeError | undefined {
     const open = this.store
       .jobTasks({ from: from.name, states: ACTIVE_JOB_STATES })
       .flatMap((task) => jobOf(task) ?? []);
     const wanted = normalizeBody(body);
     const sameAgent = (job: BridgeJob): boolean =>
-      resolution.kind === 'agent'
-        ? job.to === resolution.agent.name
-        : this.store.getAgent(job.to)?.harness === resolution.harness;
+      routed
+        ? job.routed !== undefined
+        : resolution.kind === 'agent'
+          ? job.to === resolution.agent.name
+          : this.store.getAgent(job.to)?.harness === resolution.harness;
     const same = open.find((job) => {
       if (job.cwd !== cwd || !sameAgent(job)) return false;
       const first = this.store.listLetters({ job: job.number, kinds: ['task'], limit: 1 })[0];
@@ -3668,17 +4038,7 @@ export class BridgeDispatcher
         { recent, max: this.limits.jobsPerHour }
       );
     }
-    if (resolution.kind === 'spawn') {
-      const starting = this.store.listAgents({ statuses: ['starting'] }).length;
-      if (starting >= this.limits.maxStartingSessions) {
-        return new BridgeError(
-          'no_session',
-          `The bridge is already starting ${starting} sessions, the most at once. Hand the job over again when they are up`,
-          { starting, max: this.limits.maxStartingSessions }
-        );
-      }
-    }
-    return undefined;
+    return resolution.kind === 'spawn' ? this.startingRefusal() : undefined;
   }
 
   /**

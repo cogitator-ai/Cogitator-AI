@@ -248,6 +248,12 @@ class Connection {
     on(BRIDGE_METHODS.forget, (value) =>
       dispatcher.forget(this.agent ?? null, value as Parameters<BridgeDispatcher['forget']>[1])
     );
+    on(BRIDGE_METHODS.suggest, (value) =>
+      dispatcher.suggest((value ?? {}) as Parameters<BridgeDispatcher['suggest']>[0])
+    );
+    on(BRIDGE_METHODS.results, (value) =>
+      dispatcher.results((value ?? {}) as Parameters<BridgeDispatcher['results']>[0])
+    );
     on(BRIDGE_METHODS.listAgents, (value) =>
       dispatcher.agents((value ?? {}) as Parameters<BridgeDispatcher['agents']>[0])
     );

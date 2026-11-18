@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { formatDuration } from './guards.js';
-import type { JobCheck, JobCheckResult } from './types.js';
+import type { BridgeJob, JobCheck, JobCheckResult } from './types.js';
 
 /** How much of what a check printed is kept: its end, where a failure says what went wrong. */
 const OUTPUT_KEPT = 4_000;
@@ -215,4 +215,25 @@ export function summarizeChecks(results: readonly JobCheckResult[]): {
     lines.push(`The end of what "${result.name}" printed:`, tail(result.output, OUTPUT_SHOWN));
   }
   return { verified, summary: lines.join('\n') };
+}
+
+/** What the checks of a job showed. */
+export interface Checked {
+  /** Every check ran and passed */
+  verified: boolean;
+  /** A check ran and did not pass. A check the bridge left out is no failure of the work */
+  failed: boolean;
+  summary?: string;
+}
+
+export function checkedOf(job: Pick<BridgeJob, 'verification'>): Checked | undefined {
+  const verification = job.verification;
+  if (!verification) return undefined;
+  return {
+    verified: verification.verified,
+    failed: verification.checks
+      ? verification.checks.some((check) => !check.ok && check.skipped === undefined)
+      : !verification.verified,
+    ...(verification.summary && { summary: verification.summary }),
+  };
 }

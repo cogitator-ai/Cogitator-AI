@@ -97,7 +97,7 @@ function jobNumber(text: string): number {
 }
 
 describe('bridgeTools', () => {
-  it('are the twenty tools of the bridge, each saying what it does to the world', () => {
+  it('are the tools of the bridge, each saying what it does to the world', () => {
     const tools = bridgeTools({ socketPath: bridgePaths({ home }).socket });
 
     expect(tools.map((tool) => tool.name)).toEqual([
@@ -121,6 +121,7 @@ describe('bridgeTools', () => {
       'recall',
       'forget',
       'agents',
+      'suggest',
     ]);
     for (const tool of tools) {
       expect(tool.annotations?.openWorldHint).toBe(false);
@@ -410,6 +411,11 @@ describe('bridgeTools', () => {
     await ended(4);
     expect(await orchestrator.call('inbox')).toContain('passed the review of codex-');
 
+    expect(await orchestrator.call('job', { job: 2 })).toContain(
+      'Result as a code job: good (a review found nothing above minor)'
+    );
+    expect(await orchestrator.call('job', { job: 3 })).toContain('A review of job #2');
+
     await expect(orchestrator.call('review', { job: 2, threshold: 'huge' })).rejects.toThrow();
   });
 
@@ -458,6 +464,57 @@ describe('bridgeTools', () => {
       '2 agents were asked to do the job, 0 finished it'
     );
     await expect(orchestrator.call('race', { to: ['codex'], task: 'x' })).rejects.toThrow();
+  });
+
+  it('name the type of a job, leave the choice of the agent to the bridge and show how jobs went', async () => {
+    let threads = 0;
+    const adapter = new FakeAdapter({
+      harness: 'codex',
+      createSession: async () => ({ sessionId: `thread-${(threads += 1)}` }),
+    });
+    await startHost({ adapters: [adapter] });
+    const orchestrator = claude();
+    await codex().call('inbox');
+
+    const before = await orchestrator.call('suggest', { type: 'code' });
+    expect(before).toContain('How jobs of every type of the last 60 days went:');
+    expect(before).toMatch(/ {2}codex {2}no job yet {2}<- auto takes this one/);
+    expect(before).toContain('Not enough data to tell the agents apart');
+
+    const handed = await orchestrator.call('delegate', {
+      to: 'auto',
+      task: 'Fix the burst limit',
+      type: 'Code',
+    });
+    const job = jobNumber(handed);
+    expect(handed).toMatch(
+      /Job #1 is with codex@\S+ \(submitted\)\. Why codex@\S+: Not enough data/
+    );
+    await codex().call('report', { job, result: 'Fixed' });
+
+    const asked = await orchestrator.call('delegate', {
+      to: 'codex:new',
+      task: 'Review the work of job 1',
+      type: 'review',
+      reviewOf: job,
+    });
+    await vi.waitFor(() => expect(adapter.sessions).toHaveLength(1));
+    await codex('thread-1').call('report', {
+      job: jobNumber(asked),
+      result: 'One thing',
+      findings: [{ severity: 'major', summary: 'The limit is off by one' }],
+    });
+
+    const seen = await orchestrator.call('job', { job });
+    expect(seen).toContain('Why codex@');
+    expect(seen).toContain('Result as a code job: bad (a review found 1 major)');
+    const after = await orchestrator.call('suggest', { type: 'code' });
+    expect(after).toContain('0 of 1 held, not enough to tell (5 checked jobs are)');
+    expect(after).toContain('1 more nobody checked');
+
+    await expect(
+      orchestrator.call('delegate', { to: 'codex', task: 'More', type: 'two words' })
+    ).rejects.toThrow(/A job type is one word/);
   });
 
   it('say so when the bridge was given no conductor for its recipes', async () => {

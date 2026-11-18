@@ -6,6 +6,7 @@ import {
   type JsonRpcMessage,
 } from '@cogitator-ai/server-shared';
 import type { BoardFact } from './board.js';
+import type { JobResult, Suggestion } from './scoreboard.js';
 import { BridgeError } from './errors.js';
 import {
   DEFAULT_VERDICT_WAIT_MS,
@@ -23,9 +24,11 @@ import {
   type RecallInput,
   type RejectInput,
   type RememberInput,
+  type ResultsInput,
   type SendLetterInput,
   type SendLetterResult,
   type StuckInput,
+  type SuggestInput,
   type VerdictInput,
   type VerdictResult,
   type WaitInput,
@@ -275,6 +278,16 @@ export class BridgeClient {
   /** Lets a note of the board go, see `BridgeDispatcher.forget` */
   forget(input: ForgetInput): Promise<BoardFact> {
     return this.call(BRIDGE_METHODS.forget, input);
+  }
+
+  /** Who a job should go to by how earlier jobs went, see `BridgeDispatcher.suggest` */
+  suggest(input: SuggestInput = {}): Promise<Suggestion> {
+    return this.call(BRIDGE_METHODS.suggest, input);
+  }
+
+  /** What became of the jobs that ended lately, see `BridgeDispatcher.results` */
+  results(input: ResultsInput = {}): Promise<JobResult[]> {
+    return this.call(BRIDGE_METHODS.results, input);
   }
 
   /** What a job changed in its worktree so far, see `BridgeDispatcher.diff` */

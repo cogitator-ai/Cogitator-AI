@@ -7,7 +7,9 @@ import { JobCheckSchema, type JobState } from '../types.js';
 import { defineRecipe, type Recipe, type RecipeRun, type RecipeState } from './recipe.js';
 import {
   Address,
+  JUDGE_TYPE,
   TASK_LENGTH,
+  WORK_TYPE,
   attempted,
   checkedOf,
   clip,
@@ -97,6 +99,7 @@ async function attempt(run: RecipeRun, input: RaceInput, to: string, at: number)
       to,
       title: `${run.job.title} (attempt ${at})`,
       body: `${run.task}\n\n${note}`,
+      type: run.job.type ?? WORK_TYPE,
       worktree: true,
       ...(input.checks && { checks: input.checks }),
       ...(input.context && { context: input.context }),
@@ -163,6 +166,7 @@ async function judge(
       to,
       title: `Compare the attempts at ${run.job.title}`,
       body: judgeText(run, done),
+      type: JUDGE_TYPE,
     })
   );
   if ('refused' in tried) return { judged: { refused: tried.refused } };

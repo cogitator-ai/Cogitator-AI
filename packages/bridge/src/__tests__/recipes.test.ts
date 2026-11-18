@@ -217,6 +217,27 @@ describe('the conductor of the bridge', () => {
     expect(report).toContain('1 major, 1 nit, fixes in job #4.');
     expect(report).toContain('Round 2: review in job #5');
     expect(tasksOf(codex).map((task) => task.job)).toEqual([2, 4]);
+
+    const steps = await Promise.all([2, 3, 4, 5].map((number) => kit.bridge.job(number)));
+    expect(steps.map((step) => [step.type, step.reviewOf])).toEqual([
+      ['code', undefined],
+      ['review', 2],
+      ['fix', undefined],
+      ['review', 4],
+    ]);
+    expect(steps[0].reviews).toEqual([
+      expect.objectContaining({ job: 3, by: review.agent, major: 1, nit: 1 }),
+    ]);
+    expect(steps[2].reviews).toEqual([expect.objectContaining({ job: 5, major: 0, nit: 1 })]);
+    const results = new Map(
+      (await kit.bridge.results()).map((result) => [result.job, result.outcome])
+    );
+    expect([...results].sort(([a], [b]) => a - b)).toEqual([
+      [2, 'bad'],
+      [3, 'unknown'],
+      [4, 'good'],
+      [5, 'unknown'],
+    ]);
     expect(kit.errors).toEqual([]);
   });
 

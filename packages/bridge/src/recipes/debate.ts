@@ -5,6 +5,7 @@ import { oneLine, quoted } from '../letters.js';
 import { defineRecipe, type Recipe, type RecipeRun, type RecipeState } from './recipe.js';
 import {
   Address,
+  DEBATE_TYPE,
   ONE_LINE,
   TASK_LENGTH,
   attempted,
@@ -165,6 +166,7 @@ async function round(
       const job = {
         title: `${run.job.title} (debate, round ${at})`,
         body: turnText(run, state, seats, index, at, rounds),
+        type: DEBATE_TYPE,
       };
       const before = lastOf(state, index);
       const known = before ? await run.agent(before) : undefined;
@@ -217,6 +219,7 @@ async function sumUp(
     run.handOver('moderator', {
       to,
       title: `${run.job.title} (debate, summing up)`,
+      type: DEBATE_TYPE,
       body: [
         `Sum up a debate of ${seats.length} agents. Change no file.`,
         `The question:\n${quoted(run.task)}`,

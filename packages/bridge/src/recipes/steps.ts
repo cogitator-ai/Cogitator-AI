@@ -3,6 +3,8 @@ import { isBridgeError } from '../errors.js';
 import type { BridgeJob } from '../types.js';
 import type { RecipeJob, RecipeOutcome, RecipeRun } from './recipe.js';
 
+export { checkedOf, type Checked } from '../checks.js';
+
 /** How much of what one agent wrote a letter to another quotes. */
 const QUOTE_LENGTH = 4_000;
 
@@ -11,6 +13,16 @@ export const ONE_LINE = /^[^\p{Cc}\u2028\u2029]*$/u;
 
 /** Who a step is for, as a recipe takes it in its input: an agent's name or a harness word. */
 export const Address = z.string().trim().min(1).max(512).regex(ONE_LINE, 'An address is one line');
+
+/**
+ * The types the steps of the built-in recipes hand their jobs over as, so the scoreboard keeps
+ * writing code, fixing it after a review, reviewing, judging and debating apart.
+ */
+export const WORK_TYPE = 'code';
+export const FIX_TYPE = 'fix';
+export const REVIEW_TYPE = 'review';
+export const JUDGE_TYPE = 'judge';
+export const DEBATE_TYPE = 'debate';
 
 /** How much of the text of a job a letter of a recipe repeats to another agent. */
 export const TASK_LENGTH = 20_000;
@@ -45,27 +57,6 @@ export function endOf(job: BridgeJob): string {
 
 export function plural(count: number, one: string): string {
   return `${count} ${one}${count === 1 ? '' : 's'}`;
-}
-
-/** What the checks of a job showed. */
-export interface Checked {
-  /** Every check ran and passed */
-  verified: boolean;
-  /** A check ran and did not pass. A check the bridge left out is no failure of the work */
-  failed: boolean;
-  summary?: string;
-}
-
-export function checkedOf(job: BridgeJob): Checked | undefined {
-  const verification = job.verification;
-  if (!verification) return undefined;
-  return {
-    verified: verification.verified,
-    failed: verification.checks
-      ? verification.checks.some((check) => !check.ok && check.skipped === undefined)
-      : !verification.verified,
-    ...(verification.summary && { summary: verification.summary }),
-  };
 }
 
 /**

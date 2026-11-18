@@ -8,7 +8,7 @@ The agent bridge of `@cogitator-ai/bridge` (experimental): sessions of different
 pnpm install && pnpm build
 ```
 
-Every example but the second needs no model and no API key: they show the protocol between the sessions, the tools agents call it with, how leave for a call is decided, how a job is done in a worktree of its own, what a job is handed over with, how a recipe has a job done, reviewed and fixed, and how agents debate a question, and play every side themselves. The second runs an agent on a model: Ollama with `qwen2.5:0.5b` by default (`ollama pull qwen2.5:0.5b`), or any model named in `EXAMPLE_MODEL`.
+Every example but the second needs no model and no API key: they show the protocol between the sessions, the tools agents call it with, how leave for a call is decided, how a job is done in a worktree of its own, what a job is handed over with, how a recipe has a job done, reviewed and fixed, how agents debate a question, and how the bridge keeps what became of jobs and chooses an agent by it, and play every side themselves. The second runs an agent on a model: Ollama with `qwen2.5:0.5b` by default (`ollama pull qwen2.5:0.5b`), or any model named in `EXAMPLE_MODEL`.
 
 ## Examples
 
@@ -22,6 +22,7 @@ Every example but the second needs no model and no API key: they show the protoc
 | 06  | `06-memory.ts`       | What a job is handed over with: its context, the lines of its files, the notes of the board, and what the job taught |
 | 07  | `07-recipes.ts`      | A recipe: the bridge has a job done, reviewed by an agent of another harness and fixed, and reports once             |
 | 08  | `08-debate.ts`       | A debate: two agents answer each other until they agree, and a third sums it up                                      |
+| 09  | `09-scoreboard.ts`   | The scoreboard: what became of each job, how each agent did with its interval, and a job handed to `auto`            |
 
 ## Running
 
@@ -34,6 +35,7 @@ npx tsx examples/bridge/05-worktree.ts
 npx tsx examples/bridge/06-memory.ts
 npx tsx examples/bridge/07-recipes.ts
 npx tsx examples/bridge/08-debate.ts
+npx tsx examples/bridge/09-scoreboard.ts
 ```
 
 The examples run their own dispatcher on a throwaway folder. For the dispatcher of your machine, which reaches Claude Code and Codex sessions in their own windows:

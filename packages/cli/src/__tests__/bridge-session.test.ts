@@ -44,7 +44,9 @@ import {
   runBridgeRemember,
   runBridgeDoctor,
   runBridgeInbox,
+  runBridgeResults,
   runBridgeSend,
+  runBridgeSuggest,
   runBridgeCancel,
   runBridgeWait,
   type BridgeSessionContext,
@@ -1015,6 +1017,79 @@ describe('bridge build, review and recipe', () => {
     expect(output()).toContain('Job #6 is the recipe review (submitted).');
   });
 
+  it('name the type of a job, leave the choice of the agent to the bridge and show how jobs went', async () => {
+    const { adapter, started } = starting();
+    hosts.push(await hostBridge({ home, tickMs: 25, adapters: [adapter] }));
+
+    expect(await runBridgeSuggest('code', {}, claude())).toBe(0);
+    expect(output().split('\n')).toEqual([
+      'How jobs of every type of the last 60 days went:',
+      '  codex  no job yet  <- auto takes this one',
+      expect.stringMatching(/^Not enough data to tell the agents apart.+codex comes first/),
+    ]);
+
+    lines = [];
+    expect(await runBridgeDelegate('auto', ['Fix the limiter'], { type: 'code' }, claude())).toBe(
+      0
+    );
+    expect(output().split('\n')).toEqual([
+      expect.stringMatching(/^Job #1 is with codex@cb-proj-\w+ \(submitted\)/),
+      expect.stringMatching(/^ {2}Why codex@cb-proj-\w+: Not enough data to tell the agents apart/),
+    ]);
+    await until(() => started.length === 1, 'the session of the work');
+    await runBridgeSend(['Fixed'], { job: 1, kind: 'report' }, worker(1));
+
+    await runBridgeDelegate(
+      'codex:new',
+      ['Review the work of job 1'],
+      { type: 'review', reviewOf: 1 },
+      claude()
+    );
+    await until(() => started.length === 2, 'the session of the review');
+    await runBridgeSend(
+      ['[major] src/limiter.ts:3 - The limit is off by one'],
+      { job: 2, kind: 'report' },
+      worker(2)
+    );
+
+    lines = [];
+    expect(await runBridgeSuggest('code', {}, claude())).toBe(0);
+    expect(output()).toContain('codex  0 of 1 held, not enough to tell (5 checked jobs are)');
+    lines = [];
+    expect(await runBridgeSuggest(undefined, { json: true }, claude())).toBe(0);
+    expect(JSON.parse(output())).toMatchObject({
+      basis: 'order',
+      best: 'codex',
+      candidates: [{ harness: 'codex', jobs: 2, scored: 1, good: 0, unknown: 1 }],
+    });
+
+    lines = [];
+    expect(await runBridgeResults({}, claude())).toBe(0);
+    expect(output().split('\n')).toEqual([
+      expect.stringMatching(
+        /^#2 {2}codex-2@cb-proj-\w+ {2}review {2}unknown \(it ended, and nobody checked it\) {2}\S+, 2 letters$/
+      ),
+      expect.stringMatching(
+        /^#1 {2}codex@cb-proj-\w+ {2}code {2}bad \(a review found 1 major\) {2}\S+, 2 letters$/
+      ),
+    ]);
+    lines = [];
+    await runBridgeResults({ type: 'docs' }, claude());
+    expect(output()).toBe('No job that fits has ended yet');
+    lines = [];
+    await runBridgeResults({ agent: 'codex', type: 'code', limit: 1, json: true }, claude());
+    const [worst] = JSON.parse(output()) as { job: number; agent: string }[];
+    expect(worst).toMatchObject({ job: 1, harness: 'codex', outcome: 'bad' });
+    lines = [];
+    await runBridgeResults({ agent: worst.agent }, claude());
+    expect(output()).toMatch(/^#1 {2}codex@/);
+    expect(output()).not.toContain('#2');
+
+    lines = [];
+    expect(await runBridgeDelegate('codex', ['More'], { type: 'two words' }, claude())).not.toBe(0);
+    expect(failed()).toContain('A job type is one word');
+  });
+
   it('start a debate and a race, with who takes part named by flags', async () => {
     mkdirSync(join(project, '.git'));
     const { adapter, started } = starting();
@@ -1134,5 +1209,12 @@ describe('the bridge commands of the program', () => {
       'note',
       'permission',
     ]);
+    const names = bridge?.commands.map((command) => command.name()) ?? [];
+    expect(names).toContain('suggest');
+    expect(names).toContain('results');
+    for (const name of ['delegate', 'build', 'race']) {
+      const command = bridge?.commands.find((candidate) => candidate.name() === name);
+      expect(command?.options.some((option) => option.long === '--type')).toBe(true);
+    }
   });
 });

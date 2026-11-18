@@ -14,7 +14,9 @@ import {
   factLine,
   isBridgeError,
   mailText,
+  resultRow,
   shellQuote,
+  suggestionLines,
   waitForMail,
   type BridgeAdapter,
   type BridgePaths,
@@ -210,6 +212,10 @@ export interface BridgeDelegateFlags extends HomeFlags {
   file?: string[];
   contextTokens?: number;
   parent?: number;
+  /** The kind of work, one word: what the scoreboard files the result under */
+  type?: string;
+  /** The job whose work this one reviews */
+  reviewOf?: number;
   json?: boolean;
 }
 
@@ -223,11 +229,13 @@ export async function runBridgeDelegate(
   try {
     const body = await bodyOf(words, context);
     const context_ = contextOf(flags);
-    const { job } = await asSession(flags, context, (client) =>
+    const { job, routed } = await asSession(flags, context, (client) =>
       client.createJob({
         to,
         body,
         ...(flags.title && { title: flags.title }),
+        ...(flags.type && { type: flags.type }),
+        ...(flags.reviewOf !== undefined && { reviewOf: flags.reviewOf }),
         ...(flags.cwd && { cwd: flags.cwd }),
         ...(flags.check?.length && { checks: flags.check.map((command) => ({ command })) }),
         ...(flags.worktree && { worktree: true }),
@@ -241,6 +249,7 @@ export async function runBridgeDelegate(
       context.print(
         `Job #${job.number} is with ${job.to} (${job.state}). Its answer arrives as a letter: nothing to wait for here`
       );
+      if (routed) context.print(`  Why ${job.to}: ${routed}`);
       if (job.isolation === 'worktree') {
         context.print(
           `  It is done in a git worktree of its own. Its work comes back with: cogitator bridge accept ${job.number}`
@@ -295,7 +304,7 @@ export interface BridgeBuildFlags
     BridgeReviewOptions,
     Pick<
       BridgeDelegateFlags,
-      'title' | 'cwd' | 'check' | 'done' | 'constraint' | 'decision' | 'file'
+      'title' | 'cwd' | 'check' | 'done' | 'constraint' | 'decision' | 'file' | 'type'
     > {
   /** False with `--no-worktree`: the work is done in the folder of the caller */
   worktree?: boolean;
@@ -327,6 +336,7 @@ export async function runBridgeBuild(
         to: RECIPE_HARNESS,
         body,
         ...(flags.title && { title: flags.title }),
+        ...(flags.type && { type: flags.type }),
         ...(flags.cwd && { cwd: flags.cwd }),
         recipe: { name: 'build', input },
       })
@@ -380,7 +390,7 @@ export interface BridgeRaceFlags
     HomeFlags,
     Pick<
       BridgeDelegateFlags,
-      'title' | 'cwd' | 'check' | 'done' | 'constraint' | 'decision' | 'file'
+      'title' | 'cwd' | 'check' | 'done' | 'constraint' | 'decision' | 'file' | 'type'
     > {
   /** Who does the job, two to six */
   to?: string[];
@@ -417,6 +427,7 @@ export async function runBridgeRace(
         to: RECIPE_HARNESS,
         body,
         ...(flags.title && { title: flags.title }),
+        ...(flags.type && { type: flags.type }),
         ...(flags.cwd && { cwd: flags.cwd }),
         recipe: { name: 'race', input },
       })
@@ -882,6 +893,71 @@ export async function runBridgeRecall(
       return 0;
     }
     for (const fact of found) context.print(`${fact.id}  ${factLine(fact)}`);
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+export interface BridgeSuggestFlags extends HomeFlags {
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge suggest [type]: how the jobs of each agent went, and who the bridge would
+ * give a job to now. Reads only, so it runs in a session and in a terminal of your own alike.
+ */
+export async function runBridgeSuggest(
+  type: string | undefined,
+  flags: BridgeSuggestFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const client = await connect(flags, context);
+    try {
+      const suggestion = await client.suggest(type?.trim() ? { type: type.trim() } : {});
+      if (flags.json) printJson(suggestion);
+      else for (const line of suggestionLines(suggestion)) context.print(line);
+    } finally {
+      await client.close();
+    }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+export interface BridgeResultsFlags extends HomeFlags {
+  type?: string;
+  /** A harness word such as `codex`, or the name of one agent such as `codex-2@app` */
+  agent?: string;
+  limit?: number;
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge results: what became of the jobs that ended lately, newest first: who
+ * carried each out, its type, whether anything confirmed its result, and what it took.
+ */
+export async function runBridgeResults(
+  flags: BridgeResultsFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const client = await connect(flags, context);
+    try {
+      const results = await client.results({
+        ...(flags.type && { type: flags.type }),
+        ...(flags.agent &&
+          (flags.agent.includes('@') ? { agent: flags.agent } : { harness: flags.agent })),
+        ...(flags.limit !== undefined && { limit: flags.limit }),
+      });
+      if (flags.json) printJson(results);
+      else if (results.length === 0) context.print('No job that fits has ended yet');
+      else for (const result of results) context.print(resultRow(result));
+    } finally {
+      await client.close();
+    }
     return 0;
   } catch (error) {
     return reportFailure(error, { json: flags.json ?? false });
