@@ -824,6 +824,41 @@ describe('fake claude Stop hooks', () => {
     expect(readText('hook-ended')).toBe('ended\n');
     expect(await sessionOf(sessionId)).not.toHaveProperty('pid');
   });
+
+  it('is gone only after the hooks of a session that is stopped have ended', async () => {
+    const leave = 'sleep 0.3; echo leaving >&2; echo ended > hook-ended; exit 0';
+    const command = `trap '${leave}' TERM; echo $$ > hook.pid; while :; do sleep 0.05; done`;
+    const sessionId = await fakes.openClaudeWindow({
+      cwd: work,
+      settings: stopHooks({ command, asyncRewake: true }),
+    });
+    await fakes.say(sessionId, 'say: first');
+    await until(() => readNumber('hook.pid') > 0, 'the hook to wait');
+    const hookPid = readNumber('hook.pid');
+
+    const stopped = await fakes.run('claude', ['stop', sessionId]);
+
+    expect(stopped.code).toBe(0);
+    expect(isRunning(hookPid)).toBe(false);
+    expect(readText('hook-ended')).toBe('ended\n');
+  });
+
+  it('kills a hook that does not end when its session is stopped', async () => {
+    const command = `trap '' TERM; echo $$ > hook.pid; while :; do sleep 0.05; done`;
+    const sessionId = await fakes.openClaudeWindow({
+      cwd: work,
+      settings: stopHooks({ command, asyncRewake: true }),
+    });
+    await fakes.say(sessionId, 'say: first');
+    await until(() => readNumber('hook.pid') > 0, 'the hook to wait');
+    const hookPid = readNumber('hook.pid');
+
+    const stopped = await fakes.run('claude', ['stop', sessionId]);
+
+    expect(stopped.code).toBe(0);
+    await until(() => !isRunning(hookPid), 'the hook to die');
+    expect(await sessionOf(sessionId)).not.toHaveProperty('pid');
+  });
 });
 
 describe('fake claude permission dialogs', () => {

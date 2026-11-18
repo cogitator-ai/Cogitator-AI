@@ -26,6 +26,11 @@ export const POLL_MS = 25;
 
 const RUN_TIMEOUT_MS = 30_000;
 const STOP_GRACE_MS = 5_000;
+/**
+ * How long the shells of a process that is ending get to end themselves. Shorter than
+ * STOP_GRACE_MS, so that the process is gone before whoever stops it gives up on it
+ */
+const SHELL_GRACE_MS = 3_000;
 const DEFAULT_MAX_LIFE_MS = 120_000;
 const STATE_WATCH_MS = 100;
 const STOP_SIGNALS = ['SIGTERM', 'SIGINT'];
@@ -398,8 +403,11 @@ export function boundLife(stateFile, stop) {
   }, STATE_WATCH_MS);
 }
 
-/** Child shells of this process that still run */
-const shells = new Set();
+/** Child shells of this process that still run, each with a promise of its end */
+const shells = new Map();
+
+/** Settles when the process that is ending has nothing going any more */
+let abandoning;
 
 function signalGroup(pid, signal) {
   if (pid !== undefined) send(-pid, signal);
@@ -415,7 +423,8 @@ function signalGroup(pid, signal) {
 
 /**
  * Starts `sh -c <command>` in a process group of its own, so that a kill reaches whatever the
- * command started.
+ * command started. A process that is ending starts none, and the result of a shell it still had
+ * reaches no one: what waited for it stays where it was, as if the process were gone already.
  * @param {string} command
  * @param {object} options
  * @param {string} options.cwd
@@ -426,13 +435,15 @@ function signalGroup(pid, signal) {
  * @returns {{ pid: number | undefined, done: Promise<ShellResult> }}
  */
 export function startShell(command, { cwd, env, timeoutMs, killSignal, input }) {
+  if (abandoning !== undefined) return { pid: undefined, done: new Promise(() => undefined) };
   const child = spawn('sh', ['-c', command], {
     cwd,
     env,
     detached: true,
     stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   });
-  shells.add(child);
+  const { promise: ended, resolve: end } = Promise.withResolvers();
+  shells.set(child, ended);
   const done = new Promise((settle) => {
     const output = { stdout: '', stderr: '' };
     let timedOut = false;
@@ -446,7 +457,8 @@ export function startShell(command, { cwd, env, timeoutMs, killSignal, input }) 
     const finish = (code) => {
       clearTimeout(timer);
       shells.delete(child);
-      settle({ code, ...output, timedOut });
+      end();
+      if (abandoning === undefined) settle({ code, ...output, timedOut });
     };
     child.on('error', (error) => {
       output.stderr += error.message;
@@ -461,10 +473,26 @@ export function startShell(command, { cwd, env, timeoutMs, killSignal, input }) 
   return { pid: child.pid, done };
 }
 
-/** Ends what this process still has going before it stops: its child shells and its locks */
+/**
+ * Ends what this process still has going before it stops: its child shells and its locks. The
+ * process has to stay until this settles. A shell that is asked to end may still write to its
+ * pipes, if only the word of its shell on a child the signal killed, and one that writes to a pipe
+ * nobody reads any more dies of SIGPIPE before its own handler of the signal has run.
+ * @returns {Promise<void>}
+ */
 export function abandonWork() {
-  for (const child of shells) signalGroup(child.pid, 'SIGTERM');
-  for (const file of [...heldLocks]) unlock(file);
+  abandoning ??= endShells().then(() => {
+    for (const file of [...heldLocks]) unlock(file);
+  });
+  return abandoning;
+}
+
+/** Asks the shells to end and waits for them, killing those that take longer than SHELL_GRACE_MS */
+async function endShells() {
+  const ended = [...shells.values()];
+  for (const child of shells.keys()) signalGroup(child.pid, 'SIGTERM');
+  await Promise.race([Promise.all(ended), sleep(SHELL_GRACE_MS)]);
+  for (const child of shells.keys()) signalGroup(child.pid, 'SIGKILL');
 }
 
 /**
