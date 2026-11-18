@@ -458,6 +458,49 @@ describe('the conductor of the bridge', () => {
     expect((await kit.bridge.results()).find((result) => result.job === 2)?.outcome).toBe('good');
   });
 
+  it('hands on no more findings than a report takes, those of the last review first', async () => {
+    const { kit, claude, codex } = await rig();
+    await kit.bridge.createJob(kit.claude.name, {
+      to: 'recipe',
+      body: 'Add a rate limiter',
+      recipe: { name: 'build', input: BUILD },
+    });
+    await taskOf(codex, 2);
+    await kit.bridge.send(kit.codex.name, { job: 2, kind: 'report', body: 'Done' });
+    const beside = (round: number, count: number) =>
+      Array.from({ length: count }, (_, at) => ({
+        severity: 'minor' as const,
+        summary: `Old fault ${round}.${at + 1}`,
+        beside: true,
+      }));
+    const review = await taskOf(claude, 3);
+    await kit.bridge.send(review.agent, {
+      job: 3,
+      kind: 'report',
+      body: 'Read',
+      findings: [{ severity: 'major', summary: 'The window never resets' }, ...beside(1, 60)],
+    });
+    await taskOf(codex, 4);
+    await kit.bridge.send(kit.codex.name, { job: 4, kind: 'report', body: 'Fixed' });
+    await taskOf(claude, 5);
+    await kit.bridge.send(review.agent, {
+      job: 5,
+      kind: 'report',
+      body: 'Read',
+      findings: beside(2, 50),
+    });
+
+    const done = await finished(kit, 1);
+    expect(done.state).toBe('completed');
+    expect(done.findings).toHaveLength(100);
+    expect(done.findings?.slice(0, 50)).toEqual(beside(2, 50));
+    expect(done.findings?.[50]).toEqual(beside(1, 1)[0]);
+    const text = (await kit.bridge.letters({ job: 1, kinds: ['report'] }))[0]?.body;
+    expect(text).toContain('Beside the job the review noticed 110 minor.');
+    expect(text).toContain('[beside minor] Old fault 1.60');
+    expect(kit.errors).toEqual([]);
+  });
+
   it('stops when a round of fixes left no fewer findings open, and goes on while each leaves fewer', async () => {
     const { kit, claude, codex } = await rig();
     const major = (summary: string) => ({ severity: 'major' as const, summary });
