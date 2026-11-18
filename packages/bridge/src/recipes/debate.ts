@@ -139,6 +139,14 @@ function turnText(
   ].join('\n\n');
 }
 
+/**
+ * The seats that took part: those that answered in some round. Agreement is theirs to reach
+ * together, so one that argued before and is silent now has not agreed.
+ */
+function tookPart(turns: readonly Turn[]): number[] {
+  return [...new Set(turns.filter((turn) => turn.said !== undefined).map((turn) => turn.seat))];
+}
+
 function stanceOf(said: string | undefined): boolean | undefined {
   const last = [
     ...(said ?? '').matchAll(/^[ \t]*\*{0,2}STANCE:\*{0,2}[ \t]*(agree|disagree)\b/gim),
@@ -183,15 +191,19 @@ async function round(
     })
   );
   const spoke = turns.filter((turn) => turn.said !== undefined);
+  const all = [...state.turns, ...turns];
+  const agreed = tookPart(all).every(
+    (seat) => turns.find((turn) => turn.seat === seat)?.agrees === true
+  );
   const ended: Ended | undefined =
     spoke.length < 2
       ? 'silent'
-      : at > 1 && spoke.every((turn) => turn.agrees === true)
+      : at > 1 && agreed
         ? 'agreed'
         : at === rounds
           ? 'rounds'
           : undefined;
-  return { turns: [...state.turns, ...turns], ...(ended && { ended }) };
+  return { turns: all, ...(ended && { ended }) };
 }
 
 async function sumUp(
@@ -230,9 +242,12 @@ function summary(state: DebateState, seats: Seat[]): Partial<DebateState> {
   const last = Math.max(0, ...state.turns.map((turn) => turn.round));
   const closing = state.turns.filter((turn) => turn.round === last && turn.said !== undefined);
   const agreeing = closing.filter((turn) => turn.agrees === true).length;
+  const part = tookPart(state.turns).length;
   const how =
     state.ended === 'agreed'
-      ? 'all of them hold the same position now'
+      ? part < seats.length
+        ? `the ${part} that took part hold the same position now`
+        : 'all of them hold the same position now'
       : state.ended === 'silent'
         ? 'fewer than two of them answered'
         : `the rounds ran out, and ${agreeing} of ${closing.length} said they agree at the end`;
@@ -298,7 +313,8 @@ function debateWorkflow(input: DebateInput, run: RecipeRun): Workflow<DebateStat
  * `debate`: a question to several agents, by the rules a debate of the runtime's swarms goes by.
  * In the first round each answers the question alone. From the second on each sees what the
  * others said in the rounds before and answers them, and ends its turn by saying whether it
- * agrees now. The debate ends when all of them agree or the rounds run out. A `moderator` then
+ * agrees now. The debate ends when all that took part agree in the same round, or the rounds run
+ * out: a debater that argued before and gives no answer now has not agreed. A `moderator` then
  * sums it up: the positions, what is agreed and what is not, the strongest arguments, a
  * recommendation. Without one the report carries the positions of the last round.
  *

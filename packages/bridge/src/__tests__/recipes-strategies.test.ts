@@ -436,6 +436,52 @@ describe('the recipe debate', () => {
     expect(errors).toEqual([]);
   });
 
+  it('does not take the silence of a debater that argued before for agreement', async () => {
+    await start('debate', { debaters: ['codex', 'claude', 'codex'], rounds: 3 }, 'Tabs or spaces?');
+    const one = await taskOf(codex, 2);
+    const two = await taskOf(claude, 3);
+    const three = await taskOf(codex, 4);
+    for (const [task, job] of [
+      [one, 2],
+      [two, 3],
+      [three, 4],
+    ] as const) {
+      await bridge.send(task.agent, { job, kind: 'report', body: 'Mine.\nSTANCE: disagree' });
+    }
+
+    const second = await until(async () => {
+      const turns = (await bridge.jobs({ parent: 1 })).filter((job) => job.number > 4);
+      expect(turns).toHaveLength(3);
+      return turns;
+    });
+    for (const turn of second) {
+      await bridge.send(
+        turn.to,
+        turn.to === three.agent
+          ? { job: turn.number, kind: 'report', body: 'Cannot go on', outcome: 'failed' }
+          : { job: turn.number, kind: 'report', body: 'Fine.\nSTANCE: agree' }
+      );
+    }
+
+    const third = await until(async () => {
+      const turns = (await bridge.jobs({ parent: 1 })).filter((job) => job.number > 7);
+      expect(turns).toHaveLength(3);
+      return turns;
+    });
+    for (const turn of third) {
+      await bridge.send(turn.to, {
+        job: turn.number,
+        kind: 'report',
+        body: 'Fine.\nSTANCE: agree',
+      });
+    }
+    const report = await reportOf(1);
+    expect(report).toContain(
+      'The debate of 3 agents ended after 3 rounds: all of them hold the same position now.'
+    );
+    expect(await bridge.jobs({ parent: 1 })).toHaveLength(9);
+  });
+
   it('ends when the rounds run out, with the positions of the last round', async () => {
     await start('debate', { debaters: ['codex', 'codex'], rounds: 1 }, 'Tabs or spaces?');
     const one = await taskOf(codex, 2);
