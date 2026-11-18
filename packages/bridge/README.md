@@ -88,7 +88,7 @@ The dispatcher of `cogitator bridge serve` reaches both harnesses with the comma
 | The tools know it by    | a hook that adds the session to every tool call           | the thread Codex names in every tool call                     |
 | Before it can start     | Claude Code must trust the folder                         | nothing                                                       |
 
-**Claude Code.** Nothing is pushed into a window from outside. After every turn a background hook of the session runs `cogitator bridge wait`, which waits at the dispatcher and, when a letter comes, exits with code 2 and the letter on stderr: that wakes the session with the letter as its next input (`asyncRewake` in Claude Code's hooks). Under the letter it adds one line saying how to answer through the bridge. While the hook waits the session is free, you can talk to it. A session the bridge starts carries the hook itself. For the sessions you open yourself, `cogitator bridge install` puts it into the project's `.claude/settings.local.json`:
+**Claude Code.** Nothing is pushed into a window from outside. After every turn a background hook of the session runs `cogitator bridge wait`, which waits at the dispatcher and, when a letter comes, exits with code 2 and the letter on stderr: that wakes the session with the letter as its next input (`asyncRewake` in Claude Code's hooks). Under the letter it adds one line saying how to answer through the bridge. While the hook waits the session is free, you can talk to it. A session sometimes ends its turn with its answer said only in its own window, where the agent that waits for the job does not read. So a session that has waited for mail for a minute with a job it has not reported on gets a reminder to report, as a letter that wakes it. When it does not react within the reply timeout of the job, the job fails with that reason, rather than staying open until its deadline. A session the bridge starts carries the hook itself. For the sessions you open yourself, `cogitator bridge install` puts it into the project's `.claude/settings.local.json`:
 
 ```json
 {
@@ -307,6 +307,8 @@ await bridge.createJob({
 
 **Who does a later step.** The fixes go back to the author and the second look to the first reviewer when the bridge can wake them: `wakes(agent)` says whether a session waits for its mail or its harness wakes it for a letter. One that would only find the letter when a person opens it, such as a Codex thread that is open nowhere while no local daemon runs, is not waited for. A fresh session of the same harness gets the step then, with what it needs to know in the letter: what the job was, where the work lies, and what was found.
 
+**Leave for what a step runs.** An agent that works on a step asks leave for a call its rules do not settle, and the rules that count are those of whoever started the recipe. A reviewer nearly always starts with `git diff` and the tests of the project, so allow those in the settings of the project (`Bash(git diff:*)`, `Bash(git status:*)`, `Bash(npm test:*)`) for a recipe to run without you. What they do not allow waits for you in `cogitator bridge asks`, and the step waits with it.
+
 **After a restart.** Every run is a workflow of [`@cogitator-ai/workflows`](https://www.npmjs.com/package/@cogitator-ai/workflows), an optional peer dependency, with a checkpoint after each step. A step hands its job over under an id made of the run and the step, so a step that runs again finds the job it handed over the first time. With checkpoints that outlive the process (`FileCheckpointStore`), a dispatcher that is started again picks every open recipe up where it was, and nothing is done twice. `cogitator bridge serve` keeps them in `recipes` in the folder of the bridge. In memory, the default, a run that was cut off starts its steps over and still finds the jobs it handed over.
 
 **A recipe of your own** is a workflow whose steps hand jobs over through the run:
@@ -430,25 +432,26 @@ Folders are compared by their real path, so a project reached through a symlink 
 
 Each number is a default that `hostBridge({ limits })` changes.
 
-| Limit             | Default     | What happens                                                                                                             |
-| ----------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Depth             | 3           | A job handed over from inside a job from inside a job is the deepest. One more is refused                                |
-| Letters per job   | 60          | The job fails, both sides are told. The report that ends the job always goes through                                     |
-| Time per job      | 4 hours     | The job fails, both sides are told                                                                                       |
-| Reply timeout     | 30 minutes  | The one who owes an answer, or did not pick a job up, is reminded. After as long again the job fails                     |
-| Jobs out          | 20          | An agent with that many jobs still in progress cannot hand over another                                                  |
-| Jobs per hour     | 60          | Handing over faster is refused as a loop                                                                                 |
-| Sessions starting | 2           | No more sessions are started at once                                                                                     |
-| Silence           | 12 hours    | A session with no job in progress is taken for gone, unless its harness lists it or its hook waits                       |
-| Session check     | 1 minute    | How often a harness that can list its sessions is asked which of them still run                                          |
-| Window notice     | 10 minutes  | An agent that waits for a person at its own window is said so to whoever handed it a job, and not again within this time |
-| Person's answer   | 4 hours     | The person is reminded of a letter that waits for them. After as long again the job fails                                |
-| Delivery          | 5 attempts  | Retried with a growing wait, then left for the inbox                                                                     |
-| Worktrees         | 2           | A third job of the project that asks for a worktree of its own is refused while two are in progress                      |
-| Check             | 10 minutes  | A check that runs longer is ended with everything it started, and fails                                                  |
-| Worktree kept     | 7 days      | The worktree of a finished job nobody took or dropped is removed, its work kept under a ref                              |
-| Context           | 6000 tokens | The block the bridge adds under a job keeps to it: files are cut or only named, notes stop when it is full               |
-| Context wait      | 10 seconds  | A job whose context could not be put together in that time is handed over without it                                     |
+| Limit             | Default     | What happens                                                                                                                                             |
+| ----------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Depth             | 3           | A job handed over from inside a job from inside a job is the deepest. One more is refused                                                                |
+| Letters per job   | 60          | The job fails, both sides are told. The report that ends the job always goes through                                                                     |
+| Time per job      | 4 hours     | The job fails, both sides are told                                                                                                                       |
+| Reply timeout     | 30 minutes  | The one who owes an answer, or did not pick a job up, is reminded. After as long again the job fails                                                     |
+| Jobs out          | 20          | An agent with that many jobs still in progress cannot hand over another                                                                                  |
+| Jobs per hour     | 60          | Handing over faster is refused as a loop                                                                                                                 |
+| Sessions starting | 2           | No more sessions are started at once                                                                                                                     |
+| Silence           | 12 hours    | A session with no job in progress is taken for gone, unless its harness lists it or its hook waits                                                       |
+| Session check     | 1 minute    | How often a harness that can list its sessions is asked which of them still run                                                                          |
+| Window notice     | 10 minutes  | An agent that waits for a person at its own window is said so to whoever handed it a job, and not again within this time                                 |
+| Person's answer   | 4 hours     | The person is reminded of a letter that waits for them. After as long again the job fails                                                                |
+| Delivery          | 5 attempts  | Retried with a growing wait, then left for the inbox                                                                                                     |
+| Worktrees         | 2           | A third job of the project that asks for a worktree of its own is refused while two are in progress                                                      |
+| Check             | 10 minutes  | A check that runs longer is ended with everything it started, and fails                                                                                  |
+| Worktree kept     | 7 days      | The worktree of a finished job nobody took or dropped is removed, its work kept under a ref                                                              |
+| Context           | 6000 tokens | The block the bridge adds under a job keeps to it: files are cut or only named, notes stop when it is full                                               |
+| Context wait      | 10 seconds  | A job whose context could not be put together in that time is handed over without it                                                                     |
+| Report reminder   | 1 minute    | A session that has waited for mail that long with a job it has not reported on is reminded to report. No reaction within the reply timeout fails the job |
 
 Two more rules have no number. A letter that says what the previous one in the same direction said is not delivered, and neither is a job the same agent already has from the caller and has not finished.
 

@@ -334,6 +334,11 @@ export interface BridgeJobRecord {
   personWaitSince?: string;
   /** Why the job failed or was canceled */
   reason?: string;
+  /**
+   * ISO 8601 time the bridge last reminded the agent that carries the job out to report on it,
+   * after its session ended a turn without a word on the job
+   */
+  reportAskedAt?: string;
   verification?: JobVerification;
 }
 
@@ -575,6 +580,12 @@ export interface BridgeLimits {
   contextTokens: number;
   /** How long the bridge takes to put that block together before the job goes without it, in ms */
   contextTimeoutMs: number;
+  /**
+   * How long a session waits for mail with a job it has not reported on before the bridge
+   * reminds it to report, in ms: a session may end its turn with its answer said only in its own
+   * window, where nobody who waits for it reads
+   */
+  reportReminderMs: number;
 }
 
 export const BridgeLimitsSchema = z.strictObject({
@@ -611,6 +622,7 @@ export const BridgeLimitsSchema = z.strictObject({
     .max(365 * 86_400_000),
   contextTokens: z.number().int().positive().max(50_000),
   contextTimeoutMs: z.number().int().positive().max(600_000),
+  reportReminderMs: z.number().int().positive().max(86_400_000),
 });
 
 export const DEFAULT_LIMITS: BridgeLimits = {
@@ -635,4 +647,5 @@ export const DEFAULT_LIMITS: BridgeLimits = {
   worktreeKeepMs: 7 * 86_400_000,
   contextTokens: 6_000,
   contextTimeoutMs: 10_000,
+  reportReminderMs: 60_000,
 };

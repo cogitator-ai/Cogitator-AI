@@ -78,6 +78,7 @@ export const BridgeJobRecordSchema = z.object({
   deadlineAt: z.string(),
   endedAt: z.string().optional(),
   personWaitSince: z.string().optional(),
+  reportAskedAt: z.string().optional(),
   reason: z.string().optional(),
   verification: JobVerificationSchema.optional(),
 });
