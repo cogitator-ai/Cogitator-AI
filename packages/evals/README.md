@@ -918,22 +918,23 @@ result.report('ci');
 
 ### Statistics
 
-| Export               | Description                                                     |
-| -------------------- | --------------------------------------------------------------- |
-| `pairedTTest`        | Paired t-test for continuous metric comparison                  |
-| `wilcoxonSignedRank` | Wilcoxon signed-rank test, zeros dropped, exact up to 20 pairs  |
-| `mcnemarsTest`       | McNemar's test (chi-square, continuity corrected) for binary    |
-| `mcnemarExact`       | Exact McNemar's test, the binomial test of the discordant pairs |
-| `holm`               | Holm-Bonferroni adjusted p-values                               |
-| `bootstrapCI`        | Seeded percentile bootstrap confidence interval of the mean     |
-| `cohensD`            | Cohen's d of paired differences (dz)                            |
-| `pearson`            | Pearson's correlation                                           |
-| `spearman`           | Spearman's rank correlation                                     |
-| `mean`               | Arithmetic mean                                                 |
-| `median`             | Median value                                                    |
-| `stdDev`             | Sample standard deviation                                       |
-| `percentile`         | Arbitrary percentile                                            |
-| `aggregate`          | Full stats: mean, median, min, max, stdDev, p50, p95, p99       |
+| Export               | Description                                                      |
+| -------------------- | ---------------------------------------------------------------- |
+| `pairedTTest`        | Paired t-test for continuous metric comparison                   |
+| `wilcoxonSignedRank` | Wilcoxon signed-rank test, zeros dropped, exact up to 20 pairs   |
+| `mcnemarsTest`       | McNemar's test (chi-square, continuity corrected) for binary     |
+| `mcnemarExact`       | Exact McNemar's test, the binomial test of the discordant pairs  |
+| `holm`               | Holm-Bonferroni adjusted p-values                                |
+| `bootstrapCI`        | Seeded percentile bootstrap confidence interval of the mean      |
+| `wilsonCI`           | Wilson score confidence interval of a share, such as a pass rate |
+| `cohensD`            | Cohen's d of paired differences (dz)                             |
+| `pearson`            | Pearson's correlation                                            |
+| `spearman`           | Spearman's rank correlation                                      |
+| `mean`               | Arithmetic mean                                                  |
+| `median`             | Median value                                                     |
+| `stdDev`             | Sample standard deviation                                        |
+| `percentile`         | Arbitrary percentile                                             |
+| `aggregate`          | Full stats: mean, median, min, max, stdDev, p50, p95, p99        |
 
 ### Agent Tools
 

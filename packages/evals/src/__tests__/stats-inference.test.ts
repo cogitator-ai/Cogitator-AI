@@ -3,6 +3,8 @@ import { bootstrapCI } from '../stats/bootstrap';
 import { cohensD } from '../stats/effect-size';
 import { holm } from '../stats/holm';
 import { mcnemarExact } from '../stats/mcnemar';
+import { normalQuantile } from '../stats/normal';
+import { wilsonCI } from '../stats/proportion';
 import { wilcoxonSignedRank } from '../stats/wilcoxon';
 import { pearson, spearman } from '../stats/correlation';
 import { pairedTTest } from '../stats/t-test';
@@ -41,6 +43,64 @@ describe('bootstrapCI', () => {
     expect(() => bootstrapCI(values, { confidence: 1 })).toThrow();
     expect(() => bootstrapCI(values, { resamples: 0 })).toThrow();
     expect(() => bootstrapCI(values, { resamples: 1.5 })).toThrow();
+  });
+});
+
+describe('wilsonCI', () => {
+  it('matches the published interval of a share', () => {
+    const eight = wilsonCI(8, 10);
+    expect(eight.rate).toBe(0.8);
+    expect(eight.low).toBeCloseTo(0.4902, 4);
+    expect(eight.high).toBeCloseTo(0.9433, 4);
+    const half = wilsonCI(50, 100);
+    expect(half.low).toBeCloseTo(0.4038, 4);
+    expect(half.high).toBeCloseTo(0.5962, 4);
+  });
+
+  it('keeps its width when every trial went the same way', () => {
+    const all = wilsonCI(10, 10);
+    expect(all.high).toBe(1);
+    expect(all.low).toBeCloseTo(0.7225, 4);
+    const none = wilsonCI(0, 10);
+    expect(none.low).toBe(0);
+    expect(none.high).toBeCloseTo(0.2775, 4);
+  });
+
+  it('narrows with more trials and widens with more confidence', () => {
+    const few = wilsonCI(8, 10);
+    const many = wilsonCI(80, 100);
+    expect(many.high - many.low).toBeLessThan(few.high - few.low);
+    const sure = wilsonCI(8, 10, { confidence: 0.99 });
+    expect(sure.low).toBeLessThan(few.low);
+    expect(sure.high).toBeGreaterThan(few.high);
+    const almost = wilsonCI(8, 10, { confidence: 1 - 1e-16 });
+    expect(almost.low).toBeGreaterThan(0);
+    expect(almost.low).toBeLessThan(sure.low);
+    expect(almost.high).toBeLessThan(1);
+  });
+
+  it('is all NaN for no trials and refuses counts that are not counts', () => {
+    expect(wilsonCI(0, 0)).toEqual({ low: Number.NaN, high: Number.NaN, rate: Number.NaN });
+    expect(() => wilsonCI(3, 2)).toThrow(/cannot exceed/);
+    expect(() => wilsonCI(-1, 2)).toThrow(/non-negative integer/);
+    expect(() => wilsonCI(1.5, 2)).toThrow(/non-negative integer/);
+    expect(() => wilsonCI(1, 2, { confidence: 1 })).toThrow();
+  });
+});
+
+describe('normalQuantile', () => {
+  it('gives the z of the usual confidence levels', () => {
+    expect(normalQuantile(0.975)).toBeCloseTo(1.959964, 6);
+    expect(normalQuantile(0.995)).toBeCloseTo(2.575829, 6);
+    expect(normalQuantile(0.5)).toBeCloseTo(0, 9);
+    expect(normalQuantile(0.025)).toBeCloseTo(-1.959964, 6);
+    expect(normalQuantile(0.001)).toBeCloseTo(-3.090232, 6);
+  });
+
+  it('is NaN outside the open interval', () => {
+    expect(normalQuantile(0)).toBeNaN();
+    expect(normalQuantile(1)).toBeNaN();
+    expect(normalQuantile(Number.NaN)).toBeNaN();
   });
 });
 

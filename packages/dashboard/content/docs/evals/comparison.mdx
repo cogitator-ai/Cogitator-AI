@@ -198,6 +198,7 @@ import {
   mcnemarExact,
   holm,
   bootstrapCI,
+  wilsonCI,
   cohensD,
   pearson,
   spearman,
@@ -218,6 +219,8 @@ holm([0.01, 0.04, 0.03]); // [0.03, 0.06, 0.06]
 
 bootstrapCI([0.1, 0.3, 0.2, 0.4], { confidence: 0.95, resamples: 2000, seed: 1 });
 // { low, high, mean }
+
+wilsonCI(10, 10); // { low: 0.72, high: 1, rate: 1 }: a pass rate, where a bootstrap would say 1 to 1
 
 cohensD([0.1, 0.2, 0.15]); // mean / standard deviation of the differences
 
