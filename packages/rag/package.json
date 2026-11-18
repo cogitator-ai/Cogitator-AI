@@ -52,7 +52,7 @@
   },
   "optionalDependencies": {
     "cheerio": "^1.0.0",
-    "papaparse": "^5.7.0",
+    "papaparse": "^5.7.1",
     "pdf-parse": "^2.4.5"
   },
   "devDependencies": {

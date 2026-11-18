@@ -39,8 +39,8 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
-    "nanoid": "^6.0.1",
-    "ws": "^8.22.0",
+    "nanoid": "^6.0.2",
+    "ws": "^8.23.0",
     "zod": "^4.6.6"
   },
   "peerDependencies": {

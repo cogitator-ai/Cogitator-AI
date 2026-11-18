@@ -40,8 +40,8 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^2.0.2",
-    "@clack/prompts": "^1.8.1",
+    "@agentclientprotocol/sdk": "^2.7.0",
+    "@clack/prompts": "^1.9.0",
     "@cogitator-ai/acp": "workspace:*",
     "@cogitator-ai/app-server": "workspace:*",
     "@cogitator-ai/bridge": "workspace:*",
@@ -57,9 +57,9 @@
     "@cogitator-ai/studio": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "@cogitator-ai/workflows": "workspace:*",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^13.2.0",
     "chalk": "^6.0.1",
-    "commander": "^15.0.0",
+    "commander": "^15.1.0",
     "create-cogitator-app": "workspace:^",
     "esbuild": "^0.28.2",
     "ora": "^9.4.1",

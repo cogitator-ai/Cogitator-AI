@@ -53,23 +53,23 @@
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "cron-parser": "^5.10.1",
-    "nanoid": "^6.0.1",
+    "cron-parser": "^5.10.6",
+    "nanoid": "^6.0.2",
     "zod": "^4.6.6"
   },
   "devDependencies": {
-    "@atproto/api": "0.24.0",
+    "@atproto/api": "0.32.0",
     "@types/node": "^22.20.4",
     "@types/nodemailer": "^8.0.2",
     "@types/ws": "^8.18.2",
     "@whiskeysockets/baileys": "7.0.0-rc14",
-    "better-sqlite3": "^13.0.3",
-    "imapflow": "^2.7.0",
-    "nodemailer": "^10.1.4",
-    "postal-mime": "^4.1.2",
+    "better-sqlite3": "^13.2.0",
+    "imapflow": "^2.11.0",
+    "nodemailer": "^10.5.0",
+    "postal-mime": "^4.2.1",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3",
-    "ws": "^8.22.0"
+    "ws": "^8.23.0"
   },
   "peerDependencies": {
     "@cogitator-ai/browser": "workspace:>=0.4.68",

@@ -65,7 +65,7 @@
     }
   },
   "optionalDependencies": {
-    "papaparse": "^5.7.0"
+    "papaparse": "^5.7.1"
   },
   "devDependencies": {
     "@cogitator-ai/core": "workspace:*",

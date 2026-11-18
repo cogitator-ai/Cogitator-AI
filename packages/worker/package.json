@@ -41,8 +41,8 @@
     "@cogitator-ai/swarms": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "@cogitator-ai/workflows": "workspace:*",
-    "bullmq": "^6.3.11",
-    "nanoid": "^6.0.1",
+    "bullmq": "^6.7.6",
+    "nanoid": "^6.0.2",
     "zod": "^4.6.6"
   },
   "devDependencies": {
