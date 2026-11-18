@@ -171,6 +171,8 @@ export { wilcoxonSignedRank } from './stats/wilcoxon';
 export type { WilcoxonResult } from './stats/wilcoxon';
 export { bootstrapCI } from './stats/bootstrap';
 export type { BootstrapOptions, BootstrapInterval } from './stats/bootstrap';
+export { wilsonCI } from './stats/proportion';
+export type { ProportionOptions, ProportionInterval } from './stats/proportion';
 export { cohensD } from './stats/effect-size';
 export { holm } from './stats/holm';
 export { pearson, spearman } from './stats/correlation';

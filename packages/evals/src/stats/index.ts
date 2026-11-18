@@ -7,6 +7,8 @@ export { wilcoxonSignedRank } from './wilcoxon';
 export type { WilcoxonResult } from './wilcoxon';
 export { bootstrapCI } from './bootstrap';
 export type { BootstrapOptions, BootstrapInterval } from './bootstrap';
+export { wilsonCI } from './proportion';
+export type { ProportionOptions, ProportionInterval } from './proportion';
 export { cohensD } from './effect-size';
 export { holm } from './holm';
 export { pearson, spearman } from './correlation';
