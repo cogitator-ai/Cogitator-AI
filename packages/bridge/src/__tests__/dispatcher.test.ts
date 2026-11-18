@@ -1443,6 +1443,7 @@ describe('status and close', () => {
       adapters: ['gemini', 'qwen'],
       startable: ['qwen'],
       waiting: [],
+      limited: [],
     });
   });
 

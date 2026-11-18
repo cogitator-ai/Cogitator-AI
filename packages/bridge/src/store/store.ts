@@ -3,6 +3,7 @@ import type {
   AgentRecord,
   AgentStatus,
   DeliveryState,
+  HarnessLimit,
   JobState,
   JournalEntry,
   Letter,
@@ -158,6 +159,12 @@ export interface BridgeStore {
   countLetters(filter?: LetterFilter): number;
   /** The agents that have letters in the queue */
   queuedRecipients(): string[];
+
+  /** Notes that a harness takes no job until its limit is over, in place of what was noted before */
+  putLimit(limit: HarnessLimit): void;
+  /** The harnesses noted as out of their limit, by name, whether the time has passed or not */
+  listLimits(): HarnessLimit[];
+  dropLimit(harness: string): void;
 
   appendJournal(entry: Omit<JournalEntry, 'seq'>): JournalEntry;
   readJournal(query?: JournalQuery): JournalEntry[];

@@ -12,6 +12,7 @@ import type {
   SessionRequest,
 } from '../adapter.js';
 import { isBridgeError } from '../errors.js';
+import { limitOf, type LimitSignal } from '../limit.js';
 import { bridgePaths, findProjectRoot } from '../paths.js';
 import { HARNESSES, type CallerIdentity, type JobState } from '../types.js';
 import {
@@ -154,15 +155,21 @@ export function codexToolsServerArgs(
 
 /**
  * What a `codex exec` that ended leaves to report: the last message of the thread, or why the
- * turn failed. `output` is what it wrote with `--json`, `code` its exit code, null after a signal.
+ * turn failed, and the limit it ran into when that is why. `output` is what it wrote with
+ * `--json`, `code` its exit code, null after a signal. A limit is read only from what Codex says
+ * the turn failed with (`turn.failed`), or what it printed when it ended before any turn: never
+ * from a message of the agent, and never from an `error` event, which Codex also sends for what
+ * it then tries again.
  */
 export function codexTurnReport(
   output: string,
-  code: number | null
-): { body: string; failed: boolean } {
+  code: number | null,
+  now: number = Date.now()
+): { body: string; failed: boolean; limit?: LimitSignal } {
   let message: string | undefined;
   let turnFailed = false;
   let reason: string | undefined;
+  let failure: string | undefined;
   const said: string[] = [];
   for (const line of execLines(output)) {
     if ('text' in line) {
@@ -180,17 +187,21 @@ export function codexTurnReport(
           ? textOf((error as { message?: unknown }).message)
           : undefined;
       reason = told ?? reason;
+      failure = told ?? failure;
     } else if (type === 'error') {
       reason = textOf(line.event.message) ?? reason;
     }
   }
   if (code === 0 && !turnFailed) return { body: message ?? 'Done', failed: false };
-  const why = reason ?? failureOf({ code, stdout: '', stderr: said.join('\n') });
+  const died = failureOf({ code, stdout: '', stderr: said.join('\n') });
+  const why = reason ?? died;
+  const limit = limitOf(failure ?? (turnFailed ? '' : died), now);
   return {
     body:
       `codex exec failed before the thread finished its turn: ${why}` +
       (message ? `\nIts last message: ${message}` : ''),
     failed: true,
+    ...(limit && { limit }),
   };
 }
 
@@ -220,7 +231,9 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
 
   /**
    * Reports for a thread whose `codex exec` ended, unless the job is over or the thread wrote on
-   * it itself: a thread that reaches the bridge speaks for itself.
+   * it itself: a thread that reaches the bridge speaks for itself. A turn that ended on the
+   * usage limit of Codex is no failure of the job: the bridge is told of the limit, and hands
+   * the job to another agent.
    */
   async function reportFor(
     request: SessionRequest,
@@ -238,9 +251,16 @@ export function codexAdapter(options: CodexAdapterOptions = {}): BridgeAdapter {
       project: request.project,
       agentName: request.agentName,
     });
+    const { body, failed, limit } = codexTurnReport(readFileSync(logPath, 'utf8'), code);
+    if (limit) {
+      await bridge.limited(agent.name, {
+        ...(limit.until !== undefined && { until: new Date(limit.until).toISOString() }),
+        detail: limit.detail,
+      });
+      return;
+    }
     const own = await bridge.letters({ job, from: agent.name, limit: 1 });
     if (own.length > 0 || closed) return;
-    const { body, failed } = codexTurnReport(readFileSync(logPath, 'utf8'), code);
     await bridge.send(agent.name, {
       job,
       kind: 'report',

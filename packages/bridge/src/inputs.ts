@@ -9,6 +9,7 @@ import {
   LETTER_KINDS,
   PermissionAskSchema,
   type BridgeJob,
+  type HarnessLimit,
   type JobBudget,
   type JobCheck,
   type JobRecipe,
@@ -587,6 +588,28 @@ export const JournalQuerySchema = z.strictObject({
   limit: z.number().int().positive().max(5000).optional(),
   tail: z.number().int().positive().max(5000).optional(),
 });
+
+export const LimitedInputSchema = z.strictObject({
+  until: z.iso.datetime({ offset: true }).optional(),
+  detail: z.string().trim().max(2000).refine(withoutNul, NUL_REFUSED).optional(),
+});
+
+/** What a session says when its harness ran into the limit of its subscription or its key. */
+export interface LimitedInput {
+  /** ISO 8601 time the limit is over at, when the harness told */
+  until?: string;
+  /** What the harness said */
+  detail?: string;
+}
+
+/** What the bridge did when a harness ran into its limit. */
+export interface LimitedResult {
+  limit: HarnessLimit;
+  /** The jobs of the session that went to another agent */
+  redirected: { job: number; to: string }[];
+  /** The jobs of the session nobody else could take, which failed */
+  failed: number[];
+}
 
 export const SuggestInputSchema = z.strictObject({
   type: JobTypeSchema.optional(),

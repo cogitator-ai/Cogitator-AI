@@ -98,7 +98,9 @@ export function renderLetter(letter: Letter, job: LetterJob): RenderedLetter {
 
 /** What of a job the text of its letters is made from. */
 export type LetterJob = Pick<BridgeJob, 'title'> &
-  Partial<Pick<BridgeJob, 'worktree' | 'changes' | 'verification' | 'checks' | 'findings'>>;
+  Partial<
+    Pick<BridgeJob, 'worktree' | 'changes' | 'verification' | 'checks' | 'findings' | 'redirects'>
+  >;
 
 /** How many changed files a report names before it says how many more there are. */
 const PATHS_SHOWN = 12;
@@ -109,10 +111,16 @@ const PATHS_SHOWN = 12;
  * was changed in the worktree, and what the checks showed. They start like a signature, which
  * no line of a body can, and come last, so nothing an agent wrote passes for them.
  */
-function aboutTheWork(letter: Pick<Letter, 'kind' | 'outcome'>, job: LetterJob): string[] {
+function aboutTheWork(letter: Pick<Letter, 'kind' | 'outcome' | 'to'>, job: LetterJob): string[] {
   const lines: string[] = [];
   const worktree = job.worktree && !job.worktree.end ? job.worktree : undefined;
   if (letter.kind === 'task') {
+    const before = job.redirects?.at(-1);
+    if (before?.to === letter.to) {
+      lines.push(
+        `${before.from} had this job before you, and ${before.why}, so the job is yours now. It may have changed files in the folder of the job already: look at what is there (git status, git diff) before you start, and go on from it.`
+      );
+    }
     if (worktree) {
       lines.push(
         `You work in a git worktree of your own: ${worktree.path}, on the branch ${worktree.branch}, made from commit ${worktree.base.slice(0, 10)}. Change files only there. When you report, the bridge reads what you changed, committed or not. Nothing git ignores is there, such as installed dependencies and build output: install and build only what the job needs.`

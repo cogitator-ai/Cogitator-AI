@@ -77,6 +77,9 @@ export const BridgeJobRecordSchema = z.object({
   taskLength: z.number().int().nonnegative().optional(),
   recipe: z.object({ name: z.string(), input: z.unknown().optional() }).optional(),
   type: z.string().optional(),
+  redirects: z
+    .array(z.object({ from: z.string(), to: z.string(), at: z.string(), why: z.string() }))
+    .optional(),
   findings: FindingsSchema.optional(),
   reviewOf: z.number().int().positive().optional(),
   reviews: z.array(JobReviewSchema).optional(),

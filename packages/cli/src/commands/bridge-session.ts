@@ -9,10 +9,12 @@ import {
   BridgeClient,
   FINDING_SEVERITIES,
   RECIPE_HARNESS,
+  aliasOfHarness,
   bridgePaths,
   callerFromEnv,
   factLine,
   isBridgeError,
+  limitClock,
   mailText,
   resultRow,
   shellQuote,
@@ -23,6 +25,7 @@ import {
   type CallerIdentity,
   type ContextFile,
   type FindingSeverity,
+  type HarnessLimit,
   type HealthCheck,
   type JobContext,
   type LetterKind,
@@ -918,6 +921,59 @@ export async function runBridgeSuggest(
       const suggestion = await client.suggest(type?.trim() ? { type: type.trim() } : {});
       if (flags.json) printJson(suggestion);
       else for (const line of suggestionLines(suggestion)) context.print(line);
+    } finally {
+      await client.close();
+    }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
+/**
+ * A harness that is out of its limit, as one line: who, until when, and what it said, which is
+ * a harness's own text and so printed without anything that could draw on the terminal.
+ */
+export function limitLine(limit: HarnessLimit): string {
+  const until = limitClock(Date.parse(limit.until), Date.now());
+  const tried = limit.told ? '' : ', then the bridge tries it again';
+  const said = limit.detail.replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim();
+  return `${aliasOfHarness(limit.harness)}  until ${until}${tried}${said ? chalk.dim(`  ${said}`) : ''}`;
+}
+
+export interface BridgeLimitsFlags extends HomeFlags {
+  /** The agent whose limit is over, as the person knows */
+  clear?: string;
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge limits: the agents that ran into the limit of their subscription, and until
+ * when the bridge hands them no job. `--clear <agent>` says a limit is over before its time,
+ * which is the person's to say: an agent does not clear its own.
+ */
+export async function runBridgeLimits(
+  flags: BridgeLimitsFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    if (flags.clear) {
+      const word = flags.clear;
+      const had = await asPerson(flags, context, (client) => client.unlimit(word));
+      if (flags.json) printJson({ cleared: had });
+      else {
+        context.print(
+          had ? `${word} takes jobs again` : `${word} was not out of its limit: nothing changed`
+        );
+      }
+      return 0;
+    }
+    const client = await connect(flags, context);
+    try {
+      const { limited } = await client.status();
+      if (flags.json) printJson(limited);
+      else if (limited.length === 0) context.print('No agent is out of its limit');
+      else for (const limit of limited) context.print(limitLine(limit));
     } finally {
       await client.close();
     }

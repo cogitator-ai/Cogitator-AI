@@ -11,6 +11,7 @@ import type {
   SessionRequest,
 } from '../adapter.js';
 import { isBridgeError } from '../errors.js';
+import { limitOfError, type LimitSignal } from '../limit.js';
 import { pause } from './exec.js';
 import { oneLine } from '../letters.js';
 import { isInside } from '../paths.js';
@@ -83,6 +84,14 @@ export interface HostedAdapterOptions {
    * Cogitator runtime and of ACP agents by name
    */
   askOf?: (request: ToolApprovalRequest, session: { cwd: string }) => PermissionAsk;
+  /**
+   * Reads the limit a turn failed on from what it failed with, undefined for any other failure.
+   * `limitOfError` by default, which knows the rate limit and quota errors of the Cogitator
+   * runtime and the words providers use for them. A turn that ends on a limit does not fail
+   * its job: the bridge hands the job to another agent, and this harness none until the limit
+   * is over
+   */
+  limitOf?: (error: unknown) => LimitSignal | undefined;
 }
 
 const DEFAULT_STOP_GRACE_MS = 5_000;
@@ -258,7 +267,10 @@ function asError(error: unknown): Error {
  * middle of it when the turn takes that, and otherwise starts the next turn. A letter about a
  * job that still waits for its turn waits with it, and does not reach the turn of another job.
  * A job that is canceled or fails stops the turn that carries it out, and is not started when it
- * still waited for its turn. The session is in the address book before its first turn starts, so
+ * still waited for its turn. A turn that fails on the limit of its model provider does not fail
+ * its job: the bridge is told, and hands the jobs of the session to agents of another harness.
+ * The session starts none of them after that, and takes no letter about a job that is no
+ * longer its own. The session is in the address book before its first turn starts, so
  * an agent that answers at once is heard.
  *
  * The sessions live in the host's process and end with it.
@@ -313,9 +325,25 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
         (answer) => {
           if (job !== undefined) report(hosted, job, answer.trim() || 'Done', false);
         },
-        (error: unknown) => {
-          if (job !== undefined && !closed) {
+        async (error: unknown) => {
+          if (job === undefined || closed) return;
+          const limit = (options.limitOf ?? ((failure) => limitOfError(failure, Date.now())))(
+            error
+          );
+          if (!limit || !bridge) {
             report(hosted, job, `The agent failed: ${asError(error).message}`, true);
+            return;
+          }
+          try {
+            const { redirected, failed } = await bridge.limited(hosted.agentName, {
+              ...(limit.until !== undefined && { until: new Date(limit.until).toISOString() }),
+              detail: limit.detail,
+            });
+            for (const gone of [...redirected.map((moved) => moved.job), ...failed]) {
+              forget(hosted, gone);
+            }
+          } catch (failure) {
+            onError(asError(failure));
           }
         }
       )
@@ -496,6 +524,7 @@ export function hostedAdapter(options: HostedAdapterOptions): BridgeAdapter {
       const hosted = sessions.get(agent.sessionId);
       if (!hosted) throw new Error(`The session of ${agent.name} does not run in this host`);
       hosted.agentName = agent.name;
+      if (job.from !== agent.name && job.to !== agent.name) return;
       hand(hosted, { letter, job });
       void stopIfOver(hosted, letter.job);
     },

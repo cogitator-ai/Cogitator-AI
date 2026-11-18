@@ -71,8 +71,10 @@ export function freshFor(address: string): string {
 /**
  * Hands a job back to an agent that worked on the run before, and to a fresh session of its
  * harness when the agent is gone or would not wake for the letter, such as a Codex thread that
- * is open nowhere while no local daemon runs. The fresh session knows nothing of what the agent
- * did, so it gets `background` too. A step that runs again goes the way it went the first time.
+ * is open nowhere while no local daemon runs. When the harness of the agent ran into its limit
+ * in the meantime, a fresh session of whoever the bridge takes for the job gets it. A session
+ * that was not there knows nothing of what the agent did, so it gets `background` too. A step
+ * that runs again goes the way it went the first time.
  */
 export async function handBack(
   run: RecipeRun,
@@ -82,21 +84,32 @@ export async function handBack(
   background: string
 ): Promise<RecipeOutcome> {
   const named = (): Promise<RecipeOutcome> => run.handOver(step, { ...job, to: agent.name });
+  const withBackground = background ? `${job.body}\n\n${background}` : job.body;
   const fresh = (): Promise<RecipeOutcome> =>
-    run.handOver(`${step}.fresh`, {
-      ...job,
-      to: `${agent.harness}:new`,
-      body: background ? `${job.body}\n\n${background}` : job.body,
-    });
+    run.handOver(`${step}.fresh`, { ...job, to: `${agent.harness}:new`, body: withBackground });
+  const other = (): Promise<RecipeOutcome> =>
+    run.handOver(`${step}.other`, { ...job, to: 'auto:new', body: withBackground });
+  const limited = (error: unknown): boolean =>
+    isBridgeError(error) && error.code === 'limit_reached';
+  if (await run.handedOver(`${step}.other`)) return other();
   if (await run.handedOver(`${step}.fresh`)) return fresh();
   if (await run.handedOver(step)) return named();
   const startable = agent.harness !== '' && (await run.startable()).includes(agent.harness);
-  if (startable && !(await run.wakes(agent.name))) return fresh();
+  const again = async (): Promise<RecipeOutcome> => {
+    try {
+      return await fresh();
+    } catch (error) {
+      if (!limited(error)) throw error;
+      return other();
+    }
+  };
+  if (startable && !(await run.wakes(agent.name))) return again();
   try {
     return await named();
   } catch (error) {
+    if (limited(error)) return other();
     const gone = isBridgeError(error) && error.code === 'unknown_agent';
     if (!gone || !startable) throw error;
-    return fresh();
+    return again();
   }
 }

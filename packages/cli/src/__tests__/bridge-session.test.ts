@@ -44,6 +44,7 @@ import {
   runBridgeRemember,
   runBridgeDoctor,
   runBridgeInbox,
+  runBridgeLimits,
   runBridgeResults,
   runBridgeSend,
   runBridgeSuggest,
@@ -54,6 +55,7 @@ import {
 import {
   bridgeAdapters,
   bridgeCommandOf,
+  bridgeFallbackOf,
   claudeModeOf,
   codexSandboxOf,
 } from '../utils/bridge-adapters.js';
@@ -1195,6 +1197,65 @@ describe('bridge build, review and recipe', () => {
     ]);
     expect(options('build')).toEqual(expect.arrayContaining(['--no-worktree', '--check', '--by']));
     expect(options('recipe')).toEqual(['--input', '--title', '--cwd', '--home', '--json']);
+  });
+});
+
+describe('bridge limits', () => {
+  const person = (): BridgeSessionContext => ({
+    print: (line) => lines.push(line),
+    wake: (text) => woken.push(text),
+    env: { COGITATOR_BRIDGE_HOME: home },
+    cwd: project,
+    stdin: async () => undefined,
+    adapters: [],
+  });
+
+  it('shows who is out of its limit, and lets only the person say a limit is over', async () => {
+    await startHost();
+    await runBridgeInbox({}, codex());
+    lines = [];
+    expect(await runBridgeLimits({}, person())).toBe(0);
+    expect(output()).toBe('No agent is out of its limit');
+
+    const session = await BridgeClient.connect({
+      socketPath: bridgePaths({ home }).socket,
+      caller: { harness: 'codex', sessionId: 'thread-1', cwd: project },
+    });
+    clients.push(session);
+    await session.limited({ detail: "You've hit your usage limit.\u001b[31m Try again later." });
+
+    lines = [];
+    expect(await runBridgeLimits({}, claude())).toBe(0);
+    expect(lines.join('\n')).not.toContain('\u001b[31m');
+    expect(output()).toMatch(
+      /^codex {2}until \d\d:\d\d, then the bridge tries it again {2}You've hit your usage limit\. \[31m Try again later\.$/
+    );
+    lines = [];
+    expect(await runBridgeLimits({ json: true }, person())).toBe(0);
+    expect(JSON.parse(output())).toMatchObject([{ harness: 'codex', told: false }]);
+
+    lines = [];
+    expect(await runBridgeDelegate('codex', ['Fix it'], {}, claude())).not.toBe(0);
+    expect(failed()).toMatch(/codex is out of its limit until \d\d:\d\d/);
+
+    expect(await runBridgeLimits({ clear: 'codex' }, claude())).not.toBe(0);
+    expect(failed()).toContain('an agent does not answer for the person');
+    lines = [];
+    expect(await runBridgeLimits({ clear: 'codex' }, person())).toBe(0);
+    expect(output()).toBe('codex takes jobs again');
+    lines = [];
+    expect(await runBridgeLimits({ clear: 'codex' }, person())).toBe(0);
+    expect(output()).toBe('codex was not out of its limit: nothing changed');
+    expect(await runBridgeDelegate('codex', ['Fix it'], {}, claude())).toBe(0);
+  });
+
+  it('reads the agents of last resort from the flag, then from the environment', () => {
+    expect(bridgeFallbackOf({}, [])).toEqual([]);
+    expect(bridgeFallbackOf({ COGITATOR_BRIDGE_FALLBACK: 'qwen, claude ,qwen,' })).toEqual([
+      'qwen',
+      'claude-code',
+    ]);
+    expect(bridgeFallbackOf({ COGITATOR_BRIDGE_FALLBACK: 'qwen' }, ['Codex'])).toEqual(['codex']);
   });
 });
 

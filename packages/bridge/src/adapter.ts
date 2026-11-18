@@ -2,6 +2,8 @@ import type {
   CreateJobInput,
   CreateJobResult,
   InboxInput,
+  LimitedInput,
+  LimitedResult,
   SendLetterInput,
   SendLetterResult,
   VerdictInput,
@@ -9,6 +11,7 @@ import type {
   WithdrawInput,
   WithdrawResult,
 } from './inputs.js';
+import type { LimitSignal } from './limit.js';
 import type { AgentFilter, JobTaskFilter, LetterFilter } from './store/store.js';
 import type {
   AdapterCapabilities,
@@ -122,6 +125,11 @@ export interface BridgeCalls {
   inbox(caller: string, input?: InboxInput): Promise<RenderedLetter[]>;
   acknowledge(caller: string, letterId: string): Promise<Letter>;
   cancel(caller: string, job: number, reason?: string): Promise<BridgeJob>;
+  /**
+   * Says the harness of a session ran into the limit of its subscription or its key: the bridge
+   * hands that harness no job until the limit is over, and the jobs of the session go to others
+   */
+  limited(caller: string, input?: LimitedInput): Promise<LimitedResult>;
   job(number: number): Promise<BridgeJob>;
   jobs(filter?: JobTaskFilter): Promise<BridgeJob[]>;
   agents(filter?: AgentFilter): Promise<AgentRecord[]>;
@@ -185,6 +193,12 @@ export interface BridgeAdapter {
    * hook
    */
   stuckHook?(context: IdentifyContext): { caller: CallerIdentity; what: string } | undefined;
+  /**
+   * Reads what the harness wrote to a hook that runs when a turn of a session ends on an error:
+   * who it was, and the limit it ran into. Undefined when the input is not that of such a hook,
+   * or the error is no limit
+   */
+  limitHook?(context: IdentifyContext): { caller: CallerIdentity; limit: LimitSignal } | undefined;
   /**
    * The sessions of the harness running on this machine, when the harness can list them. The
    * bridge keeps a listed session in its address book however long it is silent, and takes one

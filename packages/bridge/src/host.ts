@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BridgeDispatcher } from './dispatcher.js';
+import { BridgeDispatcher, type BridgeRouting } from './dispatcher.js';
 import { BridgeError } from './errors.js';
 import type { BridgeLimitsInput } from './guards.js';
 import { bridgePaths, type BridgePaths } from './paths.js';
@@ -34,6 +34,8 @@ export interface HostBridgeOptions {
    * closes it. Without it nothing is remembered
    */
   board?: FactBoard;
+  /** Who takes a job nobody is named for, or whose agent ran into its limit: the harnesses of last resort */
+  routing?: BridgeRouting;
   /** How often the dispatcher says it is alive and looks at what time did to jobs, 5 s by default */
   tickMs?: number;
   /**
@@ -147,6 +149,7 @@ export async function hostBridge(options: HostBridgeOptions = {}): Promise<Bridg
       ...(options.rights && { rights: options.rights }),
       ...(options.person && { person: options.person }),
       ...(options.board && { board: options.board }),
+      ...(options.routing && { routing: options.routing }),
       onError,
       assertWritable: () => {
         if (store.readLease()?.nonce === nonce) return;

@@ -1097,6 +1097,50 @@ describe('fake claude permission dialogs', () => {
     expect(existsSync(join(work, 'never'))).toBe(false);
   });
 
+  it('ends a turn on the API error it is told to, and runs the StopFailure hooks for that error instead of the Stop hooks', async () => {
+    settings({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'touch stopped' }] }],
+        StopFailure: [
+          {
+            matcher: 'rate_limit|billing_error',
+            hooks: [{ type: 'command', command: 'cat > failed.json' }],
+          },
+          { matcher: 'server_error', hooks: [{ type: 'command', command: 'touch never' }] },
+        ],
+      },
+    });
+    const sessionId = await fakes.openClaudeWindow({
+      cwd: work,
+      env: {
+        FAKE_CLAUDE_TURN_ERROR: 'rate_limit',
+        FAKE_CLAUDE_TURN_ERROR_TEXT: "You've hit your session limit · resets 3:45pm",
+      },
+    });
+
+    await fakes.say(sessionId, 'run: touch worked\nsay: Done');
+    await until(() => existsSync(join(work, 'failed.json')), 'the hook');
+    const turn = await fakes.waitForTurn('claude', sessionId, () => true);
+
+    expect(turn).toMatchObject({
+      input: 'run: touch worked\nsay: Done',
+      answer: "You've hit your session limit · resets 3:45pm",
+      ran: [],
+      tools: [],
+    });
+    expect(JSON.parse(readText('failed.json'))).toEqual({
+      session_id: sessionId,
+      transcript_path: expect.stringContaining(`${sessionId}.jsonl`),
+      cwd: work,
+      hook_event_name: 'StopFailure',
+      error: 'rate_limit',
+      last_assistant_message: "You've hit your session limit · resets 3:45pm",
+    });
+    for (const file of ['worked', 'stopped', 'never']) {
+      expect(existsSync(join(work, file))).toBe(false);
+    }
+  });
+
   it('is listed as waiting for leave, and says so to its Notification hooks, while a hook still decides', async () => {
     const decide =
       'cat > /dev/null; until [ -e decide ]; do sleep 0.05; done; echo \'{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}\'';

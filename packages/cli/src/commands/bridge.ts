@@ -22,7 +22,12 @@ import {
   type Lease,
 } from '@cogitator-ai/bridge';
 import { CommandError, examplesHelp, printJson, reportFailure } from '../utils/cli.js';
-import { bridgeAdapters, CLAUDE_MODES, CODEX_SANDBOXES } from '../utils/bridge-adapters.js';
+import {
+  bridgeAdapters,
+  bridgeFallbackOf,
+  CLAUDE_MODES,
+  CODEX_SANDBOXES,
+} from '../utils/bridge-adapters.js';
 import type { BridgePerson } from '../utils/bridge-person.js';
 import {
   INSTALL_CHOICES,
@@ -35,8 +40,10 @@ import {
   runBridgeCaller,
   runBridgeMcp,
   runBridgePermit,
+  runBridgeLimited,
   runBridgeStuck,
   type BridgePermitFlags,
+  type BridgeLimitedFlags,
   type BridgeStuckFlags,
 } from './bridge-tools.js';
 import {
@@ -53,6 +60,8 @@ import {
   runBridgeDiff,
   runBridgeForget,
   runBridgeRace,
+  limitLine,
+  runBridgeLimits,
   runBridgeRecall,
   runBridgeResults,
   runBridgeSuggest,
@@ -73,6 +82,7 @@ import {
   type BridgeDiffFlags,
   type BridgeForgetFlags,
   type BridgeRaceFlags,
+  type BridgeLimitsFlags,
   type BridgeRecallFlags,
   type BridgeResultsFlags,
   type BridgeSuggestFlags,
@@ -120,6 +130,8 @@ interface HomeFlags {
 interface ServeFlags extends HomeFlags {
   codexSandbox?: string;
   claudeMode?: string;
+  /** The agents that take a job only when no other can */
+  fallback?: string[];
 }
 
 const DEFAULT_LOG_LINES = 50;
@@ -217,6 +229,12 @@ export function describeJournalEntry(raw: JournalEntry): string {
       return `work dropped${data.reason ? `: ${preview(text(data.reason))}` : ''}`;
     case 'job.discarded':
       return `worktree put away, nobody came for it${data.ref ? `: its work is kept under ${text(data.ref)}` : ''}`;
+    case 'job.redirected':
+      return `handed on from ${text(data.from)} to ${text(data.to)}: ${text(data.from)} ${preview(text(data.why))}`;
+    case 'harness.limited':
+      return `${text(data.harness)} is out of its limit until ${clock(text(data.until))}${data.told ? '' : ', when it is tried again'}${data.detail ? `: ${preview(text(data.detail))}` : ''}`;
+    case 'harness.unlimited':
+      return `${text(data.harness)} takes jobs again: ${text(data.why)}`;
     case 'letter.queued': {
       const verdict = data.verdict ? ` (${text(data.verdict)})` : '';
       const forPerson = data.needsPerson ? ', waits for the person' : '';
@@ -415,6 +433,11 @@ export async function runBridgeStatus(
         `Jobs in progress (${jobs.length}), letters in the queue: ${status.queuedLetters}`
       );
       for (const job of jobs) context.io.print(jobLine(job));
+      if (status.limited.length > 0) {
+        context.io.print('');
+        context.io.print('Out of their limit, no job goes to them');
+        for (const limit of status.limited) context.io.print(`  ${limitLine(limit)}`);
+      }
       return 0;
     } finally {
       await client.close();
@@ -448,6 +471,7 @@ export async function runBridgeServe(
     const conductor = context.adapters
       ? undefined
       : wiring.bridgeConductor(context.env, { ...(flags.home && { home: flags.home }), onError });
+    const fallback = bridgeFallbackOf(context.env, flags.fallback);
     host = await hostBridge({
       ...(flags.home && { home: flags.home }),
       env: context.env,
@@ -463,6 +487,7 @@ export async function runBridgeServe(
       rights: reach.rights,
       person: reach.person,
       ...(board && { board }),
+      ...(fallback.length > 0 && { routing: { fallback } }),
       onError,
     });
     await reach.start().catch(async (error: unknown) => {
@@ -567,6 +592,12 @@ bridgeCommand
   .command('serve')
   .description('Run the dispatcher in the foreground: one per machine, shared by every project')
   .option(...homeOption)
+  .option(
+    '--fallback <agent>',
+    'an agent that takes a job only when no other can, such as one that costs money by the call, repeatable',
+    collect,
+    [] as string[]
+  )
   .addOption(
     new Option(
       '--codex-sandbox <mode>',
@@ -1007,6 +1038,30 @@ bridgeCommand
   .option(...homeOption)
   .action(async (flags: HomeFlags) => {
     process.exitCode = await runBridgeMcp(flags);
+  });
+
+bridgeCommand
+  .command('limited')
+  .description(
+    'Tell the bridge a session ran into the limit of its subscription: what a hook runs when a turn of the session ends on an error'
+  )
+  .requiredOption('--hook <harness>', 'the harness whose hook runs the command')
+  .option('--agent <name>', 'the name the bridge gave the session it started')
+  .option(...homeOption)
+  .action(async (flags: BridgeLimitedFlags) => {
+    process.exitCode = await runBridgeLimited(flags);
+  });
+
+bridgeCommand
+  .command('limits')
+  .description(
+    'See which agents ran into the limit of their subscription and until when the bridge hands them no job'
+  )
+  .option('--clear <agent>', 'say the limit of an agent is over: codex, claude, or the name of one')
+  .option(...homeOption)
+  .option('--json', 'print the limits as JSON')
+  .action(async (flags: BridgeLimitsFlags) => {
+    process.exitCode = await runBridgeLimits(flags);
   });
 
 bridgeCommand

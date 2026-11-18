@@ -1,5 +1,6 @@
 import {
   claudeCodeAdapter,
+  claudeLimitCall,
   claudePermissionCall,
   claudeStuckCall,
   claudeToolCallHook,
@@ -14,7 +15,8 @@ import { mailText, waitForMail } from '../../waiter';
  * have no command line: wait for the mail of the session the hook belongs to, write it to
  * stderr and exit with code 2. As `bridge caller` it answers the hook that runs before a call of
  * a bridge tool, as `bridge permit` the hook that runs when a session needs leave for a call,
- * and as `bridge stuck` the one that runs when a session opens its permission dialog.
+ * as `bridge stuck` the one that runs when a session opens its permission dialog, and as
+ * `bridge limited` the one that runs when a turn of a session ends on an error.
  */
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
@@ -39,6 +41,24 @@ async function main(): Promise<number> {
       caller: stuck.caller,
     });
     await client.stuck({ what: stuck.what }).finally(() => client.close());
+    return 0;
+  }
+  if (args[1] === 'limited') {
+    const input: Buffer[] = [];
+    for await (const chunk of process.stdin) input.push(chunk as Buffer);
+    const hit = claudeLimitCall(Buffer.concat(input).toString('utf8'));
+    if (!hit) return 0;
+    const started = flag('--agent');
+    const client = await BridgeClient.connect({
+      socketPath: bridgePaths({ home: flag('--home'), env: process.env }).socket,
+      caller: { ...hit.caller, ...(started && { agentName: started }) },
+    });
+    await client
+      .limited({
+        ...(hit.limit.until !== undefined && { until: new Date(hit.limit.until).toISOString() }),
+        detail: hit.limit.detail,
+      })
+      .finally(() => client.close());
     return 0;
   }
   if (args[1] === 'permit') {

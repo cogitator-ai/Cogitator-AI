@@ -21,6 +21,7 @@ import {
   HelloParamsSchema,
   JobNumberParamsSchema,
   SubscribeJournalParamsSchema,
+  UnlimitParamsSchema,
   toJsonRpcError,
   type BridgeStatus,
   type DispatcherInfo,
@@ -236,6 +237,18 @@ class Connection {
     on(BRIDGE_METHODS.stuck, (value) =>
       dispatcher.stuck(this.caller(), value as Parameters<BridgeDispatcher['stuck']>[1])
     );
+    on(BRIDGE_METHODS.limited, (value) =>
+      dispatcher.limited(this.caller(), (value ?? {}) as Parameters<BridgeDispatcher['limited']>[1])
+    );
+    on(BRIDGE_METHODS.unlimit, (value) => {
+      if (this.agent !== undefined) {
+        throw new BridgeError(
+          'not_a_party',
+          'Only the person takes the limit of a harness back: an agent does not'
+        );
+      }
+      return dispatcher.unlimit(params(UnlimitParamsSchema, value).agent);
+    });
     on(BRIDGE_METHODS.remember, (value) =>
       dispatcher.remember(this.agent ?? null, value as Parameters<BridgeDispatcher['remember']>[1])
     );
