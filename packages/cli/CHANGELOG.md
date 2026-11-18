@@ -1,5 +1,34 @@
 # @cogitator-ai/cli
 
+## 0.27.0
+
+### Minor Changes
+
+- [#380](https://github.com/cogitator-ai/Cogitator-AI/pull/380) [`3ece7b4`](https://github.com/cogitator-ai/Cogitator-AI/commit/3ece7b4f1aed7618d39cd8ca6a960be5d23def5e) - Two more recipes of the bridge: `race` and `debate`.
+
+  - **`race`.** The same job to two or more agents at the same time, each in a git worktree of its own. The bridge runs the checks on every attempt and the report lays them side by side: which finished, what the checks showed, how much each changed. With a `judge` another agent compares them and names the one it would take. Whoever started the race takes one with `accept` and drops the others with `reject`.
+  - **`debate`.** A question to several agents by the rules of the `debate` strategy of `@cogitator-ai/swarms`, with sessions of any harness as debaters: each answers alone first, then they answer each other round by round and end every turn with `STANCE: agree` or `STANCE: disagree`. It ends when all agree or the rounds run out, and a `moderator` sums it up.
+  - As tools (`race`, `debate`), as commands (`cogitator bridge race --to codex --to claude`, `cogitator bridge debate --with codex=advocate --with claude=critic`) and through `createJob({ to: 'recipe', recipe })`.
+  - A step of a recipe waits its turn when the project already has as many worktrees in progress as the bridge keeps, instead of failing the recipe.
+
+### Patch Changes
+
+- Updated dependencies [[`3ece7b4`](https://github.com/cogitator-ai/Cogitator-AI/commit/3ece7b4f1aed7618d39cd8ca6a960be5d23def5e), [`2535be8`](https://github.com/cogitator-ai/Cogitator-AI/commit/2535be865cf32c6b86be122c6145aa93781b7043)]:
+  - @cogitator-ai/bridge@0.10.0
+  - @cogitator-ai/workflows@0.15.8
+  - @cogitator-ai/types@0.89.1
+  - @cogitator-ai/studio@0.10.3
+  - @cogitator-ai/acp@0.2.6
+  - @cogitator-ai/app-server@0.3.3
+  - @cogitator-ai/channels@0.22.1
+  - @cogitator-ai/config@0.36.6
+  - @cogitator-ai/core@0.79.1
+  - @cogitator-ai/deploy@0.7.19
+  - @cogitator-ai/mcp@19.12.1
+  - @cogitator-ai/memory@0.29.8
+  - @cogitator-ai/server-shared@0.17.1
+  - @cogitator-ai/evals@0.14.0
+
 ## 0.26.0
 
 ### Minor Changes

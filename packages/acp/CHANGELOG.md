@@ -1,5 +1,16 @@
 # @cogitator-ai/acp
 
+## 0.2.6
+
+### Patch Changes
+
+- Updated dependencies [[`2535be8`](https://github.com/cogitator-ai/Cogitator-AI/commit/2535be865cf32c6b86be122c6145aa93781b7043)]:
+  - @cogitator-ai/types@0.89.1
+  - @cogitator-ai/app-server@0.3.3
+  - @cogitator-ai/core@0.79.1
+  - @cogitator-ai/mcp@19.12.1
+  - @cogitator-ai/server-shared@0.17.1
+
 ## 0.2.5
 
 ### Patch Changes

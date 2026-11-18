@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/express",
-  "version": "0.16.2",
+  "version": "0.16.3",
   "description": "Express.js server adapter for Cogitator AI runtime",
   "type": "module",
   "exports": {

@@ -1,5 +1,14 @@
 # @cogitator-ai/workflows
 
+## 0.15.8
+
+### Patch Changes
+
+- [#379](https://github.com/cogitator-ai/Cogitator-AI/pull/379) [`2535be8`](https://github.com/cogitator-ai/Cogitator-AI/commit/2535be865cf32c6b86be122c6145aa93781b7043) - Resume a workflow run that stopped inside a loop. A resumed run passed over every node that had ever completed, by name, so a run stopped in round 2 or later of an `addLoop` ended at once without an error and without reaching the exit node, and a run stopped in round 1 ended at the first back edge. Checkpoints now record where the run stood (`frontier`), and `WorkflowExecutor.resume()` and `WorkflowManager.resume()` go on from there: the node that had not completed runs with the idempotency key of its visit, the remaining rounds run once each, and the exit node is reached. A cycle whose nodes had all completed once is no longer taken for a finished run. Checkpoints saved by earlier versions stay readable and are resumed the way they were.
+- Updated dependencies [[`2535be8`](https://github.com/cogitator-ai/Cogitator-AI/commit/2535be865cf32c6b86be122c6145aa93781b7043)]:
+  - @cogitator-ai/types@0.89.1
+  - @cogitator-ai/core@0.79.1
+
 ## 0.15.7
 
 ### Patch Changes

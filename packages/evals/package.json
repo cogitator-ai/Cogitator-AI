@@ -53,7 +53,7 @@
     "zod": "^4.6.6"
   },
   "peerDependencies": {
-    "@cogitator-ai/core": "workspace:>=0.79.0",
+    "@cogitator-ai/core": "workspace:>=0.79.1",
     "vitest": ">=3.0.0"
   },
   "peerDependenciesMeta": {
