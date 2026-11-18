@@ -4,6 +4,7 @@ import { WorkflowBuilder } from '@cogitator-ai/workflows';
 import { z } from 'zod';
 import {
   FINDING_SEVERITIES,
+  MAX_FINDINGS,
   findingLine,
   findingsCount,
   holdsUp,
@@ -426,15 +427,21 @@ function summary(state: ReviewState, plan: ReviewPlan): Partial<ReviewState> {
   return {
     report: lines.join('\n'),
     ...(state.stopped === 'review-failed' && { failed: true }),
-    ...(last?.findings && {
-      findings: [
-        ...last.findings,
-        ...besideOf(state.rounds.slice(0, -1)).filter(
-          (earlier) => !last.findings?.some((kept) => findingLine(kept) === findingLine(earlier))
-        ),
-      ],
-    }),
+    ...(last?.findings && { findings: handedOn(state.rounds, last.findings) }),
   };
+}
+
+/**
+ * The findings a recipe hands on with its report: those of the last review, then what the
+ * reviews before it noticed beside the job, as many as one report takes. The text of the report
+ * names all of them.
+ */
+function handedOn(rounds: readonly Round[], last: readonly Finding[]): Finding[] {
+  const kept = new Set(last.map(findingLine));
+  const earlier = besideOf(rounds.slice(0, -1)).filter(
+    (finding) => !kept.has(findingLine(finding))
+  );
+  return [...last, ...earlier].slice(0, MAX_FINDINGS);
 }
 
 function planOf(
