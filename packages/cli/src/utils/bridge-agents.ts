@@ -106,6 +106,11 @@ export interface HostedAgentsOptions {
  * the person, decide. The project of the job is not trusted by the agent itself: its settings
  * files give the agent no leave of their own.
  *
+ * A session keeps its thread, so a later letter of its job (an answer to its question, a note)
+ * and a later job handed to the same session reach a model that knows what went before. The
+ * history lives in the memory the configuration names, and in the process of the dispatcher
+ * when it names none: the session lives there too, and both end with it.
+ *
  * A turn that fails on the rate limit or the quota of the model's provider tells the bridge, which
  * hands the job to another agent.
  */
@@ -139,7 +144,10 @@ async function openSession(
     settings: true,
     permissions: { mode: 'acceptEdits' },
   });
-  const cogitator = new Cogitator(harness.mergeConfig(config));
+  const remembering: CogitatorConfig = config.memory?.adapter
+    ? config
+    : { ...config, memory: { ...config.memory, adapter: 'memory' } };
+  const cogitator = new Cogitator(harness.mergeConfig(remembering));
   const threadId = `bridge-${context.sessionId}`;
   return {
     turn(text, about) {
