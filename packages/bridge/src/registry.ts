@@ -4,6 +4,9 @@ import { JOB_WORKTREES_DIR, findProjectRoot, isInside } from './paths.js';
 import type { BridgeStore } from './store/store.js';
 import { HARNESSES, type AgentRecord, type CallerIdentity } from './types.js';
 
+/** Asks for a fresh session in an address: `codex:new`. */
+export const NEW_SESSION = 'new';
+
 /** The environment variable each harness tells its session id in. */
 export const HARNESS_SESSION_ENV: ReadonlyArray<{ harness: string; variable: string }> = [
   { harness: HARNESSES.claudeCode, variable: 'CLAUDE_CODE_SESSION_ID' },
@@ -29,8 +32,22 @@ const ALIASES: Readonly<Record<string, string>> = {
  */
 export const RECIPE_HARNESS = 'recipe';
 
-/** Asks for a fresh session in an address: `codex:new`. */
-export const NEW_SESSION = 'new';
+/**
+ * The address that leaves the choice to the bridge: the job goes to the agent the scoreboard
+ * rates best for its type among those a job can go to right now. `auto:new` asks for a fresh
+ * session of whoever that is.
+ */
+export const AUTO_ADDRESS = 'auto';
+
+/**
+ * Reads an address that leaves the choice of the agent to the bridge: `auto`, or `auto:new` for
+ * a fresh session of the agent it chooses. Undefined for any other address.
+ */
+export function autoAddressOf(address: string): { fresh: boolean } | undefined {
+  const text = address.trim().toLowerCase();
+  if (text === AUTO_ADDRESS) return { fresh: false };
+  return text === `${AUTO_ADDRESS}:${NEW_SESSION}` ? { fresh: true } : undefined;
+}
 
 /** The shortest piece of a session id an address may name it by. */
 const MIN_ID_PREFIX = 4;

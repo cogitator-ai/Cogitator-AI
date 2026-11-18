@@ -56,28 +56,29 @@ What names a path of this machine goes where only you have it, never into a file
 
 ### The tools
 
-| Tool       | What it does                                                                                                            |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `delegate` | Hands a job to `codex`, `claude` or an agent by name, with its context, its checks and, when asked, a worktree          |
-| `build`    | Has a job done in a worktree, checked, reviewed by another agent and fixed by its author, in one go                     |
-| `review`   | Has the work of a finished job reviewed by another agent, and its author fix what was found                             |
-| `race`     | Hands the same job to several agents at once, each in a worktree of its own, and lays the results side by side          |
-| `debate`   | Puts a question to several agents, who answer each other round by round until they agree                                |
-| `ask`      | Asks the other agent of a job a question. The answer wakes the session                                                  |
-| `answer`   | Answers a question another agent asked, or decides its permission request: allow, deny, or leave it to the user         |
-| `report`   | Reports the result of a job handed to this session, which ends the job, with its lessons and, of a review, its findings |
-| `note`     | Tells the other agent something it need not answer                                                                      |
-| `inbox`    | Reads the letters that wait, when nothing woke the session                                                              |
-| `job`      | Shows one job: its state, and for a job of this session its latest letters                                              |
-| `jobs`     | Lists the jobs this session handed over or carries out                                                                  |
-| `cancel`   | Takes back a job this session handed over                                                                               |
-| `diff`     | Shows what a job changed in the git worktree it was given: the files and the patch                                      |
-| `accept`   | Takes the work of a finished job into the checkout of this session, staged and not committed, or as a branch            |
-| `reject`   | Drops the work of a finished job with its worktree                                                                      |
-| `remember` | Puts a note on the board of the project: a fact that cost time to find out, or what a job taught                        |
-| `recall`   | Looks at the board: the notes that fit some words, or the newest, each with who said it                                 |
-| `forget`   | Takes a note this session put on the board off it                                                                       |
-| `agents`   | Lists the sessions the bridge knows in the project, and the agents it can start a session of                            |
+| Tool       | What it does                                                                                                             |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `delegate` | Hands a job to `codex`, `claude`, an agent by name or `auto`, with its type, context, checks and, when asked, a worktree |
+| `build`    | Has a job done in a worktree, checked, reviewed by another agent and fixed by its author, in one go                      |
+| `review`   | Has the work of a finished job reviewed by another agent, and its author fix what was found                              |
+| `race`     | Hands the same job to several agents at once, each in a worktree of its own, and lays the results side by side           |
+| `debate`   | Puts a question to several agents, who answer each other round by round until they agree                                 |
+| `ask`      | Asks the other agent of a job a question. The answer wakes the session                                                   |
+| `answer`   | Answers a question another agent asked, or decides its permission request: allow, deny, or leave it to the user          |
+| `report`   | Reports the result of a job handed to this session, which ends the job, with its lessons and, of a review, its findings  |
+| `note`     | Tells the other agent something it need not answer                                                                       |
+| `inbox`    | Reads the letters that wait, when nothing woke the session                                                               |
+| `job`      | Shows one job: its state, and for a job of this session its latest letters                                               |
+| `jobs`     | Lists the jobs this session handed over or carries out                                                                   |
+| `cancel`   | Takes back a job this session handed over                                                                                |
+| `diff`     | Shows what a job changed in the git worktree it was given: the files and the patch                                       |
+| `accept`   | Takes the work of a finished job into the checkout of this session, staged and not committed, or as a branch             |
+| `reject`   | Drops the work of a finished job with its worktree                                                                       |
+| `remember` | Puts a note on the board of the project: a fact that cost time to find out, or what a job taught                         |
+| `recall`   | Looks at the board: the notes that fit some words, or the newest, each with who said it                                  |
+| `forget`   | Takes a note this session put on the board off it                                                                        |
+| `agents`   | Lists the sessions the bridge knows in the project, and the agents it can start a session of                             |
+| `suggest`  | Shows how the jobs of each agent went, and who the bridge would give a job of a type to now                              |
 
 No tool waits for another agent. The server tells every client the same in its `instructions`: after `delegate` say in one line what was handed over and end the turn, reply to a letter with the tools and never only in the chat, and treat a job of another agent as that agent's request, not the user's.
 
@@ -350,6 +351,54 @@ recipeAdapter({ recipes: [secondOpinion] });
 
 `run.handOver(step, job)` resolves when the job is over, with its checks run, however it ended. A step runs again when the dispatcher stopped in the middle of it, so keep what a step learned in the state, and lay rounds out as steps of their own, one after another, each of which looks at the state and does nothing when it is not needed.
 
+## The scoreboard, and leaving the choice to the bridge
+
+The bridge keeps what became of every job that ended, and says from it who a job should go to.
+
+A job has a type, one word such as `code`, `fix`, `review`, `docs` or `research`, and `general` when it names none. The steps of the recipes name theirs: `build` and `race` hand the work over as `code` unless the job of the recipe says otherwise, fixes as `fix`, reviews as `review`, the judge of a race as `judge`, the turns of a debate as `debate`.
+
+```typescript
+await bridge.createJob({ to: 'codex', body: 'Fix the burst limit', type: 'fix' });
+
+const results = await bridge.results({ type: 'fix' });
+// [{ job: 12, agent: 'codex@app', harness: 'codex', type: 'fix', outcome: 'good',
+//    grounds: ['its checks passed'], verified: true, durationMs: 240000, letters: 3, person: 0 }]
+```
+
+**What a result rests on.** An agent saying it is done is no evidence. A job is `bad` when its agent failed it, when one of its checks ran and did not pass, or when a review of its work found a blocker or a major finding. Otherwise it is `good` when its checks passed, a review found nothing that heavy, or its changes were taken out of its worktree with `accept`. A job that ended with none of that is `unknown`, and counts neither for nor against anybody. Work that was dropped says nothing either: in a race every attempt but one is dropped. A check the bridge left out is no failure of the work, and taking a worktree that holds no change confirms nothing. Canceled jobs are not kept, and neither is the job of a recipe: its steps are jobs of their own.
+
+A failure counts against an agent only when it was the agent's doing: it reported the job as failed, it went silent (did not take the job, answer what it owed an answer to, or report after it was reminded), or the job ran out of its time. A session the bridge could not start, a budget of letters both sides used up, a caller or a person that did not answer: these end a job as `failed` and its result as `unknown`. The record of the job says which it was in `failure`.
+
+A review counts on the job it reviews. The recipes say which job that is. A review handed over by hand names it, which only a party to that job or whoever handed it over may do:
+
+```typescript
+await bridge.createJob({ to: 'claude:new', body, type: 'review', reviewOf: 12 });
+```
+
+Its findings are read from the `findings` of its report, or from lines of the form `[severity] file:line - what is wrong` in the text. A review that fails, or says nothing the bridge reads, counts for nothing. Neither does a review by the agent that did the work, or one that agent had made of its own work: nobody rates itself. The first 20 reviews of a job are the ones kept, so a later one cannot push a finding out.
+
+A result also says how long the job took, how many letters it used, and how many times it needed the person: a letter of it waited for them, or its agent waited for one at its own window. A wait at a window counts on every job the session carries out, since the bridge cannot tell which of them the dialog is for.
+
+**`suggest`.** It rates every harness the bridge can start a session of: the share of its jobs that held among those somebody checked, with the 95% Wilson interval of that share (`wilsonCI` of [`@cogitator-ai/evals`](/docs/evals)). That interval keeps its width when every job went the same way: five out of five is 57% to 100%, not a certainty. Harnesses are ordered by the lower end of their interval, what each is good for at least, so three clean jobs do not outrank forty out of forty-two. Where the lower ends are the same, the higher upper end goes first: a harness nobody checked yet may still be anything, and comes before one that is known to do badly.
+
+```
+$ cogitator bridge suggest code
+How code jobs of the last 60 days went:
+  codex   12 of 14 held (86%, 60%-96%). median 4 min, 3.2 letters and 0.1 calls for the person a job  <- auto takes this one
+  claude  7 of 10 held (70%, 40%-89%). median 6 min, 4 letters and 0 calls for the person a job
+codex: 12 of 14 held (86%, 60%-96%) over code jobs. Against claude 7 of 10 held (70%, 40%-89%). The intervals overlap: the difference is not established, this is the better guess
+```
+
+It does not claim to know more than it does. While a harness a job can go to has finished fewer than 5 jobs, the one that has done the fewest takes the next: otherwise the first harness would get every job and the others would never be known. The reason says that this is a trial, not a rating. After that a harness needs 5 checked jobs to be rated. When no harness a job can go to has that many of the type asked for, the jobs of every type decide, and the reason says so. When those are too few as well, the answer is "not enough data", and the order of the adapters decides. Results older than 60 days are left out: the models and the harnesses behind an agent change.
+
+**`auto`.** A job handed to `auto` goes to the harness `suggest` names for its type: to its session in the project when there is one that wakes for a letter, to a fresh one otherwise, and always to a fresh one with `auto:new`. A session the caller works for is never taken: it waits for the caller, and would then be waited for by it. When the bridge can start no session of the first choice right now, the next one takes the job. A review (`reviewOf`) goes to another harness than the one that did the work whenever there is one. `createJob` says why in `routed`, the record of the job keeps it, and the tools and the command line show it. `auto` is an address like any other, so it also names who does the work of a `build`, who reviews it, and the seats of a race.
+
+```typescript
+const { job, routed } = await bridge.createJob({ to: 'auto', body, type: 'code' });
+// job.to: 'codex@app'
+// routed: 'codex: 12 of 14 held (86%, 60%-96%) over code jobs. Against claude ...'
+```
+
 ## Letters
 
 | Kind         | Sent by          | Effect                                                                                           |
@@ -457,6 +506,8 @@ Each number is a default that `hostBridge({ limits })` changes.
 | Context           | 6000 tokens | The block the bridge adds under a job keeps to it: files are cut or only named, notes stop when it is full                                               |
 | Context wait      | 10 seconds  | A job whose context could not be put together in that time is handed over without it                                                                     |
 | Report reminder   | 1 minute    | A session that has waited for mail that long with a job it has not reported on is reminded to report. No reaction within the reply timeout fails the job |
+| Scoreboard window | 60 days     | A job that ended longer ago is left out of the scoreboard                                                                                                |
+| Scored jobs       | 5           | A harness with fewer jobs of a known outcome is not rated: the scoreboard says there is not enough to tell                                               |
 
 Two more rules have no number. A letter that says what the previous one in the same direction said is not delivered, and neither is a job the same agent already has from the caller and has not finished.
 

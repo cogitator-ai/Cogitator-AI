@@ -521,11 +521,13 @@ describe('the command line', () => {
       'reject',
       'remember',
       'reply',
+      'results',
       'review',
       'send',
       'serve',
       'status',
       'stuck',
+      'suggest',
       'uninstall',
       'wait',
     ]);

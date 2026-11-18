@@ -5,7 +5,7 @@ import { CallerIdentitySchema, type AgentRecord } from './types.js';
 import type { DispatcherStatus } from './dispatcher.js';
 
 /** The version of the protocol the dispatcher speaks on its socket. */
-export const BRIDGE_PROTOCOL_VERSION = 2;
+export const BRIDGE_PROTOCOL_VERSION = 3;
 
 /** The JSON-RPC methods of the dispatcher. */
 export const BRIDGE_METHODS = {
@@ -34,6 +34,8 @@ export const BRIDGE_METHODS = {
   remember: 'facts/remember',
   recall: 'facts/recall',
   forget: 'facts/forget',
+  suggest: 'scores/suggest',
+  results: 'scores/results',
   readJournal: 'journal/read',
   subscribeJournal: 'journal/subscribe',
   unsubscribeJournal: 'journal/unsubscribe',

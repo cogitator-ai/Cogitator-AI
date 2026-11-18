@@ -209,6 +209,7 @@ describe.skipIf(!posix)('bridge mcp', () => {
       'recall',
       'forget',
       'agents',
+      'suggest',
     ]);
     for (const listed of tools) {
       expect(listed.annotations?.openWorldHint).toBe(false);

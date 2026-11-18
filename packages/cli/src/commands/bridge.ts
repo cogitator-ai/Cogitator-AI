@@ -54,6 +54,8 @@ import {
   runBridgeForget,
   runBridgeRace,
   runBridgeRecall,
+  runBridgeResults,
+  runBridgeSuggest,
   runBridgeRecipe,
   runBridgeReject,
   runBridgeRemember,
@@ -72,6 +74,8 @@ import {
   type BridgeForgetFlags,
   type BridgeRaceFlags,
   type BridgeRecallFlags,
+  type BridgeResultsFlags,
+  type BridgeSuggestFlags,
   type BridgeRecipeFlags,
   type BridgeRejectFlags,
   type BridgeReviewFlags,
@@ -531,6 +535,11 @@ const homeOption = [
   'the folder of the bridge files (default: COGITATOR_BRIDGE_HOME, else ~/.cogitator/bridge)',
 ] as const;
 
+const typeOption = [
+  '--type <word>',
+  'the kind of work, one word such as code, fix, review, docs or research: the bridge keeps how each kind went with each agent',
+] as const;
+
 export const bridgeCommand = new Command('bridge')
   .description(
     'The agent bridge (experimental): Claude Code, Codex and other agents hand each other jobs'
@@ -613,9 +622,11 @@ bridgeCommand
 bridgeCommand
   .command('delegate <to> [text...]')
   .description(
-    'From a session: hand a job to an agent (codex, claude, an agent name) and get its number'
+    'From a session: hand a job to an agent (codex, claude, an agent name, or auto for the one whose jobs held best) and get its number'
   )
   .option('--title <title>', 'a short name of the job (default: the first line of the text)')
+  .option(...typeOption)
+  .option('--review-of <job>', 'the job whose work this one reviews', positiveInt)
   .option('--cwd <dir>', 'the folder the job is done in (default: the current one)')
   .option(
     '--check <command>',
@@ -673,6 +684,7 @@ reviewOptions(
       'From a session: have a job done, checked and reviewed in one go, and the author fix what the review found'
     )
     .option('--title <title>', 'a short name of the job (default: the first line of the text)')
+    .option(...typeOption)
     .option('--cwd <dir>', 'the folder the job is about (default: the current one)')
     .option(
       '--check <command>',
@@ -720,6 +732,7 @@ bridgeCommand
   .option('--to <agent>', 'who does the job, twice or more: codex, claude', collect, [] as string[])
   .option('--judge <agent>', 'who compares the attempts and says which to take')
   .option('--title <title>', 'a short name of the job (default: the first line of the text)')
+  .option(...typeOption)
   .option('--cwd <dir>', 'the folder the job is about (default: the current one)')
   .option(
     '--check <command>',
@@ -883,6 +896,31 @@ bridgeCommand
   .showHelpAfterError(DASH_HINT)
   .action(async (text: string[], flags: BridgeRememberFlags) => {
     process.exitCode = await runBridgeRemember(text, flags);
+  });
+
+bridgeCommand
+  .command('suggest [type]')
+  .description(
+    'See how the jobs of each agent went and who the bridge would give a job to now, for a type of job such as code or review'
+  )
+  .option(...homeOption)
+  .option('--json', 'print the suggestion as JSON')
+  .action(async (type: string | undefined, flags: BridgeSuggestFlags) => {
+    process.exitCode = await runBridgeSuggest(type, flags);
+  });
+
+bridgeCommand
+  .command('results')
+  .description(
+    'See what became of the jobs that ended lately: who did each, its type, whether its result held, and what it took'
+  )
+  .option(...typeOption)
+  .option('--agent <agent>', 'only the jobs of these agents: codex, claude, or the name of one')
+  .option('--limit <number>', 'how many, the newest (default: 200)', positiveInt)
+  .option(...homeOption)
+  .option('--json', 'print the results as JSON')
+  .action(async (flags: BridgeResultsFlags) => {
+    process.exitCode = await runBridgeResults(flags);
   });
 
 bridgeCommand

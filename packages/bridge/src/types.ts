@@ -255,6 +255,48 @@ export interface JobChanges {
   at: string;
 }
 
+/** The type of a job that names none: the scoreboard files it under this word. */
+export const DEFAULT_JOB_TYPE = 'general';
+
+/**
+ * The kind of work a job is, such as `code`, `fix`, `review`, `docs` or `research`: one word
+ * of lower-case letters, digits and `-`. The scoreboard tells how well each kind goes with each
+ * agent, so the same kind of work should go by the same word.
+ */
+export const JobTypeSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(
+    /^[a-z][a-z0-9-]{0,31}$/,
+    'A job type is one word: lower-case letters, digits and "-", 32 characters at most'
+  );
+
+/**
+ * Whose doing the failure of a job was, as far as the bridge can tell: `reported`, its agent said
+ * it could not do it, `silent`, its agent did not take the job, answer what it owed an answer to,
+ * or report, `timeout`, the job ran out of its time, `other`, anything that is not the agent's
+ * doing: a session that could not be started, a budget of letters both sides used up, a person
+ * or a caller that did not answer.
+ */
+export type JobFailure = 'reported' | 'silent' | 'timeout' | 'other';
+
+export const JOB_FAILURES: readonly JobFailure[] = ['reported', 'silent', 'timeout', 'other'];
+
+/** What a review of the work of a job found, counted, as the record of the reviewed job keeps it. */
+export interface JobReview {
+  /** The job that was the review */
+  job: number;
+  /** The agent that reviewed */
+  by: string;
+  /** ISO 8601 time of its report */
+  at: string;
+  blocker: number;
+  major: number;
+  minor: number;
+  nit: number;
+}
+
 /** How the work in a job's worktree ended. */
 export interface JobWorktreeEnd {
   /**
@@ -302,8 +344,24 @@ export interface BridgeJobRecord {
    * its own to other agents, by the steps the recipe of this name lays down
    */
   recipe?: JobRecipe;
+  /**
+   * The kind of work the job is, `general` when absent. The scoreboard keeps the results of
+   * each kind apart
+   */
+  type?: string;
   /** What a review found, when the job was one and its report named findings */
   findings?: Finding[];
+  /** The job whose work this one reviews: what it finds is counted on the record of that job */
+  reviewOf?: number;
+  /** What the reviews of the work of this job found, in the order they reported */
+  reviews?: JobReview[];
+  /**
+   * How many times the job needed the person: a letter of it waited for them, or the agent that
+   * carries it out waited for one at its own window
+   */
+  personNeeded?: number;
+  /** Set on a job handed to `auto`: why the bridge gave it to the agent it did */
+  routed?: string;
   /** `worktree` on a job that is to be done in a git worktree of its own */
   isolation?: 'worktree';
   /** The git worktree the job is done in, once the bridge has made it */
@@ -334,6 +392,8 @@ export interface BridgeJobRecord {
   personWaitSince?: string;
   /** Why the job failed or was canceled */
   reason?: string;
+  /** Of a job that failed: whose doing it was, which the scoreboard goes by */
+  failure?: JobFailure;
   /**
    * ISO 8601 time the bridge last reminded the agent that carries the job out to report on it,
    * after its session ended a turn without a word on the job
@@ -586,6 +646,16 @@ export interface BridgeLimits {
    * window, where nobody who waits for it reads
    */
   reportReminderMs: number;
+  /**
+   * How far back the scoreboard looks, in ms: a job that ended longer ago says little about an
+   * agent whose model and harness have changed since
+   */
+  scoreWindowMs: number;
+  /**
+   * How many jobs with a known outcome an agent needs before the scoreboard rates it. Below
+   * that it says there is not enough to tell
+   */
+  scoreMinJobs: number;
 }
 
 export const BridgeLimitsSchema = z.strictObject({
@@ -623,6 +693,12 @@ export const BridgeLimitsSchema = z.strictObject({
   contextTokens: z.number().int().positive().max(50_000),
   contextTimeoutMs: z.number().int().positive().max(600_000),
   reportReminderMs: z.number().int().positive().max(86_400_000),
+  scoreWindowMs: z
+    .number()
+    .int()
+    .positive()
+    .max(3650 * 86_400_000),
+  scoreMinJobs: z.number().int().min(1).max(10_000),
 });
 
 export const DEFAULT_LIMITS: BridgeLimits = {
@@ -648,4 +724,6 @@ export const DEFAULT_LIMITS: BridgeLimits = {
   contextTokens: 6_000,
   contextTimeoutMs: 10_000,
   reportReminderMs: 60_000,
+  scoreWindowMs: 60 * 86_400_000,
+  scoreMinJobs: 5,
 };
