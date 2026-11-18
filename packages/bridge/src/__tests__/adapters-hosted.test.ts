@@ -101,6 +101,9 @@ async function settle(kitNow: Kit): Promise<void> {
   }
 }
 
+/** How long a job may take to be handed on: the first one loads what rates the agents. */
+const HANDED_ON_MS = 15_000;
+
 describe('sessions the host runs', () => {
   it('starts a session for a job and reports the answer of the agent', async () => {
     const agent = scripted();
@@ -182,11 +185,14 @@ describe('sessions the host runs', () => {
         retryAfter: 120_000,
       })
     );
-    const job = await vi.waitFor(async () => {
-      const now = await bridge.job(1);
-      expect(now.to).toBe('qwen@demo');
-      return now;
-    });
+    const job = await vi.waitFor(
+      async () => {
+        const now = await bridge.job(1);
+        expect(now.to).toBe('qwen@demo');
+        return now;
+      },
+      { timeout: HANDED_ON_MS }
+    );
     await settle(kit);
     expect(job.state).toBe('working');
     expect(job.redirects?.[0]).toMatchObject({
@@ -194,7 +200,9 @@ describe('sessions the host runs', () => {
       why: 'ran into the limit of deepseek ([deepseek] Rate limit exceeded)',
     });
     expect((await bridge.status()).limited).toMatchObject([{ harness: 'deepseek', told: true }]);
-    await vi.waitFor(async () => expect((await bridge.job(2)).to).toMatch(/^qwen/));
+    await vi.waitFor(async () => expect((await bridge.job(2)).to).toMatch(/^qwen/), {
+      timeout: HANDED_ON_MS,
+    });
     await settle(kit);
     expect(agent.turns).toHaveLength(1);
     expect(other.turns).toHaveLength(2);
