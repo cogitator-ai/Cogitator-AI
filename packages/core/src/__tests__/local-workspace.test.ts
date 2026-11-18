@@ -460,13 +460,14 @@ describe('LocalWorkspace exec', () => {
       onStdout: (chunk) => {
         if (chunk.includes('ready')) {
           void vi
-            .waitFor(() => expect(existsSync(join(root, 'child.pid'))).toBe(true))
+            .waitFor(() => expect(readPid(join(root, 'child.pid'))).toBeGreaterThan(0))
             .then(() => controller.abort(new Error('user stopped it')));
         }
       },
     });
     await expectCode(running, 'ABORTED');
-    const pid = Number((await workspace.read('child.pid')).trim());
+    const pid = readPid(join(root, 'child.pid'));
+    expect(pid).toBeGreaterThan(0);
     await vi.waitFor(() => expect(isAlive(pid)).toBe(false), { timeout: 10_000 });
   });
 
@@ -477,6 +478,13 @@ describe('LocalWorkspace exec', () => {
     expect(existsSync(join(root, 'ran.txt'))).toBe(false);
   });
 });
+
+/** The pid written to `path`, or 0 while the file is missing or the shell has not written it yet. */
+function readPid(path: string): number {
+  if (!existsSync(path)) return 0;
+  const pid = Number(readFileSync(path, 'utf8').trim());
+  return Number.isInteger(pid) && pid > 0 ? pid : 0;
+}
 
 function isAlive(pid: number): boolean {
   try {
