@@ -1119,7 +1119,11 @@ describe('fake claude permission dialogs', () => {
     });
 
     await fakes.say(sessionId, 'run: touch worked\nsay: Done');
-    await until(() => existsSync(join(work, 'failed.json')), 'the hook');
+    await until(
+      () =>
+        existsSync(join(work, 'failed.json')) && readText('failed.json').trimEnd().endsWith('}'),
+      'the hook to have written what it was told'
+    );
     const turn = await fakes.waitForTurn('claude', sessionId, () => true);
 
     expect(turn).toMatchObject({
