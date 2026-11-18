@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/bridge",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Agent bridge for Cogitator: Claude Code, Codex and other agents hand each other jobs, ask questions and report back, each in its own window (experimental)",
   "keywords": [
     "cogitator",
