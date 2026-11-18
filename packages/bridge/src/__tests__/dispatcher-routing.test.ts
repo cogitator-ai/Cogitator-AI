@@ -206,6 +206,19 @@ describe('the type of a job and its result', () => {
     expect(old).toBeLessThan(fresh);
   });
 
+  it('measures the window from when a job ended, however long ago it was handed over', async () => {
+    const { bridge, claude, codex, clock } = await open({ limits: { scoreWindowMs: 3_600_000 } });
+    const { job } = await bridge.createJob(claude.name, { to: codex.name, body: 'A long one' });
+    await bridge.inbox(codex.name);
+    clock.advance(3 * 3_600_000);
+    await bridge.send(codex.name, { job: job.number, kind: 'report', body: 'Done at last' });
+    expect((await bridge.results()).map((result) => result.job)).toEqual([job.number]);
+    expect((await bridge.suggest()).candidates[1]).toMatchObject({ harness: 'codex', jobs: 1 });
+
+    clock.advance(3_600_001);
+    expect(await bridge.results()).toEqual([]);
+  });
+
   it('counts how many times a job needed the person', async () => {
     const asked: string[] = [];
     const person: PersonRoute = {
