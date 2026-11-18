@@ -11,6 +11,7 @@ import {
   InMemoryCheckpointStore,
   FileCheckpointStore,
   createCheckpointId,
+  InMemoryApprovalStore,
 } from '../index';
 import type { WorkflowCheckpoint, Tool, NodeContext, WorkflowState } from '@cogitator-ai/types';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
@@ -212,6 +213,99 @@ describe('agentNode', () => {
     expect(mockCogitator.run).toHaveBeenCalledWith(mockAgent, {
       input: 'go',
       timeout: 3000,
+    });
+  });
+
+  describe('cancellation with runOptions.signal', () => {
+    function runCapturingSignal() {
+      let received: AbortSignal | undefined;
+      const cogitator = {
+        run: vi.fn((_agent: Agent, options: { signal?: AbortSignal }) => {
+          received = options.signal;
+          return new Promise((resolve) => setTimeout(() => resolve({ output: 'ok' }), 0));
+        }),
+      } as unknown as Cogitator;
+      return { cogitator, signal: () => received };
+    }
+
+    it('aborts the agent run when the node signal aborts', async () => {
+      const nodeController = new AbortController();
+      const callerController = new AbortController();
+      const { cogitator, signal } = runCapturingSignal();
+      const node = agentNode(mockAgent, { runOptions: { signal: callerController.signal } });
+
+      const ctx = { ...makeCtx({ input: 'go' }), cogitator, signal: nodeController.signal };
+      const running = node.fn(ctx);
+      nodeController.abort(new Error('node timed out'));
+      await running;
+
+      expect(signal()?.aborted).toBe(true);
+      expect(signal()?.reason).toEqual(new Error('node timed out'));
+    });
+
+    it('aborts the agent run when the caller signal aborts', async () => {
+      const nodeController = new AbortController();
+      const callerController = new AbortController();
+      const { cogitator, signal } = runCapturingSignal();
+      const node = agentNode(mockAgent, { runOptions: { signal: callerController.signal } });
+
+      const ctx = { ...makeCtx({ input: 'go' }), cogitator, signal: nodeController.signal };
+      const running = node.fn(ctx);
+      callerController.abort();
+      await running;
+
+      expect(signal()?.aborted).toBe(true);
+    });
+
+    it('aborts the resumed run when either signal aborts', async () => {
+      for (const which of ['node', 'caller'] as const) {
+        const nodeController = new AbortController();
+        const callerController = new AbortController();
+        const approvalStore = new InMemoryApprovalStore();
+        let resumed: AbortSignal | undefined;
+        const cogitator = {
+          run: vi.fn().mockResolvedValue({
+            output: '',
+            status: 'paused',
+            checkpoint: { id: 'cp-1' },
+            pendingApprovals: [
+              { toolCallId: 'c1', toolName: 'refund', arguments: {}, description: 'Refund' },
+            ],
+          }),
+          resume: vi.fn(
+            (_agent: Agent, _checkpoint: unknown, options: { signal?: AbortSignal }) => {
+              resumed = options.signal;
+              return new Promise((resolve) => setTimeout(() => resolve({ output: 'done' }), 0));
+            }
+          ),
+        } as unknown as Cogitator;
+        const node = agentNode(mockAgent, { runOptions: { signal: callerController.signal } });
+
+        const running = node.fn({
+          ...makeCtx({ input: 'go' }),
+          cogitator,
+          approvalStore,
+          signal: nodeController.signal,
+        } as NodeContext<TestState>);
+        const request = await vi.waitFor(async () => {
+          const [pending] = await approvalStore.getPendingRequests();
+          if (!pending) throw new Error('no request yet');
+          return pending;
+        });
+        await approvalStore.submitResponse({
+          requestId: request.id,
+          decision: true,
+          respondedBy: 'manager',
+          respondedAt: Date.now(),
+        });
+        await vi.waitFor(() => {
+          if (!resumed) throw new Error('not resumed yet');
+        });
+        (which === 'node' ? nodeController : callerController).abort();
+        await running;
+
+        expect(resumed?.aborted, which).toBe(true);
+      }
     });
   });
 });
