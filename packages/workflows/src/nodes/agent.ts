@@ -44,6 +44,11 @@ function resumeOptions(runOptions: Partial<RunOptions> | undefined): ResumeOptio
   return rest;
 }
 
+function combinedSignal(...signals: (AbortSignal | undefined)[]): AbortSignal | undefined {
+  const present = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+  return present.length > 1 ? AbortSignal.any(present) : present[0];
+}
+
 /**
  * Run an agent as a workflow step. Its answer is the node's output; `stateMapper` copies what
  * the next steps need into the state. A run that pauses for tool approvals never passes as an
@@ -94,11 +99,13 @@ export function agentNode<S extends WorkflowState = WorkflowState>(
         return decisions;
       };
 
+      const signal = combinedSignal(extCtx.signal, options?.runOptions?.signal);
+
       try {
         let result = await extCtx.cogitator.run(agent, {
           input,
-          ...(extCtx.signal && { signal: extCtx.signal }),
           ...options?.runOptions,
+          ...(signal && { signal }),
         });
 
         while (isPausedRun(result)) {
@@ -110,8 +117,8 @@ export function agentNode<S extends WorkflowState = WorkflowState>(
             throw new AgentRunPausedError(result, agent.name, where);
           }
           result = await extCtx.cogitator.resume(agent, result.checkpoint, {
-            ...(extCtx.signal && { signal: extCtx.signal }),
             ...resumeOptions(options?.runOptions),
+            ...(signal && { signal }),
             decisions,
           });
         }
