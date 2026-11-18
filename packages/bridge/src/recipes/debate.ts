@@ -148,9 +148,7 @@ function tookPart(turns: readonly Turn[]): number[] {
 }
 
 function stanceOf(said: string | undefined): boolean | undefined {
-  const last = [
-    ...(said ?? '').matchAll(/^[ \t]*\*{0,2}STANCE:\*{0,2}[ \t]*(agree|disagree)\b/gim),
-  ].at(-1);
+  const last = [...(said ?? '').matchAll(/\bSTANCE:\*{0,2}[ \t]*(agree|disagree)\b/gi)].at(-1);
   return last ? last[1].toLowerCase() === 'agree' : undefined;
 }
 

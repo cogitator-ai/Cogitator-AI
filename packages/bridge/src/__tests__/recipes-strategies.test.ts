@@ -168,7 +168,7 @@ describe('the recipe race', () => {
     await bridge.send(judge.agent, {
       job: 4,
       kind: 'report',
-      body: 'The first one holds.\nTAKE: job #2',
+      body: 'The first one holds. My pick is TAKE: job #2.',
     });
 
     const report = await reportOf(1);
@@ -179,7 +179,7 @@ describe('the recipe race', () => {
     );
     expect(report).toContain(`- job #3 by ${second.agent}: completed, checks not passed`);
     expect(report).toContain(`${judge.agent} compared them in job #4 and would take job #2:`);
-    expect(report).toContain('> The first one holds.');
+    expect(report).toContain('> The first one holds. My pick is TAKE: job #2.');
     expect(report).toContain('take one with accept, and drop the others with reject');
 
     expect((await bridge.accept(starter.name, { job: 2 })).state).toBe('accepted');
@@ -406,7 +406,7 @@ describe('the recipe debate', () => {
     await bridge.send(two.agent, {
       job: 5,
       kind: 'report',
-      body: 'Per route answers my point.\nSTANCE: agree',
+      body: 'Per route answers my point. Final line: STANCE: agree.',
     });
 
     const moderator = await taskOf(codex, 6);

@@ -363,6 +363,8 @@ interface Presence {
   seen: Set<string>;
   /** The sessions that were listed before and were missing the last time */
   missed: Set<string>;
+  /** The sessions it listed as in the middle of a turn the last time */
+  busy: Set<string>;
 }
 
 /** A process of a session waiting for its mail, see `BridgeDispatcher.wait`. */
@@ -371,6 +373,8 @@ interface Waiter {
   limit: number;
   /** Aborts when the waiter's connection closes */
   signal: AbortSignal | undefined;
+  /** When it began to wait, ms since the epoch */
+  armedAt: number;
   /** Ends the wait. Ending it again changes nothing */
   end(reason: WaitEnd, letters?: RenderedLetter[]): void;
 }
@@ -1700,6 +1704,7 @@ export class BridgeDispatcher
       const waiter: Waiter = {
         limit,
         signal,
+        armedAt: this.now(),
         end: (reason, letters = []) => {
           if (this.waiters.get(name) === waiter) this.waiters.delete(name);
           clearTimeout(timer);
@@ -3094,12 +3099,76 @@ export class BridgeDispatcher
         failed.push(job.number);
       }
 
+      failed.push(...(await this.remindOfReports(tx, now)));
       failed.push(...(await this.retireAgents(tx, now)));
       for (const agent of this.store.queuedRecipients()) tx.wake.add(agent);
       return { failed: [...new Set(failed)], reminded };
     });
     this.checkPresence();
     return result;
+  }
+
+  /**
+   * Reminds a session to report on a job it carries out and went quiet on. A session whose
+   * waiter has been armed for `limits.reportReminderMs` has ended its turn, and when a job of it
+   * is still in progress with nothing owed to it, its answer was most likely said only in its
+   * own window, where whoever waits for the job does not read. The reminder is a letter, so it
+   * wakes the session. One that does not react to it within the reply timeout of the job fails
+   * the job, rather than leaving it open until its deadline. A session that reacts with anything
+   * but a report is reminded again no sooner than that timeout.
+   *
+   * A session is left alone while its harness lists it in the middle of a turn, while it waits
+   * for jobs it handed over from inside the job or for the person, and while mail for it is on
+   * its way. Returns the jobs it failed.
+   */
+  private async remindOfReports(tx: Transaction, now: number): Promise<number[]> {
+    const failed: number[] = [];
+    for (const [name, waiter] of this.waiters) {
+      if (now - waiter.armedAt < this.limits.reportReminderMs) continue;
+      const agent = this.store.getAgent(name);
+      if (agent?.status !== 'active' || this.conducts(agent)) continue;
+      if (this.presence.get(agent.harness)?.busy.has(agent.sessionId)) continue;
+      if (this.store.countLetters({ to: name, states: ['queued'] }) > 0) continue;
+      const carried = this.store
+        .jobTasks({ to: name, states: ['working'] })
+        .flatMap((task) => jobOf(task) ?? []);
+      for (const job of carried) {
+        if (job.checking || this.waitsForPerson(job.number)) continue;
+        const waitsForJobs =
+          this.store.jobTasks({ parent: job.number, states: ACTIVE_JOB_STATES, limit: 1 }).length >
+          0;
+        if (waitsForJobs) continue;
+        const patience = job.budget.replyTimeoutMs;
+        if (job.reportAskedAt) {
+          const asked = Date.parse(job.reportAskedAt);
+          const [last] = this.store.listLetters({
+            job: job.number,
+            from: name,
+            newestFirst: true,
+            limit: 1,
+          });
+          const reacted = last !== undefined && Date.parse(last.createdAt) >= asked;
+          if (now - asked < patience) continue;
+          if (!reacted) {
+            await this.failJob(
+              tx,
+              job.number,
+              `${name} ended its turn without a report and did not react to the reminder in ${formatDuration(patience)}`
+            );
+            failed.push(job.number);
+            continue;
+          }
+        }
+        this.systemNote(
+          tx,
+          job,
+          name,
+          `You ended your turn, and job #${job.number} is still in progress: ${job.from} has no report from you. What you said in your own window nobody else reads. Report on the job with the report tool: when your answer is written there already, send that answer itself, whole, not a word about it. If you are not done, ask what you need, or say in a note what you wait for.`
+        );
+        await this.patchRecord(job.taskId, { reportAskedAt: this.iso(now) });
+      }
+    }
+    return failed;
   }
 
   /**
@@ -3134,7 +3203,8 @@ export class BridgeDispatcher
                 harness,
                 new Set(sessions.map((session) => session.sessionId)),
                 adapter.ownsSessions === true,
-                asked
+                asked,
+                new Set(sessions.flatMap((session) => (session.busy ? [session.sessionId] : [])))
               );
               for (const session of sessions) {
                 if (!session.waitingFor) continue;
@@ -3154,9 +3224,15 @@ export class BridgeDispatcher
     harness: string,
     live: Set<string>,
     certain: boolean,
-    asked: number
+    asked: number,
+    busy = new Set<string>()
   ): Promise<void> {
-    const known = this.presence.get(harness) ?? { live, seen: new Set(), missed: new Set() };
+    const known = this.presence.get(harness) ?? {
+      live,
+      seen: new Set(),
+      missed: new Set(),
+      busy: new Set(),
+    };
     const missed = new Set<string>();
     for (const sessionId of live) known.seen.add(sessionId);
     for (const agent of this.store.listAgents({ harness, statuses: ['active'] })) {
@@ -3171,7 +3247,7 @@ export class BridgeDispatcher
       known.seen.delete(id);
       await this.agentGone(tx, agent, `the session of ${agent.name} is not running any more`);
     }
-    this.presence.set(harness, { live, seen: known.seen, missed });
+    this.presence.set(harness, { live, seen: known.seen, missed, busy });
   }
 
   /**

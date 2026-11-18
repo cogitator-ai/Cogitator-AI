@@ -544,3 +544,159 @@ describe('sessions a harness lists', () => {
     expect((await kit.bridge.agents({ harness: 'codex' }))[0].status).toBe('active');
   });
 });
+
+describe('a session that ended its turn without a report', () => {
+  /** A job the Codex session took through its waiter: the session works on it now. */
+  async function taken(options: Parameters<typeof makeKit>[0] = {}): Promise<Kit> {
+    kit = await makeKit(options);
+    const { bridge, claude, codex } = kit;
+    await bridge.createJob(claude.name, { to: 'codex', body: 'Review the parser' });
+    const { letters } = await bridge.wait(codex.name);
+    await bridge.delivered(
+      codex.name,
+      letters.map((letter) => letter.id)
+    );
+    return kit;
+  }
+
+  /** Waits as the session's hook does, and confirms what it was handed. */
+  async function woken(made: Kit): Promise<string[]> {
+    const { letters } = await made.bridge.wait(made.codex.name);
+    await made.bridge.delivered(
+      made.codex.name,
+      letters.map((letter) => letter.id)
+    );
+    return letters.map((letter) => letter.body);
+  }
+
+  it('is reminded to report once it has waited for mail for a while, and woken by the reminder', async () => {
+    const { bridge, codex, clock } = await taken();
+    const waiting = bridge.wait(codex.name);
+    await bridge.status();
+
+    clock.advance(30_000);
+    await bridge.sweep();
+    expect(await bridge.letters({ job: 1, kinds: ['note'] })).toEqual([]);
+
+    clock.advance(31_000);
+    await bridge.sweep();
+    const waited = await waiting;
+    expect(waited.reason).toBe('letters');
+    expect(waited.letters).toHaveLength(1);
+    expect(waited.letters[0]).toMatchObject({ kind: 'note', from: 'bridge', job: 1 });
+    expect(waited.letters[0].body).toContain(
+      'You ended your turn, and job #1 is still in progress: claude@demo has no report from you.'
+    );
+    expect((await bridge.job(1)).reportAskedAt).toBeDefined();
+  });
+
+  it('is reminded once, and its job fails when it does not react in the time an answer has', async () => {
+    const made = await taken();
+    const { bridge, claude, codex, clock } = made;
+    const first = woken(made);
+    await bridge.status();
+    clock.advance(61_000);
+    await bridge.sweep();
+    expect((await first)[0]).toContain('You ended your turn');
+
+    const again = bridge.wait(codex.name);
+    await bridge.status();
+    clock.advance(10 * MINUTE);
+    await bridge.sweep();
+    expect(await bridge.letters({ job: 1, kinds: ['note'] })).toHaveLength(1);
+    expect((await bridge.job(1)).state).toBe('working');
+
+    clock.advance(21 * MINUTE);
+    const swept = await bridge.sweep();
+    expect(swept.failed).toEqual([1]);
+    const failed = await bridge.job(1);
+    expect(failed.state).toBe('failed');
+    expect(failed.reason).toBe(
+      'codex@demo ended its turn without a report and did not react to the reminder in 30 min'
+    );
+    expect((await again).letters[0].body).toContain('Job #1 has failed');
+    expect((await bridge.inbox(claude.name)).at(-1)?.body).toContain('Job #1 has failed');
+  });
+
+  it('keeps the job of a session that reacts, and reminds it again no sooner than that time', async () => {
+    const made = await taken();
+    const { bridge, codex, clock } = made;
+    const first = woken(made);
+    await bridge.status();
+    clock.advance(61_000);
+    await bridge.sweep();
+    await first;
+    await bridge.send(codex.name, {
+      job: 1,
+      kind: 'note',
+      body: 'Still reading, half an hour more',
+    });
+
+    void bridge.wait(codex.name);
+    await bridge.status();
+    clock.advance(20 * MINUTE);
+    await bridge.sweep();
+    expect(await bridge.letters({ job: 1, from: 'bridge' })).toHaveLength(1);
+
+    clock.advance(11 * MINUTE);
+    const swept = await bridge.sweep();
+    expect(swept.failed).toEqual([]);
+    expect((await bridge.job(1)).state).toBe('working');
+    expect(await bridge.letters({ job: 1, from: 'bridge' })).toHaveLength(2);
+  });
+
+  it('is left alone while its harness lists it in the middle of a turn', async () => {
+    const sessions: { current: LiveSession[] } = {
+      current: [{ sessionId: 'thread-codex', busy: true }],
+    };
+    const adapter = new FakeAdapter({
+      liveSessions: async () => sessions.current,
+      capabilities: { push: false },
+    });
+    const { bridge, codex, clock } = await taken({
+      adapters: [adapter],
+      limits: { presenceCheckMs: 1_000 },
+    });
+    void bridge.wait(codex.name);
+    await bridge.status();
+    await bridge.sweep();
+    await bridge.idle();
+
+    clock.advance(2 * MINUTE);
+    await bridge.sweep();
+    await bridge.idle();
+    expect(await bridge.letters({ job: 1, from: 'bridge' })).toEqual([]);
+
+    sessions.current = [{ sessionId: 'thread-codex', busy: false }];
+    clock.advance(2_000);
+    await bridge.sweep();
+    await bridge.idle();
+    clock.advance(2_000);
+    await bridge.sweep();
+    expect(await bridge.letters({ job: 1, from: 'bridge' })).toHaveLength(1);
+  });
+
+  it('is left alone while it waits for an answer, for a job it handed over, or for its checks', async () => {
+    const { bridge, claude, codex, clock } = await taken();
+    await bridge.send(codex.name, { job: 1, kind: 'question', body: 'Which parser?' });
+    void bridge.wait(codex.name);
+    await bridge.status();
+    clock.advance(5 * MINUTE);
+    await bridge.sweep();
+    expect(await bridge.letters({ job: 1, from: 'bridge' })).toEqual([]);
+
+    await bridge.send(claude.name, { job: 1, kind: 'answer', body: 'The new one' });
+    const { letters } = await bridge.wait(codex.name);
+    await bridge.delivered(
+      codex.name,
+      letters.map((letter) => letter.id)
+    );
+    await bridge.createJob(codex.name, { to: claude.name, body: 'Tell me which tests matter' });
+    void bridge.wait(codex.name);
+    await bridge.status();
+    clock.advance(5 * MINUTE);
+    await bridge.sweep();
+    expect(await bridge.letters({ job: 1, from: 'bridge' })).toEqual([]);
+    expect((await bridge.job(1)).state).toBe('working');
+  });
+});

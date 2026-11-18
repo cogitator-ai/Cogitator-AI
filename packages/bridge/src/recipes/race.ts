@@ -142,9 +142,7 @@ function judgeText(run: RecipeRun, done: Attempt[]): string {
 
 function takeOf(report: string | undefined, done: Attempt[]): number | 'none' | undefined {
   const said = [
-    ...(report ?? '').matchAll(
-      /^[ \t]*\*{0,2}TAKE:\*{0,2}[ \t]*(?:job[ \t]*#?(\d{1,9})|(none))\b/gim
-    ),
+    ...(report ?? '').matchAll(/\bTAKE:\*{0,2}[ \t]*(?:job[ \t]*#?(\d{1,9})|(none))\b/gi),
   ].at(-1);
   if (!said) return undefined;
   if (said[2]) return 'none';
