@@ -188,7 +188,7 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/a2a',
       title: 'Agent-to-Agent',
       summary:
-        'Expose agents over the A2A protocol with generated agent cards, and call remote agents from any framework with streaming results.',
+        "Expose agents over the A2A protocol with generated agent cards, and call remote agents from any framework with streaming results. Agent bridge (experimental): Claude Code, Codex and agents on any model hand each other jobs on your machine, review each other's work and report back.",
       href: '/docs/integrations/a2a',
       code: a2a,
     },
