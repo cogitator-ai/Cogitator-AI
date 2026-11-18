@@ -12,6 +12,15 @@ export default defineConfig({
     },
     testTimeout: 30000,
     dangerouslyIgnoreUnhandledErrors: true,
+    server: {
+      deps: {
+        /**
+         * Workspace packages resolve to packages/<name>/dist, outside node_modules, so vitest
+         * would run every built file through its own module runner. Node loads them much faster.
+         */
+        external: [/\/packages\/[^/]+\/dist\//],
+      },
+    },
   },
   esbuild: {
     target: 'node20',
