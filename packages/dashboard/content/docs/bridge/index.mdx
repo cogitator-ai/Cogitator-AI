@@ -61,6 +61,8 @@ What names a path of this machine goes where only you have it, never into a file
 | `delegate` | Hands a job to `codex`, `claude` or an agent by name, with its context, its checks and, when asked, a worktree          |
 | `build`    | Has a job done in a worktree, checked, reviewed by another agent and fixed by its author, in one go                     |
 | `review`   | Has the work of a finished job reviewed by another agent, and its author fix what was found                             |
+| `race`     | Hands the same job to several agents at once, each in a worktree of its own, and lays the results side by side          |
+| `debate`   | Puts a question to several agents, who answer each other round by round until they agree                                |
 | `ask`      | Asks the other agent of a job a question. The answer wakes the session                                                  |
 | `answer`   | Answers a question another agent asked, or decides its permission request: allow, deny, or leave it to the user         |
 | `report`   | Reports the result of a job handed to this session, which ends the job, with its lessons and, of a review, its findings |
@@ -257,7 +259,7 @@ await bridge.send({
 
 ## Recipes: do, check, review, fix
 
-A recipe is a job the bridge itself carries out by fixed steps: it hands jobs of its own to the agents, waits for their reports and reports once at the end. No model decides what comes next.
+A recipe is a job the bridge itself carries out by fixed steps: it hands jobs of its own to the agents, waits for their reports and reports once at the end. No model decides what comes next. Four come with the bridge: `build` and `review` for work that is checked by another agent, `race` for the same job done several times side by side, `debate` for a question worth more than one opinion.
 
 ```typescript
 import { hostBridge } from '@cogitator-ai/bridge';
@@ -284,17 +286,27 @@ await bridge.createJob({
 
 **`review`.** The same rounds for a job that is done already: `input.job` names it, and its author fixes what the review finds. Whoever handed that job over, carried it out, or started the recipe it was a step of may have it reviewed. The review and the fixes are done in the folder the job was done in. While a job still works on what another job left in its worktree, that worktree stays: `accept` and `reject` are refused until the review has reported or is canceled.
 
-| Input       | Recipe   | What it says                                                                                               |
-| ----------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `to`        | `build`  | Who does the work: a harness word such as `claude`, for a session started for the job                      |
-| `job`       | `review` | The job whose work is reviewed                                                                             |
-| `by`        | both     | Who reviews: an agent, or a harness word for a fresh session. Another harness than the author's by default |
-| `rounds`    | both     | How many times the author is sent back at most, 2 by default, 0 for a review that sends nothing back       |
-| `threshold` | both     | The lightest finding worth sending back: `blocker`, `major` (the default), `minor` or `nit`                |
-| `focus`     | both     | What the reviewer looks at above all                                                                       |
-| `checks`    | `build`  | The commands that show the result holds, run after the work and after every round of fixes                 |
-| `worktree`  | `build`  | `false` to have the work done in the caller's folder                                                       |
-| `context`   | `build`  | What the caller knows and the agent does not, as `createJob` takes it                                      |
+**`race`: the same job, side by side.** The text of the job goes to every agent of `to` at the same time, each in a git worktree of its own, with the `checks` of the input. The report lays the attempts side by side: which finished, what its checks showed, how much it changed. With a `judge`, another agent reads the attempts that finished and ends with the one it would take. The recipe takes none itself: whoever started it takes one with `accept` and drops the others with `reject`. The same harness word twice means two sessions of that harness. The bridge keeps two worktrees of a project in progress and starts two sessions at once (see the limits), so attempts beyond that wait their turn. An attempt the bridge refuses, and a judge it cannot reach, are said in the report, which still lays out the rest. The recipe fails when no attempt finished.
+
+**`debate`: a question, round by round.** The rules are those of the `debate` strategy of [`@cogitator-ai/swarms`](/docs/swarms), with sessions of any harness as the debaters. In the first round each debater answers the question alone. From the second on each sees what the others said in the rounds before, answers them, and ends its turn with `STANCE: agree` or `STANCE: disagree`. The debate ends when every debater that answered agrees, or after `rounds` rounds. An `advocate` argues for, a `critic` against, any other `role` is told to the agent as it is. With a `moderator`, another agent sums the debate up: the positions, what is agreed and what is not, the strongest arguments and a recommendation. Without one the report carries the positions of the last round. No file is changed. Every debater reads the question whole in every round, so it takes 20000 characters at most, and debaters times rounds is 40 at most. A turn the bridge refuses to hand over, and a moderator it cannot reach, are said in the report, which still carries what the others said. The recipe fails when fewer than two debaters answered.
+
+| Input               | Recipe   | What it says                                                                                               |
+| ------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `to`                | `build`  | Who does the work: a harness word such as `claude`, for a session started for the job                      |
+| `job`               | `review` | The job whose work is reviewed                                                                             |
+| `by`                | both     | Who reviews: an agent, or a harness word for a fresh session. Another harness than the author's by default |
+| `rounds`            | both     | How many times the author is sent back at most, 2 by default, 0 for a review that sends nothing back       |
+| `threshold`         | both     | The lightest finding worth sending back: `blocker`, `major` (the default), `minor` or `nit`                |
+| `focus`             | both     | What the reviewer looks at above all                                                                       |
+| `checks`            | `build`  | The commands that show the result holds, run after the work and after every round of fixes                 |
+| `worktree`          | `build`  | `false` to have the work done in the caller's folder                                                       |
+| `context`           | `build`  | What the caller knows and the agent does not, as `createJob` takes it                                      |
+| `to`                | `race`   | Who does the job: two to six harness words, the same one twice for two sessions of one harness             |
+| `checks`, `context` | `race`   | As for `build`, for every attempt                                                                          |
+| `judge`             | `race`   | Who compares the attempts and says which to take, nobody by default                                        |
+| `debaters`          | `debate` | Who debates, two to six: each a harness word or an agent, or `{ to, role }`                                |
+| `rounds`            | `debate` | How many rounds at most, 3 by default                                                                      |
+| `moderator`         | `debate` | Who sums the debate up, nobody by default                                                                  |
 
 **Findings.** A reviewer names what it found in the `findings` of its report, each with a severity (`blocker`, `major`, `minor`, `nit`), a line of what is wrong and, where it has one, the file and the line. An agent without the tools writes one line for each, `[major] src/limiter.ts:12 - The window never resets`, or the single line `[none]`: `parseFindings` reads them. An empty list says the review found nothing. A report that names no findings in either form is not a clean review: the recipe then sends nothing back and hands the report on as it is. The findings of a report are kept on its job (`job.findings`) and shown under the report.
 
