@@ -281,10 +281,11 @@ export function pending(dir) {
 
 /**
  * Takes the oldest message out of a spool folder. It is renamed away first, so no message is
- * taken twice even when several processes look at one folder.
+ * taken twice even when several processes look at one folder. A process that is ending takes none.
  * @returns the message, or `undefined` when nothing waits
  */
 export function takeNext(dir) {
+  if (abandoning !== undefined) return undefined;
   const [name] = pending(dir);
   if (name === undefined) return undefined;
   const taken = join(dir, `.taken-${process.pid}-${name}`);
@@ -406,8 +407,17 @@ export function boundLife(stateFile, stop) {
 /** Child shells of this process that still run, each with a promise of its end */
 const shells = new Map();
 
-/** Settles when the process that is ending has nothing going any more */
+/**
+ * Settles when the process that is ending has nothing going any more. While it waits for that the
+ * process starts no shell, takes no message and goes no further with a turn: what was under way
+ * stays where it was, as if the process were gone already.
+ */
 let abandoning;
+
+/** What a turn awaits before its next step: settles at once, and never in a process that is ending */
+function unlessEnding() {
+  return abandoning === undefined ? Promise.resolve() : new Promise(() => undefined);
+}
 
 function signalGroup(pid, signal) {
   if (pid !== undefined) send(-pid, signal);
@@ -424,7 +434,7 @@ function signalGroup(pid, signal) {
 /**
  * Starts `sh -c <command>` in a process group of its own, so that a kill reaches whatever the
  * command started. A process that is ending starts none, and the result of a shell it still had
- * reaches no one: what waited for it stays where it was, as if the process were gone already.
+ * reaches no one.
  * @param {string} command
  * @param {object} options
  * @param {string} options.cwd
@@ -590,6 +600,7 @@ async function editWithLeave(path, cwd, askLeave) {
     return { command, code: 1, stdout: '', stderr: 'this stand-in has no edit tool of its own' };
   }
   const leave = await askLeave({ tool: 'Edit', input: { file_path: resolve(cwd, path) } });
+  await unlessEnding();
   const moved = leave.cwd !== undefined && { movedTo: leave.cwd };
   if (!leave.allowed) {
     return {
@@ -632,6 +643,7 @@ export async function performTurn({ input, cwd: startedIn, env, callTool, askLea
   let answer = 'ok';
   let cwd = startedIn;
   for (const { kind, value } of directives(input)) {
+    await unlessEnding();
     if (kind === 'run') ran.push(await runCommand(value, cwd, env));
     else if (kind === 'bash') ran.push(await runWithLeave(value, cwd, env, askLeave));
     else if (kind === 'edit') {
@@ -642,6 +654,7 @@ export async function performTurn({ input, cwd: startedIn, env, callTool, askLea
     else if (kind === 'sleep') await sleep(Number(value));
     else answer = value;
   }
+  await unlessEnding();
   return { at, input, ran, tools, answer };
 }
 
