@@ -222,9 +222,17 @@ function envWords(env: Record<string, string> | undefined): string {
   return set.length > 0 ? ` with ${set.join(', ')}` : '';
 }
 
-/** The words of a letter that asks leave for a call: what the agent said of it, then the call. */
+/** How long what a request says of its call may be to be shown with the call. */
+const SAID_SHOWN = 200;
+
+/**
+ * The words of a letter that asks leave for a call: what the request says of it, then the call.
+ * A runtime agent's request carries the description of its tool, a manual of many lines that
+ * says nothing of this call, so only a line short enough to be about the call is shown.
+ */
 function describeCall(request: ToolApprovalRequest, ask: PermissionAsk): string {
-  const said = request.description.trim();
+  const told = request.description.trim();
+  const said = told.length > SAID_SHOWN || /[\r\n]/.test(told) ? '' : told;
   const call =
     ask.access === 'command' && ask.command
       ? `Run in ${ask.cwd ?? 'its folder'}${envWords(ask.env)}:\n${ask.command}`

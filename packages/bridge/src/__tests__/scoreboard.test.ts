@@ -185,6 +185,24 @@ describe('resultOf', () => {
     );
     expect(dropped?.outcome).toBe('unknown');
 
+    const idle = resultOf(
+      job({
+        verification: { verified: true, checkedAt: 'x', checks: [] },
+        worktree: { path: '/w', branch: 'b', base: 'c' },
+        changes: { files: 0, insertions: 0, deletions: 0, commits: 0, paths: [], at: 'x' },
+      }),
+      'codex'
+    );
+    expect(idle).toMatchObject({ outcome: 'unknown', grounds: [] });
+    const worked = resultOf(
+      job({
+        verification: { verified: true, checkedAt: 'x', checks: [] },
+        changes: { files: 0, insertions: 0, deletions: 0, commits: 1, paths: [], at: 'x' },
+      }),
+      'codex'
+    );
+    expect(worked?.outcome).toBe('good');
+
     const empty = resultOf(
       job({
         worktree: { path: '/w', branch: 'b', base: 'c', end: { how: 'accepted', at: 'x' } },
@@ -284,6 +302,13 @@ describe('standingsOf', () => {
       { minJobs: 1 }
     );
     expect(standing).toMatchObject({ medianMs: 120_000, letters: 4, person: 1 });
+    const lines = suggestionLines(
+      await suggestFrom(
+        [{ ...result('codex', 'good'), durationMs: 60_000, letters: 1, person: 1 }],
+        { minJobs: 1, windowMs: 86_400_000, harnesses: ['codex'], unavailable: () => undefined }
+      )
+    );
+    expect(lines[1]).toContain('median 1 min, 1 letter and 1 call for the person a job');
   });
 });
 

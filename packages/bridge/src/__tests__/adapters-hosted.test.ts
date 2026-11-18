@@ -572,6 +572,24 @@ describe('a call a hosted agent asks leave for', () => {
     return { bridge, claude, agent, approve };
   }
 
+  it('shows the call without the manual of its tool, which a runtime agent sends as its description', async () => {
+    const { bridge, claude, approve } = await working({ rights: () => 'allow' });
+    const manual =
+      'Run a shell command in the workspace (sh -c), in its current directory or `cwd`. Returns stdout, stderr, the exit code, and whether it timed out or its output was cut. In a workspace whose commands run in an OS sandbox, `sandbox` says how it ran.';
+
+    void approve({ ...PUSH, description: manual });
+    void approve({
+      ...PUSH,
+      toolCallId: 'call-2',
+      description: 'Two\nlines',
+      arguments: { command: 'ls' },
+    });
+    await settle(kit);
+
+    const asked = (await bridge.inbox(claude.name)).map((letter) => letter.body);
+    expect(asked).toEqual(['Run in /work/demo:\ngit push origin main', 'Run in /work/demo:\nls']);
+  });
+
   it('goes to the agent that handed the job over, whose answer the call gets', async () => {
     const { bridge, claude, approve } = await working({ rights: () => 'allow' });
 
