@@ -484,7 +484,7 @@ await session.close();
 await host.close();
 await cog.close();
 rmSync(home, { recursive: true, force: true });`,
-      install: 'pnpm add @cogitator-ai/core @cogitator-ai/bridge',
+      install: 'pnpm add @cogitator-ai/core @cogitator-ai/bridge better-sqlite3',
       env: ['GOOGLE_API_KEY'],
       run: 'GOOGLE_API_KEY=your-key npx tsx agent-bridge.ts',
       repoRun: 'npx tsx examples/bridge/02-hosted-agent.ts',
