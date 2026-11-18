@@ -201,6 +201,19 @@ describe.skipIf(!posix)(
       expect(run(['results']).stdout).toMatch(
         /^#1 {2}qwen@\S+ {2}docs {2}good \(its checks passed\)/
       );
+      const author = /Job #1 is with (qwen@\S+)/.exec(handed.stdout)?.[1] ?? '';
+      const again = orchestrator(['delegate', author, 'Now say what you wrote']);
+      expect(again.status, again.stderr).toBe(0);
+      await until(
+        () => orchestrator(['inbox', '--peek', '--job', '2']).stdout.includes('report from qwen@'),
+        'the report of the second job'
+      );
+      const later = fake.requests.at(-1)?.messages ?? [];
+      expect(later.at(-1)?.content).toContain('Now say what you wrote');
+      expect(
+        later.some((message) => message.content.includes('Write the notes of the project'))
+      ).toBe(true);
+      expect(later.some((message) => message.role === 'tool')).toBe(true);
       expect(served.output()).not.toContain('!');
     });
 
