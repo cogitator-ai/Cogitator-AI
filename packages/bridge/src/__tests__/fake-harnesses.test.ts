@@ -843,6 +843,30 @@ describe('fake claude Stop hooks', () => {
     expect(readText('hook-ended')).toBe('ended\n');
   });
 
+  it('goes no further with a turn once its session is stopped', async () => {
+    const leave = 'echo stopping > stopping; sleep 1; exit 0';
+    const command = `trap '${leave}' TERM; echo $$ > hook.pid; while :; do sleep 0.05; done`;
+    const sessionId = await fakes.openClaudeWindow({
+      cwd: work,
+      settings: stopHooks({ command, asyncRewake: true }),
+    });
+    await fakes.say(sessionId, 'say: first');
+    await until(() => readNumber('hook.pid') > 0, 'the hook to wait');
+    await fakes.say(sessionId, 'edit: after-stop.txt\nsay: late');
+    await until(
+      async () => (await sessionOf(sessionId)).waitingFor === 'permission prompt',
+      'the dialog'
+    );
+
+    const stopping = fakes.run('claude', ['stop', sessionId]);
+    await until(() => readText('stopping') === 'stopping\n', 'the stop to reach the hook');
+    await fakes.run('claude', ['__answer', sessionId, 'allow']);
+
+    expect((await stopping).code).toBe(0);
+    expect(existsSync(join(work, 'after-stop.txt'))).toBe(false);
+    expect(fakes.transcript('claude', sessionId).map((turn) => turn.answer)).toEqual(['first']);
+  });
+
   it('kills a hook that does not end when its session is stopped', async () => {
     const command = `trap '' TERM; echo $$ > hook.pid; while :; do sleep 0.05; done`;
     const sessionId = await fakes.openClaudeWindow({
