@@ -177,14 +177,18 @@ function badEnd(
   return new Error(`Job #${job.number} ${job.state}${job.reason ? `: ${job.reason}` : ''}`);
 }
 
+function trimUnderscores(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === '_') start += 1;
+  while (end > start && value[end - 1] === '_') end -= 1;
+  return value.slice(start, end);
+}
+
 function nameOf(address: string): string {
   const word = aliasOfHarness(harnessOfAlias(address.split(':')[0]));
-  return (
-    (address.includes('@') ? address : word)
-      .replace(/[^A-Za-z0-9_-]+/g, '_')
-      .replace(/^_+|_+$/g, '')
-      .slice(0, 64) || 'agent'
-  );
+  const plain = (address.includes('@') ? address : word).replace(/[^A-Za-z0-9_-]+/g, '_');
+  return trimUnderscores(plain).slice(0, 64) || 'agent';
 }
 
 const keyOf = (userId: string | undefined, thread: string): string =>

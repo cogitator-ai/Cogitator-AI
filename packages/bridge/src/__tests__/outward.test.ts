@@ -369,6 +369,9 @@ describe('the agents of a bridge, offered to the outside', () => {
     expect(Object.keys(agents)).toEqual(['codex', 'reviewer']);
     expect(agents.reviewer.config.description).toBe('Reviews a diff');
 
+    const named = await door(['__codex@demo__']);
+    expect(Object.keys(named.agents)).toEqual(['codex_demo']);
+
     await expect(
       bridgeAgents({
         socketPath: bridgePaths({ home }).socket,
