@@ -216,23 +216,6 @@ export class StudioStore {
       .slice(0, query.limit ?? 200);
   }
 
-  /**
-   * Whether a workflow or a swarm started the run, directly or through other
-   * runs: their usage already sums it.
-   */
-  private insideWorkflow(run: RunRecord): boolean {
-    const seen = new Set<string>();
-    let parentId = run.parentRunId;
-    while (parentId && !seen.has(parentId)) {
-      seen.add(parentId);
-      const parent = this.runs.get(parentId);
-      if (!parent) return false;
-      if (parent.kind === 'workflow' || parent.kind === 'swarm') return true;
-      parentId = parent.parentRunId;
-    }
-    return false;
-  }
-
   /** Counts, spend, latency and daily activity over every run kept. */
   stats(now = Date.now(), days = 14): StudioStats {
     const startOfDay = (at: number) => {
@@ -268,7 +251,7 @@ export class StudioStore {
 
     for (const run of this.runs.values()) {
       const runPriced = run.usage !== undefined && run.usage.priced !== false;
-      if (!this.insideWorkflow(run)) {
+      if (run.kind !== 'workflow' && run.kind !== 'swarm') {
         cost += run.usage?.cost ?? 0;
         priced ||= runPriced;
         inputTokens += run.usage?.inputTokens ?? 0;

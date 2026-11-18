@@ -397,6 +397,99 @@ describe('StudioStore.stats', () => {
     );
   });
 
+  function startWorkflow(s: StudioStore, startedAt: number): void {
+    s.apply({
+      type: 'run.started',
+      runId: 'w',
+      kind: 'workflow',
+      target: 'report',
+      input: '{}',
+      rootRunId: 'w',
+      startedAt,
+    });
+  }
+
+  it('counts the spend of the agents a running workflow already finished', () => {
+    const { store: s } = store();
+    const now = new Date(2026, 9, 7, 15).getTime();
+    startWorkflow(s, now - 1000);
+    s.apply(started('a', 'w', now - 900, 'researcher'));
+    finish(s, 'a', now - 500, 0.25);
+    s.apply(started('b', 'w', now - 400, 'writer'));
+
+    const stats = s.stats(now, 1);
+    expect(stats.cost).toBe(0.25);
+    expect(stats.inputTokens).toBe(10);
+    expect(stats.outputTokens).toBe(5);
+  });
+
+  it('counts the spend of the finished agents of a workflow the studio stopped during', () => {
+    const { store: first, dir } = store();
+    const now = new Date(2026, 9, 7, 15).getTime();
+    startWorkflow(first, now - 1000);
+    first.apply(started('a', 'w', now - 900, 'researcher'));
+    finish(first, 'a', now - 500, 0.25);
+    first.apply(started('b', 'w', now - 400, 'writer'));
+
+    const again = new StudioStore(dir, () => 0.5);
+    expect(again.getRun('w')?.status).toBe('failed');
+    const stats = again.stats(now, 1);
+    expect(stats.cost).toBe(0.25);
+    expect(stats.inputTokens).toBe(10);
+  });
+
+  it('counts the spend of the finished agents of a workflow whose host went away', () => {
+    const { store: s } = store();
+    const now = new Date(2026, 9, 7, 15).getTime();
+    startWorkflow(s, now - 1000);
+    s.apply(started('a', 'w', now - 900, 'researcher'));
+    finish(s, 'a', now - 500, 0.25);
+    s.apply(started('b', 'w', now - 400, 'writer'));
+    s.abandonRunning('The project reloaded');
+
+    const stats = s.stats(now, 1);
+    expect(stats.cost).toBe(0.25);
+    expect(stats.inputTokens).toBe(10);
+  });
+
+  it('counts an agent that finished after its workflow failed', () => {
+    const { store: s } = store();
+    const now = new Date(2026, 9, 7, 15).getTime();
+    startWorkflow(s, now - 1000);
+    s.apply(started('a', 'w', now - 900, 'researcher'));
+    s.apply({
+      type: 'run.failed',
+      runId: 'w',
+      error: 'boom',
+      endedAt: now - 600,
+      stopped: false,
+    });
+    finish(s, 'a', now - 500, 0.25);
+
+    expect(s.stats(now, 1).cost).toBe(0.25);
+  });
+
+  it('counts the spend of a workflow once after the store loads again', () => {
+    const { store: first, dir } = store();
+    const now = new Date(2026, 9, 7, 15).getTime();
+    startWorkflow(first, now - 1000);
+    first.apply(started('a', 'w', now - 900, 'researcher'));
+    finish(first, 'a', now - 500, 0.25);
+    first.apply(started('b', 'w', now - 400, 'writer'));
+    finish(first, 'b', now - 100, 0.5);
+    first.apply({
+      type: 'run.completed',
+      runId: 'w',
+      output: '{}',
+      usage: { inputTokens: 0, outputTokens: 0, cost: 0, duration: 900 },
+      endedAt: now,
+    });
+
+    const stats = new StudioStore(dir, () => 0.5).stats(now, 1);
+    expect(stats.cost).toBe(0.75);
+    expect(stats.inputTokens).toBe(20);
+  });
+
   it('has no latency before a run finished', () => {
     const { store: s } = store();
     s.apply(started('r', 'r', Date.now()));
