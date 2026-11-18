@@ -1,5 +1,15 @@
 # @cogitator-ai/bridge
 
+## 0.12.2
+
+### Patch Changes
+
+- [#387](https://github.com/cogitator-ai/Cogitator-AI/pull/387) [`9e268a3`](https://github.com/cogitator-ai/Cogitator-AI/commit/9e268a3731f316b4ecc04748b647fbcc2579bbfc) - Three things a run with agents on other models showed.
+
+  - A job whose checks pass in a worktree it changed nothing in no longer counts as confirmed on the scoreboard: the checks passed before it began. An agent that answers "Done" without doing anything is now `unknown` until a review says otherwise, not `good`.
+  - A permission request of a hosted runtime agent shows the call alone. It used to start with the description of the tool, a manual of several lines that says nothing of the call.
+  - `suggest` writes "1 call" and "1 letter".
+
 ## 0.12.1
 
 ### Patch Changes
