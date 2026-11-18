@@ -25,6 +25,9 @@ const MAX_WAITING_THREADS = 1000;
 
 const CLOSED = 'The door to the bridge was closed';
 
+/** Why a job is taken back when its door closes. */
+const CLOSED_REASON = 'the door it came through was closed';
+
 /** An agent of the bridge as the outside world is offered it. */
 export interface OutwardAgentSpec {
   /** Who gets the jobs, as `delegate` takes it: `codex`, `claude:new`, `auto`, an agent's name */
@@ -519,6 +522,10 @@ export async function bridgeAgents(options: BridgeAgentsOptions): Promise<Bridge
         ...(options.worktree && { worktree: true }),
         ...(options.type && { type: options.type }),
       });
+      if (stop.signal.aborted) {
+        await client.cancel(created.job.number, CLOSED_REASON).catch(() => undefined);
+        throw new Error(CLOSED);
+      }
       return { job: created.job.number, end: ended(created.job.number, turn) };
     });
     return { job: handed.job, end: await handed.end };
@@ -694,6 +701,9 @@ export async function bridgeAgents(options: BridgeAgentsOptions): Promise<Bridge
       const turn = turnOf(name, run.threadId ?? randomUUID(), run);
       const startedAt = Date.now();
       const asked = waiting.get(turn.key);
+      if (asked && asked.agent !== name) {
+        await letGo(turn.key, 'the caller moved on to another agent on this thread');
+      }
       const { job, end } =
         asked?.agent === name
           ? { job: asked.job, end: await answer(asked, run.input, turn) }
@@ -728,7 +738,7 @@ export async function bridgeAgents(options: BridgeAgentsOptions): Promise<Bridge
       pending.clear();
       waiting.clear();
       early.clear();
-      await Promise.all(jobs.map((job) => takeBack(job, 'the door it came through was closed')));
+      await Promise.all(jobs.map((job) => takeBack(job, CLOSED_REASON)));
       await pump?.catch(() => undefined);
     },
   };
