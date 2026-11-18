@@ -1,5 +1,15 @@
 # @cogitator-ai/bridge
 
+## 0.10.2
+
+### Patch Changes
+
+- [#382](https://github.com/cogitator-ai/Cogitator-AI/pull/382) [`ccf97c4`](https://github.com/cogitator-ai/Cogitator-AI/commit/ccf97c447e9735db125679a68dae8727e2dd2fbc) - The stand-ins of `claude` and `codex` in `@cogitator-ai/bridge/testing` wait for their hooks and commands before a session that is stopped is gone.
+
+  - A session that was stopped asked its hooks to end and left at once. A hook that still wrote to its pipes after that, if only the word of its shell on a child the signal killed, died of SIGPIPE before its own handler of the signal had run. On a loaded machine a test saw the hook gone and its cleanup not done.
+  - A session now stays until its hooks and commands have ended and keeps reading their output until then. One that does not end in three seconds is killed, where it used to be left running.
+  - While it waits, the session takes no new message and goes no further with the turn it was in, so nothing is changed or recorded after the stop.
+
 ## 0.10.1
 
 ### Patch Changes
