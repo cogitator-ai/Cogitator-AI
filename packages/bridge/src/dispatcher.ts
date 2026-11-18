@@ -443,6 +443,9 @@ function asError(error: unknown): Error {
 /** The ids the conductor of a recipe gives the letters it writes. */
 const RECIPE_LETTER_ID = /^(recipe|relay)-/;
 
+/** How many finished jobs the scoreboard reads, the newest: more than a machine ends in its window. */
+const SCORED_JOBS = 5_000;
+
 /** How many reviews of its work the record of a job keeps, the first ones. */
 const REVIEWS_KEPT = 20;
 
@@ -2091,23 +2094,26 @@ export class BridgeDispatcher
       .map((adapter) => adapter.harness);
   }
 
-  /** What became of the jobs that ended within the window of the scoreboard, newest first. */
+  /**
+   * What became of the jobs that ended within the window of the scoreboard, newest first. The
+   * window is measured from when a job ended, whenever it was handed over, among the newest
+   * `SCORED_JOBS` finished jobs.
+   */
   private scored(): JobResult[] {
     const harnesses = new Map<string, string | undefined>();
     const harnessOf = (agent: string): string | undefined => {
       if (!harnesses.has(agent)) harnesses.set(agent, this.store.getAgent(agent)?.harness);
       return harnesses.get(agent);
     };
+    const since = this.now() - this.limits.scoreWindowMs;
     return this.store
-      .jobTasks({
-        states: ['completed', 'failed'],
-        createdSince: this.now() - this.limits.scoreWindowMs,
-      })
+      .jobTasks({ states: ['completed', 'failed'], limit: SCORED_JOBS })
       .flatMap((task) => {
         const job = jobOf(task);
         const harness = job && harnessOf(job.to);
         if (!job || !harness || this.adapters.get(harness)?.recipeProblem) return [];
-        return resultOf(job, harness) ?? [];
+        const result = resultOf(job, harness);
+        return result && Date.parse(result.endedAt) >= since ? [result] : [];
       });
   }
 
