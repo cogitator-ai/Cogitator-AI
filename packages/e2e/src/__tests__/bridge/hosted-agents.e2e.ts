@@ -245,8 +245,10 @@ describe.skipIf(!posix)(
       expect(mail).toMatch(/ran into the limit of claude .*so the bridge handed the job to qwen/);
       expect(readFileSync(join(project, 'notes.txt'), 'utf8')).toBe('drafted\n');
       const limits = run(['limits']).stdout;
-      expect(limits).toMatch(/^claude {2}until 15:45/m);
-      expect(limits).toMatch(/^codex {2}until \d\d:\d\d, then the bridge tries it again/m);
+      expect(limits).toMatch(/^claude {2}until (?:\w{3} \d{1,2} )?15:45/m);
+      expect(limits).toMatch(
+        /^codex {2}until (?:\w{3} \d{1,2} )?\d\d:\d\d, then the bridge tries it again/m
+      );
       expect(orchestrator(['suggest']).stdout).toMatch(/qwen .*<- auto takes this one/);
       expect(served.output()).not.toContain('!');
     });

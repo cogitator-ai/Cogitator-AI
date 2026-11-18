@@ -1229,7 +1229,7 @@ describe('bridge limits', () => {
     expect(await runBridgeLimits({}, claude())).toBe(0);
     expect(lines.join('\n')).not.toContain('\u001b[31m');
     expect(output()).toMatch(
-      /^codex {2}until \d\d:\d\d, then the bridge tries it again {2}You've hit your usage limit\. \[31m Try again later\.$/
+      /^codex {2}until (?:\w{3} \d{1,2} )?\d\d:\d\d, then the bridge tries it again {2}You've hit your usage limit\. \[31m Try again later\.$/
     );
     lines = [];
     expect(await runBridgeLimits({ json: true }, person())).toBe(0);
@@ -1237,7 +1237,7 @@ describe('bridge limits', () => {
 
     lines = [];
     expect(await runBridgeDelegate('codex', ['Fix it'], {}, claude())).not.toBe(0);
-    expect(failed()).toMatch(/codex is out of its limit until \d\d:\d\d/);
+    expect(failed()).toMatch(/codex is out of its limit until (?:\w{3} \d{1,2} )?\d\d:\d\d/);
 
     expect(await runBridgeLimits({ clear: 'codex' }, claude())).not.toBe(0);
     expect(failed()).toContain('an agent does not answer for the person');

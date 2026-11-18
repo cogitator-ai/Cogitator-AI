@@ -188,15 +188,17 @@ describe.skipIf(!posix)('the limit of a harness, on the real command line', () =
 
     const shown = run(['status']).stdout;
     expect(shown).toContain('Out of their limit, no job goes to them');
-    expect(shown).toMatch(/codex {2}until \d\d:\d\d, then the bridge tries it again/);
-    expect(run(['limits']).stdout).toMatch(/^codex {2}until \d\d:\d\d/);
+    expect(shown).toMatch(
+      /codex {2}until (?:\w{3} \d{1,2} )?\d\d:\d\d, then the bridge tries it again/
+    );
+    expect(run(['limits']).stdout).toMatch(/^codex {2}until (?:\w{3} \d{1,2} )?\d\d:\d\d/);
     const log = run(['log']).stdout;
     expect(log).toMatch(/codex is out of its limit until \d\d:\d\d:\d\d, when it is tried again/);
     expect(log).toContain(`handed on from ${moved.redirects?.[0].from} to ${moved.to}`);
 
     const refused = orchestrator(['delegate', 'codex', 'One more']);
     expect(refused.status).not.toBe(0);
-    expect(refused.stderr).toMatch(/codex is out of its limit until \d\d:\d\d/);
+    expect(refused.stderr).toMatch(/codex is out of its limit until (?:\w{3} \d{1,2} )?\d\d:\d\d/);
     const suggested = orchestrator(['suggest']).stdout;
     expect(suggested).toMatch(/codex .*takes no job now: out of its limit until/);
 
