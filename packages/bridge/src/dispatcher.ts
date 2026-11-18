@@ -72,7 +72,7 @@ import {
   type WithdrawInput,
   type WithdrawResult,
 } from './inputs.js';
-import { parseFindings, type Finding } from './findings.js';
+import { ofTheWork, parseFindings, type Finding } from './findings.js';
 import { HANDOVER_GAP, buildHandover } from './handover.js';
 import { isFinishedJobState, jobOf, jobRecordOf } from './job-record.js';
 import { limitClock, limitOf, type LimitSignal } from './limit.js';
@@ -2137,7 +2137,9 @@ export class BridgeDispatcher
       minor: 0,
       nit: 0,
     };
-    for (const finding of findings) counted[finding.severity] += 1;
+    for (const finding of findings) {
+      if (ofTheWork(finding)) counted[finding.severity] += 1;
+    }
     await this.patchRecord(reviewed.taskId, { reviews: [...known, counted] });
   }
 

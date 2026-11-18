@@ -18,6 +18,13 @@ export interface Finding {
   file?: string;
   /** The line it is at */
   line?: number;
+  /**
+   * Set for what the reviewer noticed beside the work under review: a fault that was there
+   * before the job in code it had no need to change, or a case the job does not ask for. Such a
+   * finding does not hold the work up, is not sent back to its author and does not count
+   * against it.
+   */
+  beside?: boolean;
 }
 
 /** One line of plain text: breaks and control characters become spaces. */
@@ -35,6 +42,7 @@ export const FindingSchema = z.strictObject({
   summary: z.string().transform(oneLine).pipe(z.string().min(1).max(MAX_SUMMARY)),
   file: z.string().transform(oneLine).pipe(z.string().min(1).max(MAX_FILE)).optional(),
   line: z.number().int().positive().max(MAX_LINE).optional(),
+  beside: z.boolean().optional(),
 });
 
 /** The most findings one report carries. */
@@ -47,21 +55,51 @@ export function atLeast(finding: Finding, threshold: FindingSeverity): boolean {
   return FINDING_SEVERITIES.indexOf(finding.severity) <= FINDING_SEVERITIES.indexOf(threshold);
 }
 
-/** One finding as a line: `[major] src/a.ts:42 - the limit is read before it is set`. */
+/** Whether a finding is about the work under review, and not something noticed beside it. */
+export function ofTheWork(finding: Finding): boolean {
+  return finding.beside !== true;
+}
+
+/**
+ * Whether a finding holds the work up: it is about the work and weighs at least as much as
+ * `threshold`. What was noticed beside the job never does, whatever it weighs.
+ */
+export function holdsUp(finding: Finding, threshold: FindingSeverity): boolean {
+  return ofTheWork(finding) && atLeast(finding, threshold);
+}
+
+/**
+ * One finding as a line: `[major] src/a.ts:42 - the limit is read before it is set`, and
+ * `[beside major] ...` for one noticed beside the job.
+ */
 export function findingLine(finding: Finding): string {
   const where = finding.file
     ? ` ${finding.file}${finding.line === undefined ? '' : `:${finding.line}`} -`
     : '';
-  return `[${finding.severity}]${where} ${finding.summary}`;
+  return `[${ofTheWork(finding) ? '' : 'beside '}${finding.severity}]${where} ${finding.summary}`;
 }
 
-/** How many findings there are of each severity, in words: `1 blocker, 2 major`. */
-export function findingsCount(findings: readonly Finding[]): string {
+/** How many findings there are of each severity, whatever they are about: `1 blocker, 2 major`. */
+export function severitiesCount(findings: readonly Finding[]): string {
   if (findings.length === 0) return 'no findings';
   return FINDING_SEVERITIES.flatMap((severity) => {
     const count = findings.filter((finding) => finding.severity === severity).length;
     return count > 0 ? [`${count} ${severity}`] : [];
   }).join(', ');
+}
+
+/**
+ * How many findings there are, in words: those about the work by severity, then how many were
+ * noticed beside the job: `1 blocker, 2 major, 3 beside the job`.
+ */
+export function findingsCount(findings: readonly Finding[]): string {
+  if (findings.length === 0) return 'no findings';
+  const own = findings.filter(ofTheWork);
+  const beside = findings.length - own.length;
+  return [
+    ...(own.length > 0 ? [severitiesCount(own)] : []),
+    ...(beside > 0 ? [`${beside} beside the job`] : []),
+  ].join(', ');
 }
 
 /** A line without the list mark it starts with: `- `, `* `, `1. `, `2) `. */
@@ -71,8 +109,12 @@ function withoutMark(line: string): string {
   return mark ? text.slice(mark[0].length).trimStart() : text;
 }
 
-/** What a finding line starts with: the severity in brackets, bold or not, or `[none]`. */
-const HEAD = /^\*{0,2}\[(blocker|major|minor|nit|none)\]\*{0,2}:?/i;
+/**
+ * What a finding line starts with: the severity in brackets, bold or not, or `[none]`. The word
+ * `beside` next to the severity marks a finding noticed beside the job: `[beside major]`.
+ */
+const HEAD =
+  /^\*{0,2}\[\s*(beside[\s,:-]+)?(blocker|major|minor|nit|none)([\s,:-]+beside)?\s*\]\*{0,2}:?/i;
 
 /** Whether a word reads as a path: it has a folder in it, or ends like a file name. */
 function looksLikeFile(word: string): boolean {
@@ -109,8 +151,8 @@ function placeOf(rest: string): { file: string; line?: number; summary: string }
 /**
  * Reads findings out of a report written in words, for an agent that has no tool to name them
  * with: every line of the form `[severity] file:line - what is wrong`, with the file and the
- * line left out when the finding has none. A list mark before it and bold around the severity
- * are fine. Other lines are not findings. Undefined when the report holds no such line, which is
+ * line left out when the finding has none, and `[beside severity]` for what was noticed beside
+ * the job. A list mark before it and bold around the severity are fine. Other lines are not findings. Undefined when the report holds no such line, which is
  * not the same as a review that found nothing: a reviewer that found nothing says so with a
  * line `[none]`, read as an empty list. What is read fits `FindingSchema`: a summary longer than
  * a finding takes is cut.
@@ -123,7 +165,8 @@ export function parseFindings(report: string): Finding[] | undefined {
     const head = HEAD.exec(text);
     if (!head) continue;
     said = true;
-    const severity = head[1].toLowerCase();
+    const severity = head[2].toLowerCase();
+    const beside = head[1] !== undefined || head[3] !== undefined;
     if (severity === 'none' || found.length >= MAX_FINDINGS) continue;
     const rest = text.slice(head[0].length).trim();
     const place = placeOf(rest);
@@ -134,6 +177,7 @@ export function parseFindings(report: string): Finding[] | undefined {
       summary,
       ...(place && { file: place.file }),
       ...(place?.line !== undefined && { line: place.line }),
+      ...(beside && { beside: true }),
     });
   }
   return said ? found : undefined;

@@ -4,10 +4,12 @@ import { WorkflowBuilder } from '@cogitator-ai/workflows';
 import { z } from 'zod';
 import {
   FINDING_SEVERITIES,
-  atLeast,
   findingLine,
   findingsCount,
+  holdsUp,
+  ofTheWork,
   parseFindings,
+  severitiesCount,
   type Finding,
   type FindingSeverity,
 } from '../findings.js';
@@ -29,6 +31,7 @@ import {
   REVIEW_TYPE,
   TASK_LENGTH,
   WORK_TYPE,
+  attempted,
   checkedOf,
   clip,
   endOf,
@@ -40,6 +43,12 @@ import {
 
 /** How many rounds of fixes a review goes through at most when its input names no number. */
 export const DEFAULT_REVIEW_ROUNDS = 2;
+
+/**
+ * The same for work of the type `fix`: a fix is small, and what a second round finds in it is
+ * mostly what the first round of fixes added.
+ */
+export const FIX_REVIEW_ROUNDS = 1;
 
 /** The lightest finding the author is sent back to fix when the input names no threshold. */
 export const DEFAULT_REVIEW_THRESHOLD: FindingSeverity = 'major';
@@ -83,8 +92,12 @@ interface Round {
   fixReport?: string;
 }
 
-/** Why no further round follows. */
-type Stopped = 'clean' | 'unreadable' | 'review-failed' | 'fix-failed' | 'no-work';
+/**
+ * Why no further round follows. `stalled`: a round of fixes left no fewer findings open than
+ * there were before it while rounds were left, so another one of the same would not end the
+ * review.
+ */
+type Stopped = 'clean' | 'stalled' | 'unreadable' | 'review-failed' | 'fix-failed' | 'no-work';
 
 interface ReviewState extends RecipeState {
   work?: Work;
@@ -166,12 +179,36 @@ function whereText(work: Work): string {
     : `The work is in ${work.cwd}, where the job was done: \`git status\` and \`git diff\` there show what is not committed yet.`;
 }
 
+const WHAT_COUNTS = [
+  'Judge the work against the job. A finding is something the work gets wrong, leaves undone of what the job asks, or broke.',
+  'What you notice beside that is worth naming too, but mark it as beside the job: a fault that was there before the job in code it had no need to change, or a case the job does not ask for. It does not hold the work up and is not sent back to its author.',
+].join('\n');
+
 const HOW_TO_REPORT = [
   'Report what you found as findings, each with its severity: blocker (must not go in as it is), major (should be fixed first), minor (worth fixing), nit (a matter of taste).',
-  'Name them in the findings of your report when your report takes them. Otherwise write one line for each, in exactly this form:',
+  'Name them in the findings of your report when your report takes them, with beside set on those beside the job. Otherwise write one line for each, in exactly this form:',
   '[severity] path/to/file:line - what is wrong, and what would be right',
-  'and the single line [none] when you found nothing. Report only what you checked in the code yourself.',
+  'with [beside severity] in the brackets for one beside the job, as in [beside major], and the single line [none] when you found nothing. Report only what you checked in the code yourself.',
 ].join('\n');
+
+/** The findings that hold the work up: about the work, and at or above the threshold. */
+function openOf(findings: readonly Finding[] | undefined, plan: ReviewPlan): Finding[] {
+  return (findings ?? []).filter((finding) => holdsUp(finding, plan.threshold));
+}
+
+/** What the reviews of a run noticed beside the job, each once, in the order it came up. */
+function besideOf(rounds: readonly Round[]): Finding[] {
+  const seen = new Set<string>();
+  return rounds
+    .flatMap((round) => round.findings ?? [])
+    .filter((finding) => {
+      if (ofTheWork(finding)) return false;
+      const key = findingLine(finding);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
 
 function reviewText(work: Work, plan: ReviewPlan, state: ReviewState, round: number): string {
   const before = state.rounds.at(-1);
@@ -180,15 +217,16 @@ function reviewText(work: Work, plan: ReviewPlan, state: ReviewState, round: num
     `The job was:\n${quoted(clip(work.task, TASK_LENGTH))}`,
     whereText(work),
   ];
+  parts.push(WHAT_COUNTS);
   if (plan.focus) parts.push(`Look at this above all:\n${quoted(plan.focus)}`);
   if (round > 1 && before) {
-    const asked = (before.findings ?? []).filter((finding) => atLeast(finding, plan.threshold));
+    const asked = openOf(before.findings, plan);
     parts.push(
       [
         `This is round ${round}. ${work.author} was sent back to fix what the round before found:`,
         ...(asked.length > 0 ? asked.map(findingLine) : ['the checks of the job, which failed']),
         ...(before.fixReport ? [`and reported:\n${quoted(clip(before.fixReport))}`] : []),
-        'Check that each is fixed, and that the fixes broke nothing.',
+        'Check that each is fixed, and that the fixes broke nothing. What the fixes added is part of the work.',
       ].join('\n')
     );
   }
@@ -198,8 +236,9 @@ function reviewText(work: Work, plan: ReviewPlan, state: ReviewState, round: num
 
 function fixText(work: Work, plan: ReviewPlan, state: ReviewState): string {
   const findings = state.rounds.at(-1)?.findings ?? [];
-  const must = findings.filter((finding) => atLeast(finding, plan.threshold));
-  const may = findings.filter((finding) => !atLeast(finding, plan.threshold));
+  const must = openOf(findings, plan);
+  const may = findings.filter((finding) => ofTheWork(finding) && !holdsUp(finding, plan.threshold));
+  const beside = findings.length - must.length - may.length;
   const parts = [
     `Fix what the review of your work on job #${work.job} found. You work where you did the job: ${work.cwd}.`,
   ];
@@ -217,14 +256,16 @@ function fixText(work: Work, plan: ReviewPlan, state: ReviewState): string {
   parts.push(
     'Fix each one, or say in your report why it is no problem. Leave alone what the findings do not touch.'
   );
+  if (beside > 0) {
+    parts.push(
+      `The review noticed ${beside} more beside the job. ${beside === 1 ? 'It is' : 'They are'} no part of this job and not yours to fix here.`
+    );
+  }
   return parts.join('\n\n');
 }
 
 function needsFix(state: ReviewState, plan: ReviewPlan): boolean {
-  const findings = state.rounds.at(-1)?.findings ?? [];
-  return (
-    findings.some((finding) => atLeast(finding, plan.threshold)) || state.checked?.failed === true
-  );
+  return openOf(state.rounds.at(-1)?.findings, plan).length > 0 || state.checked?.failed === true;
 }
 
 async function review(
@@ -271,7 +312,10 @@ async function review(
   ];
   if (!findings) return { rounds, stopped: 'unreadable', report: outcome.report };
   const next: ReviewState = { ...state, rounds };
-  return { rounds, findings, ...(!needsFix(next, plan) && { stopped: 'clean' as const }) };
+  if (!needsFix(next, plan)) return { rounds, findings, stopped: 'clean' };
+  const were = openOf(before?.findings, plan).length;
+  const stalled = round <= plan.rounds && were > 0 && openOf(findings, plan).length >= were;
+  return { rounds, findings, ...(stalled && { stopped: 'stalled' as const }) };
 }
 
 async function fix(
@@ -315,7 +359,8 @@ function summary(state: ReviewState, plan: ReviewPlan): Partial<ReviewState> {
   if (!work) return state.report ? {} : { failed: true, report: 'The recipe found no work' };
   const last = state.rounds.at(-1);
   const fixes = state.rounds.filter((round) => round.fix !== undefined).length;
-  const open = (last?.findings ?? []).filter((finding) => atLeast(finding, plan.threshold));
+  const open = openOf(last?.findings, plan);
+  const beside = besideOf(state.rounds);
   const after = fixes > 0 ? ` after ${plural(fixes, 'round')} of fixes` : '';
   const lines: string[] = [];
   if (!last) {
@@ -335,18 +380,30 @@ function summary(state: ReviewState, plan: ReviewPlan): Partial<ReviewState> {
     );
   } else if (state.stopped === 'fix-failed') {
     lines.push(
-      `The review of job #${work.job} is not clean: ${work.author} did not finish the fixes of job #${last.fix ?? last.review}. ${findingsCount(open)} at or above ${plan.threshold} were open before them.`
+      `The review of job #${work.job} is not clean: ${work.author} did not finish the fixes of job #${last.fix ?? last.review}. ${severitiesCount(open)} at or above ${plan.threshold} were open before them.`
+    );
+  } else if (state.stopped === 'stalled') {
+    const were = openOf(state.rounds.at(-2)?.findings, plan);
+    const left = plan.rounds - fixes;
+    lines.push(
+      `The review of job #${work.job} is not clean${after}, and the last round brought it no closer: ${severitiesCount(were)} at or above ${plan.threshold} ${were.length === 1 ? 'was' : 'were'} open before it, ${severitiesCount(open)} after. The bridge stopped here with ${plural(left, 'round')} left: one more of the same would not end it.`
     );
   } else {
     const left = [
       ...(open.length > 0
         ? [
-            `${findingsCount(open)} at or above ${plan.threshold} ${open.length === 1 ? 'is' : 'are'} still open`,
+            `${severitiesCount(open)} at or above ${plan.threshold} ${open.length === 1 ? 'is' : 'are'} still open`,
           ]
         : []),
       ...(state.checked?.failed ? ['the checks do not pass'] : []),
     ];
     lines.push(`The review of job #${work.job} is not clean${after}: ${left.join(', and ')}.`);
+  }
+  if (beside.length > 0) {
+    lines.push(
+      `Beside the job the review noticed ${severitiesCount(beside)}. ${beside.length === 1 ? 'It is' : 'They are'} no part of this work and ${beside.length === 1 ? 'was' : 'were'} not sent back: decide on ${beside.length === 1 ? 'it' : 'them'} apart from it.`,
+      ...beside.map(findingLine)
+    );
   }
   if (state.checked) {
     lines.push(
@@ -369,18 +426,28 @@ function summary(state: ReviewState, plan: ReviewPlan): Partial<ReviewState> {
   return {
     report: lines.join('\n'),
     ...(state.stopped === 'review-failed' && { failed: true }),
-    ...(last?.findings && { findings: last.findings }),
+    ...(last?.findings && {
+      findings: [
+        ...last.findings,
+        ...besideOf(state.rounds.slice(0, -1)).filter(
+          (earlier) => !last.findings?.some((kept) => findingLine(kept) === findingLine(earlier))
+        ),
+      ],
+    }),
   };
 }
 
-function planOf(input: {
-  by?: string;
-  rounds?: number;
-  threshold?: FindingSeverity;
-  focus?: string;
-}): ReviewPlan {
+function planOf(
+  input: {
+    by?: string;
+    rounds?: number;
+    threshold?: FindingSeverity;
+    focus?: string;
+  },
+  type: string | undefined
+): ReviewPlan {
   return {
-    rounds: input.rounds ?? DEFAULT_REVIEW_ROUNDS,
+    rounds: input.rounds ?? (type === FIX_TYPE ? FIX_REVIEW_ROUNDS : DEFAULT_REVIEW_ROUNDS),
     threshold: input.threshold ?? DEFAULT_REVIEW_THRESHOLD,
     ...(input.focus && { focus: input.focus }),
     ...(input.by && { by: input.by }),
@@ -425,13 +492,15 @@ function reviewWorkflow(
 /**
  * `review`: an agent of another harness reads the work of a job that is done and names what it
  * found, the author fixes what weighs enough, and the reviewer looks again, for as many rounds
- * as the input allows. The job of the recipe ends with how the review ended and what is still
- * open.
+ * as the input allows and for as long as each round leaves fewer findings open than the one
+ * before. The reviewer judges the work against the job: what it notices beside the job is named
+ * in the report of the recipe, and neither holds the work up nor is sent back. The job of the
+ * recipe ends with how the review ended and what is still open.
  *
  * Input: `job`, the job whose work is reviewed, one the caller handed over or carried out.
  * `by`, who reviews: an agent, or a harness word for a fresh session, another harness than the
- * author's by default. `rounds`, how many times the author is sent back at most, 2 by default,
- * 0 for a review that sends nothing back. `threshold`, the lightest finding worth sending back,
+ * author's by default. `rounds`, how many times the author is sent back at most, 2 by default
+ * and 1 when the work is of the type `fix`, 0 for a review that sends nothing back. `threshold`, the lightest finding worth sending back,
  * `major` by default. `focus`, what to look at above all.
  */
 export const reviewRecipe: Recipe = defineRecipe({
@@ -439,8 +508,9 @@ export const reviewRecipe: Recipe = defineRecipe({
   summary:
     'An agent of another harness reviews the work of a job, the author fixes what was found, the reviewer checks again',
   input: z.strictObject({ job: z.number().int().positive(), ...ReviewOptions }),
-  workflow(input, run) {
-    const plan = planOf(input);
+  async workflow(input, run) {
+    const reviewed = await attempted(run, () => run.lookAt(input.job));
+    const plan = planOf(input, 'done' in reviewed ? reviewed.done.type : undefined);
     return reviewWorkflow('bridge-review', run, plan, async () => {
       const job = await run.lookAt(input.job);
       if (!(await mayHaveReviewed(run, job))) {
@@ -485,8 +555,8 @@ export const reviewRecipe: Recipe = defineRecipe({
 /**
  * `build`: do, check, review, fix, check. The text of the recipe's job is handed to an agent as
  * a job in a git worktree of its own, with the checks of the input. Its work is reviewed as by
- * `review`, and the author is sent back until the review is clean and the checks pass, or the
- * rounds run out. The work stays in the worktree of the first job: whoever started the recipe
+ * `review`, and the author is sent back until the review is clean and the checks pass, the
+ * rounds run out, or a round leaves no fewer findings open than the one before. The work stays in the worktree of the first job: whoever started the recipe
  * takes it with `accept`.
  *
  * Input: `to`, who does the work. `checks`, the commands that show the result holds, run by the
@@ -506,7 +576,7 @@ export const buildRecipe: Recipe = defineRecipe({
     ...ReviewOptions,
   }),
   workflow(input, run) {
-    const plan = planOf(input);
+    const plan = planOf(input, run.job.type);
     return reviewWorkflow('bridge-build', run, plan, async () => {
       const outcome = await run.handOver('work', {
         to: input.to,

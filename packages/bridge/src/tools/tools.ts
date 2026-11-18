@@ -185,7 +185,7 @@ const ReviewParams = {
     .max(5)
     .optional()
     .describe(
-      'How many times the author is sent back to fix what the review found, 2 by default, 0 to only review'
+      'How many times the author is sent back to fix what the review found at most, 2 by default and 1 for work of the type fix, 0 to only review. A round that leaves no fewer findings open than the one before ends the review'
     ),
   threshold: Severity.optional().describe(
     'The lightest finding the author is sent back for: blocker, major (the default), minor or nit'
@@ -747,12 +747,18 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
               .describe('What is wrong, and what would be right, in one line'),
             file: z.string().optional().describe('The file, from the top of the repository'),
             line: z.number().int().positive().optional().describe('The line it is at'),
+            beside: z
+              .boolean()
+              .optional()
+              .describe(
+                'True for what you noticed beside the work under review: a fault that was there before the job in code it had no need to change, or a case the job does not ask for. It does not hold the work up and is not sent back to the author'
+              ),
           })
         )
         .max(100)
         .optional()
         .describe(
-          'When the job was a review: what you found, each with its severity: blocker (must not go in as it is), major (should be fixed first), minor (worth fixing), nit (a matter of taste). An empty list says you found nothing. Leave it out when the job was no review'
+          'When the job was a review: what you found, each with its severity: blocker (must not go in as it is), major (should be fixed first), minor (worth fixing), nit (a matter of taste). Judge the work against its job, and set beside on what you noticed outside of it. An empty list says you found nothing. Leave it out when the job was no review'
         ),
     }),
     annotations: WRITES,
@@ -771,6 +777,7 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
               summary: finding.summary,
               ...(finding.file?.trim() && { file: finding.file.trim() }),
               ...(finding.line !== undefined && { line: finding.line }),
+              ...(finding.beside === true && { beside: true }),
             })),
           }),
         });

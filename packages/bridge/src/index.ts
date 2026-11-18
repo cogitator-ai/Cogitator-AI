@@ -300,7 +300,10 @@ export {
   atLeast,
   findingLine,
   findingsCount,
+  holdsUp,
+  ofTheWork,
   parseFindings,
+  severitiesCount,
   type Finding,
   type FindingSeverity,
 } from './findings.js';

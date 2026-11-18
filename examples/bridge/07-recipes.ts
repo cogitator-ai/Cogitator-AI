@@ -101,6 +101,13 @@ async function main() {
       findings: [
         { severity: 'major', file: 'src/limiter.ts', line: 12, summary: 'The window never resets' },
         { severity: 'nit', summary: 'A name could be shorter' },
+        {
+          severity: 'major',
+          file: 'src/cache.ts',
+          line: 9,
+          summary: 'The cache was never bounded',
+          beside: true,
+        },
       ],
     });
 
