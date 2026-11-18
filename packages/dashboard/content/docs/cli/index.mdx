@@ -482,6 +482,7 @@ cogitator bridge recall [words...]         # the notes of the board that fit the
 cogitator bridge forget <id>               # take a note off the board
 cogitator bridge wait                      # wait for mail and exit with 2 when it comes
 cogitator bridge mcp                       # serve the bridge tools over MCP (stdio)
+cogitator bridge offer [agent...]          # serve the agents of the bridge to an MCP client as tools (stdio): --project, --worktree, --type, --name
 cogitator bridge caller --hook claude-code # tell the tools which session calls
 cogitator bridge permit --hook claude-code # ask leave for a call of a session the bridge started
 cogitator bridge stuck --hook claude-code  # say the session waits for you at its permission dialog
@@ -514,6 +515,8 @@ When an agent runs into the limit of its subscription, the bridge hands it no jo
 `wait` is what the wake hook of a Claude Code session runs: it waits for the mail of the session (`--timeout <seconds>`, 600 by default), and when a letter comes writes it to stderr and exits with code 2, which makes Claude Code wake the session with it. With `--hook claude-code` it takes the session from what Claude Code wrote to the hook's stdin, and `--agent <name>` is the name the bridge gave a session it started. Under the letters it adds one line saying how to answer through the bridge: with the tools when `--tools` says the session has them, with the command line otherwise. Without mail it exits with 0 and prints nothing. A failure, a mistyped option included, exits with 1 and never with 2, so an error cannot wake a session. See the [Agent Bridge guide](/docs/bridge#claude-code-and-codex) for the hook itself.
 
 `mcp` is the server of the bridge's tools, started by a harness for a session, not by you: `delegate`, `ask`, `answer`, `report`, `note`, `inbox`, `job`, `jobs`, `cancel`, `diff`, `accept`, `reject`, `remember`, `recall`, `forget` and `agents`. It connects to the dispatcher for each call, so it may start before the dispatcher does. `caller` is the hook Claude Code runs before a call of one of these tools: it adds the session to the arguments of the call, since Claude Code keeps one server across `/clear`. It never exits with 2, which Claude Code would read as a refusal of the tool call. A folder of the bridge that is not the default one (`--home`, `COGITATOR_BRIDGE_HOME`) is written into the command of the server and of the hooks, since a harness does not always hand its environment on.
+
+`offer` is the other way round: it serves the agents of the bridge to an MCP client outside it, one tool for each agent. A call of a tool hands the agent a job in `--project` (the current folder by default) and returns its report, and a call the client gives up on takes its job back. Name the agents as `delegate` does (`codex`, `claude:new`, `auto`), or none for every harness the bridge can start. `--worktree` gives each job a git worktree of its own, `--type <word>` names the jobs for the scoreboard, `--name <name>` is what `status` calls this server. Each server is a session of its own in the book (`outside@<project>`), and when its client goes away, the jobs it still waits for are taken back. What the agents need leave for is asked from you (`bridge asks`), not from the client. As a library, with an A2A service next to the tools: `@cogitator-ai/bridge/outward`.
 
 ---
 

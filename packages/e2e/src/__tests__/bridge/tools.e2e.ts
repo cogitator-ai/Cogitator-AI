@@ -92,9 +92,9 @@ interface ListedTool {
   annotations?: Record<string, unknown>;
 }
 
-/** The server of tools as a harness starts it, spoken to in JSON-RPC by hand */
-function startServer(serverEnv: NodeJS.ProcessEnv) {
-  const child = spawn(process.execPath, [CLI, 'bridge', 'mcp', '--home', bridgeDir], {
+/** A server of the command line over stdio, spoken to in JSON-RPC by hand: `bridge mcp` by default */
+function startServer(serverEnv: NodeJS.ProcessEnv, command: string[] = ['mcp']) {
+  const child = spawn(process.execPath, [CLI, 'bridge', ...command, '--home', bridgeDir], {
     env: serverEnv,
     cwd: project,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -362,5 +362,54 @@ describe.skipIf(!posix)('the bridge tools from a sandbox', () => {
     expect(turn.ran[0].stderr).toContain('EPERM');
     expect(turn.input).toContain('Report on job #1 with the report tool of the bridge');
     expect((await fakes.run('codex', ['mcp', 'get', 'bridge'])).code).toBe(1);
+  });
+
+  it('as bridge offer gives an MCP client the agents as tools: a call is a job, the report its answer', async () => {
+    await serve();
+    const server = startServer(env(), ['offer', 'codex', '--project', project, '--type', 'docs']);
+
+    const hello = await server.initialize('some-mcp-client');
+    expect(hello.serverInfo.name).toBe('cogitator-bridge-agents');
+    expect(hello.instructions).toContain('Each tool is a coding agent');
+    const tools = await server.tools();
+    expect(tools.map((listed) => listed.name)).toEqual(['codex']);
+
+    const called = await server.call('codex', { task: 'Greet the reader\nsay: Hello from Codex' });
+    expect(called.isError).toBe(false);
+    expect(JSON.parse(called.text)).toMatchObject({
+      status: 'completed',
+      output: 'Hello from Codex',
+    });
+
+    const watcher = await connect();
+    const [job] = await watcher.jobs({ states: ['completed'] });
+    expect(job).toMatchObject({
+      from: expect.stringMatching(/^outside@/),
+      to: expect.stringMatching(/^codex/),
+      type: 'docs',
+      cwd: project,
+    });
+    expect(server.stray).toEqual([]);
+  });
+
+  it('as bridge offer takes back the job of a client that went away', async () => {
+    await serve();
+    const server = startServer(env(), ['offer', 'codex', '--project', project]);
+    await server.initialize('some-mcp-client');
+    const call = server.call('codex', { task: 'Take your time\nsleep: 60000\nsay: Too late' });
+    call.catch(() => undefined);
+
+    const watcher = await connect();
+    await until(
+      async () => (await watcher.jobs({ states: ['working'] })).length === 1,
+      'the job of the call to be in progress'
+    );
+    server.child.stdin.end();
+
+    const job = await until(
+      async () => (await watcher.jobs({ states: ['canceled'] })).at(0),
+      'the job to be taken back'
+    );
+    expect(job.reason).toMatch(/the caller gave up on it|the door it came through was closed/);
   });
 });
