@@ -414,6 +414,40 @@ describe('suggestFrom', () => {
     });
   });
 
+  it('keeps an agent of last resort for last, and takes it when no other takes jobs', async () => {
+    const withLast = {
+      ...options,
+      harnesses: ['qwen', 'claude-code', 'codex'],
+      lastResort: ['qwen'],
+    };
+    const usual = await suggestFrom(
+      [...results('qwen', 20, 0), ...results('codex', 6, 2), ...results('claude-code', 5, 3)],
+      withLast
+    );
+    expect(usual.best).toBe('codex');
+    expect(usual.candidates.map((candidate) => candidate.harness)).toEqual([
+      'codex',
+      'claude-code',
+      'qwen',
+    ]);
+    expect(usual.candidates[2]).toMatchObject({ lastResort: true, available: true });
+    expect(suggestionLines(usual).find((line) => line.includes('qwen'))).toContain(
+      'takes a job only when no other agent can'
+    );
+
+    const first = await suggestFrom([], withLast);
+    expect(first).toMatchObject({ basis: 'trial', best: 'claude-code' });
+
+    const alone = await suggestFrom(results('qwen', 20, 0), {
+      ...withLast,
+      unavailable: (harness) => (harness === 'qwen' ? undefined : 'out of its limit'),
+    });
+    expect(alone.best).toBe('qwen');
+    expect(suggestionLines(alone).find((line) => line.includes('qwen'))).toMatch(
+      /<- auto takes this one$/
+    );
+  });
+
   it('names nobody when no job can go to anyone', async () => {
     const suggestion = await suggestFrom(results('codex', 10, 0), {
       ...options,

@@ -116,7 +116,13 @@ import {
   type AddressResolution,
   type ResolveAddressContext,
 } from './registry.js';
-import { resultOf, suggestFrom, type JobResult, type Suggestion } from './scoreboard.js';
+import {
+  resultOf,
+  suggestFrom,
+  type Candidate,
+  type JobResult,
+  type Suggestion,
+} from './scoreboard.js';
 import type {
   AgentFilter,
   BridgeStore,
@@ -570,6 +576,10 @@ export class BridgeDispatcher
    * adapter reports back, since it may have handed the job's first letter over itself
    */
   private readonly starting = new Set<string>();
+  /** Session starts that wait their turn, see `startSession` */
+  private readonly startQueue: { agent: string; job: number; letter: string }[] = [];
+  /** How many sessions adapters are starting right now */
+  private startsRunning = 0;
   /** The waiter of each agent that has one, see `wait` */
   private readonly waiters = new Map<string, Waiter>();
   /**
@@ -2218,7 +2228,9 @@ export class BridgeDispatcher
    * session that is there would not wake, several fit, or the session is one the caller works
    * for, which would then wait for the caller while the caller waits for it. A harness the
    * bridge cannot start a session of right now is passed over for the next. `avoid` names a
-   * harness to take last: the one that did the work a review is of.
+   * harness to take after the others: the one that did the work a review is of. The harnesses
+   * of last resort come after all of those, so one of them takes the job only when no other
+   * harness could, whether that one ran into its limit or simply has no session to give.
    *
    * @throws BridgeError `no_session` when the job can go to none of them
    */
@@ -2232,10 +2244,9 @@ export class BridgeDispatcher
     const open = suggestion.candidates.filter((candidate) => candidate.available);
     const first = open.find((candidate) => candidate.harness === suggestion.best);
     const ranked = first ? [first, ...open.filter((candidate) => candidate !== first)] : open;
-    const order = [
-      ...ranked.filter((candidate) => candidate.harness !== avoid),
-      ...ranked.filter((candidate) => candidate.harness === avoid),
-    ];
+    const rank = (candidate: Candidate): number =>
+      (candidate.lastResort ? 2 : 0) + (candidate.harness === avoid ? 1 : 0);
+    const order = [...ranked].sort((a, b) => rank(a) - rank(b));
     const above = this.worksFor(from.name);
     const passed: string[] = [];
     for (const candidate of order) {
@@ -3510,7 +3521,7 @@ export class BridgeDispatcher
       .sort(
         (a, b) =>
           Number(b.harness === suggestion.best) - Number(a.harness === suggestion.best) ||
-          Number(this.fallback.includes(a.harness)) - Number(this.fallback.includes(b.harness))
+          Number(a.lastResort === true) - Number(b.lastResort === true)
       )
       .find((candidate) => this.adapters.get(candidate.harness)?.createSession !== undefined);
     const why = `ran into the limit of ${aliasOfHarness(old.harness)} (${limit.detail || 'it takes no more requests'})`;
@@ -3637,22 +3648,18 @@ export class BridgeDispatcher
    */
   async suggest(input: SuggestInput = {}): Promise<Suggestion> {
     const request = parse(SuggestInputSchema, input, 'Cannot suggest an agent');
-    const { results, harnesses, limits } = await this.enqueue(async () => {
-      const limited = new Map(this.limitsNow().map((limit) => [limit.harness, limit]));
-      const usual = this.routable().filter((harness) => !this.fallback.includes(harness));
-      const last = this.routable().filter((harness) => this.fallback.includes(harness));
-      return {
-        results: this.scored(),
-        harnesses: usual.some((harness) => !limited.has(harness)) ? usual : [...usual, ...last],
-        limits: limited,
-      };
-    });
+    const { results, harnesses, limits } = await this.enqueue(async () => ({
+      results: this.scored(),
+      harnesses: this.routable(),
+      limits: new Map(this.limitsNow().map((limit) => [limit.harness, limit])),
+    }));
     const now = this.now();
     return suggestFrom(results, {
       ...(request.type !== undefined && { type: request.type }),
       minJobs: this.limits.scoreMinJobs,
       windowMs: this.limits.scoreWindowMs,
       harnesses,
+      lastResort: this.fallback.filter((harness) => harnesses.includes(harness)),
       unavailable: (harness) => {
         const limit = limits.get(harness);
         return limit && limitWords(limit, now);
@@ -4707,11 +4714,29 @@ export class BridgeDispatcher
     });
   }
 
+  /**
+   * Starts the session of an agent for a job, or queues the start when as many sessions are
+   * being started as may be at once (`limits.maxStartingSessions`). A job handed over by an
+   * agent is refused before it gets here, so what waits in the queue is what the bridge itself
+   * hands on: the jobs of an agent that ran into its limit, each of which needs a session.
+   */
   private startSession(agentName: string, jobNumber: number, letterId: string): void {
     this.starting.add(agentName);
+    if (this.startsRunning >= this.limits.maxStartingSessions) {
+      this.startQueue.push({ agent: agentName, job: jobNumber, letter: letterId });
+      return;
+    }
+    this.launchSession(agentName, jobNumber, letterId);
+  }
+
+  private launchSession(agentName: string, jobNumber: number, letterId: string): void {
+    this.startsRunning += 1;
     this.track(
       this.runSessionStart(agentName, jobNumber, letterId).finally(() => {
+        this.startsRunning -= 1;
         if (this.starting.delete(agentName)) this.wakeIfKnown(agentName);
+        const next = this.closing ? undefined : this.startQueue.shift();
+        if (next) this.launchSession(next.agent, next.job, next.letter);
       })
     );
   }
@@ -4730,11 +4755,22 @@ export class BridgeDispatcher
     jobNumber: number,
     letterId: string
   ): Promise<void> {
-    const request = await this.enqueue(async () => {
+    const request = await this.mutate(async (tx) => {
       const agent = this.store.getAgent(agentName);
       const letter = this.store.getLetter(letterId);
       if (!agent || !letter) return undefined;
       const { job } = this.requireJob(jobNumber);
+      if (isFinishedJobState(job.state) || job.to !== agentName) {
+        if (agent.status === 'starting') {
+          this.store.putAgent({ ...agent, status: 'gone' });
+          this.journal(tx, {
+            type: 'agent.gone',
+            agent: agentName,
+            data: { error: `job #${jobNumber} was over before its session was started` },
+          });
+        }
+        return undefined;
+      }
       return { agent, job, letter: renderLetter(letter, job) };
     });
     const adapter = request && this.adapters.get(request.agent.harness);

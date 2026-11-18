@@ -413,7 +413,7 @@ What happens then:
 
 1. The harness is noted as out of its limit until the time it named, or for 30 minutes when it named none, after which the bridge simply tries it again. Of two limits the longer one stays: a session that names no time cuts none short. `status()` lists these in `limited`, `cogitator bridge status` and `cogitator bridge limits` show them, and the person is told once.
 2. No job goes to it meanwhile: `auto` passes it over, `suggest` says why, and a job addressed to it is refused with `limit_reached` and the time it is back.
-3. The jobs the session was carrying out go to a fresh session of another harness, the one `suggest` names for their type. It works in the same folder, the worktree of the job when it has one, and is told who had the job before and to look at what is there first. Whoever handed the job over gets a note and has nothing to do: the job keeps its number and its letters, gets its time anew, and `redirects` on its record says who had it. Jobs the old agent had handed on from inside it are canceled.
+3. The jobs the session was carrying out go to a fresh session of another harness, the one `suggest` names for their type. It works in the same folder, the worktree of the job when it has one, and is told who had the job before and to look at what is there first. Whoever handed the job over gets a note and has nothing to do: the job keeps its number and its letters, gets its time anew, and `redirects` on its record says who had it. Jobs the old agent had handed on from inside it are canceled. When a session carried several jobs, their new sessions start one after another, no more at once than the bridge starts otherwise.
 4. A job nobody else can take fails, and not by the doing of its agent: the scoreboard holds it against nobody.
 
 A step of a recipe that would go back to an agent whose harness is out of its limit goes to a fresh session of whoever takes jobs instead.
@@ -422,7 +422,7 @@ The limit is forgotten when its time is over, when an agent of that harness fini
 
 A Claude Code session whose turn ended on its limit runs no hook that waits for mail, so nothing wakes it until a person opens it again. The bridge takes it out of its address book until then, and it is back with its first call.
 
-**A harness of last resort.** `routing.fallback` names harnesses that take a job only when no other can: `auto` passes them over while any other harness takes jobs, and a job whose agent ran into its limit goes to them last. That is the place for an agent that costs money by the call, such as a hosted agent on an API key, next to agents on a subscription.
+**A harness of last resort.** `routing.fallback` names harnesses that take a job only when no other can: `auto` tries them after every other harness, whether those ran into their limits or have no session to give right now, and a job whose agent ran into its limit goes to them last. `suggest` lists them at the end and says so. That is the place for an agent that costs money by the call, such as a hosted agent on an API key, next to agents on a subscription.
 
 ```typescript
 const host = await hostBridge({

@@ -255,6 +255,8 @@ export interface Candidate extends Standing {
   available: boolean;
   /** Why not, when it cannot */
   unavailable?: string;
+  /** A harness of last resort: it takes a job only when no other can */
+  lastResort?: true;
 }
 
 /**
@@ -290,6 +292,11 @@ export interface SuggestOptions {
   harnesses: readonly string[];
   /** Why a job cannot go to a harness right now, undefined when it can */
   unavailable: (harness: string) => string | undefined;
+  /**
+   * The harnesses of last resort among `harnesses`: listed after every other and never the best
+   * while another takes jobs. Whoever places a job tries them once the others could not take it
+   */
+  lastResort?: readonly string[];
 }
 
 /**
@@ -309,6 +316,7 @@ export async function suggestFrom(
   options: SuggestOptions
 ): Promise<Suggestion> {
   const { type, minJobs, harnesses } = options;
+  const last = new Set(options.lastResort ?? []);
   const place = (harness: string): number => {
     const index = harnesses.indexOf(harness);
     return index === -1 ? harnesses.length : index;
@@ -320,7 +328,7 @@ export async function suggestFrom(
       basis === 'order' || basis === 'trial'
         ? [...standings].sort((a, b) => place(a.harness) - place(b.harness))
         : standings;
-    return ordered.map((standing) => {
+    const candidates = ordered.map((standing): Candidate => {
       const why = harnesses.includes(standing.harness)
         ? options.unavailable(standing.harness)
         : 'the bridge has no way to start a session of it';
@@ -328,11 +336,19 @@ export async function suggestFrom(
         ...standing,
         available: why === undefined,
         ...(why !== undefined && { unavailable: why }),
+        ...(last.has(standing.harness) && { lastResort: true as const }),
       };
     });
+    return [
+      ...candidates.filter((candidate) => !candidate.lastResort),
+      ...candidates.filter((candidate) => candidate.lastResort),
+    ];
   };
-  const openOf = (candidates: Candidate[]): Candidate[] =>
-    candidates.filter((candidate) => candidate.available);
+  const openOf = (candidates: Candidate[]): Candidate[] => {
+    const open = candidates.filter((candidate) => candidate.available);
+    const usual = open.filter((candidate) => !candidate.lastResort);
+    return usual.length > 0 ? usual : open;
+  };
   const rated = (candidates: Candidate[]): boolean =>
     openOf(candidates).some((candidate) => candidate.enough);
 
@@ -459,8 +475,11 @@ export function suggestionLines(suggestion: Suggestion): string[] {
     if (candidate.unknown > 0 && candidate.scored > 0) {
       parts.push(`${candidate.unknown} more nobody checked`);
     }
-    if (candidate.unavailable !== undefined)
+    if (candidate.unavailable !== undefined) {
       parts.push(`takes no job now: ${candidate.unavailable}`);
+    } else if (candidate.lastResort && candidate.harness !== suggestion.best) {
+      parts.push('takes a job only when no other agent can');
+    }
     const mark = candidate.harness === suggestion.best ? '  <- auto takes this one' : '';
     return `  ${names[index].padEnd(width)}  ${parts.join('. ')}${mark}`;
   });
