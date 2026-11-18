@@ -759,8 +759,8 @@ function setActivity({ record, files }, status) {
   patchJson(files.record, record.kind === 'background' ? { status, state } : { status });
 }
 
-function endSession(recordFile) {
-  abandonWork();
+async function endSession(recordFile) {
+  await abandonWork();
   patchJson(recordFile, {
     pid: undefined,
     status: undefined,

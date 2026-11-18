@@ -289,9 +289,9 @@ function findThread(threadId) {
 /** Runs one turn of `exec` to its end. The first event leaves before the turn starts */
 async function foregroundTurn(thread, prompt, asJson) {
   const { lock: lockFile, running } = threadFiles(thread.threadId);
-  onStopSignal(() => {
+  onStopSignal(async () => {
     rmSync(running, { force: true });
-    abandonWork();
+    await abandonWork();
     process.exit(EXIT_ON_STOP_SIGNAL);
   });
   await lock(lockFile);
@@ -521,8 +521,8 @@ async function serve(argv) {
   const [kind] = argv;
   if (argv.length !== 1 || !OWNER_KINDS.includes(kind)) throw new Unsupported();
   if ((await awaitJson(ownerFile(kind))) === undefined) return;
-  boundLife(ownerFile(kind), () => {
-    abandonWork();
+  boundLife(ownerFile(kind), async () => {
+    await abandonWork();
     process.exit(0);
   });
   const draining = new Set();
