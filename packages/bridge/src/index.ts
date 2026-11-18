@@ -129,6 +129,7 @@ export {
   DEFAULT_LIMITS,
   DELIVERY_STATES,
   HARNESSES,
+  HarnessNameSchema,
   INBOX_DELIVERY,
   JOB_STATES,
   JobTypeSchema,
