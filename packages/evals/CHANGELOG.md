@@ -1,5 +1,11 @@
 # @cogitator-ai/evals
 
+## 0.15.0
+
+### Minor Changes
+
+- [#384](https://github.com/cogitator-ai/Cogitator-AI/pull/384) [`4fbadb8`](https://github.com/cogitator-ai/Cogitator-AI/commit/4fbadb8620844d221d509201a398d76f58797aa9) - `wilsonCI(successes, total)` gives the Wilson score confidence interval of a share, such as a pass rate. Unlike a bootstrap of the same outcomes it keeps its width when every trial went the same way: 10 passes out of 10 give 0.72 to 1, not 1 to 1.
+
 ## 0.14.0
 
 ### Minor Changes
