@@ -422,6 +422,45 @@ describe('suggest and auto', () => {
     }
   });
 
+  it('falls to an agent of last resort when no other can take the job, limit or not', async () => {
+    let release: (session: CreatedSession) => void = () => undefined;
+    const hangs = new FakeAdapter({
+      harness: 'claude-code',
+      createSession: () =>
+        new Promise<CreatedSession>((resolve) => {
+          release = resolve;
+        }),
+    });
+    const { bridge, claude } = await open({
+      adapters: [hangs, starts('qwen')],
+      limits: { maxStartingSessions: 1 },
+      routing: { fallback: ['qwen'] },
+    });
+    try {
+      const helper = await bridge.register({
+        harness: 'qwen',
+        sessionId: 'qwen-open',
+        cwd: '/work/demo',
+        project: '/work/demo',
+      });
+      await bridge.register({
+        harness: 'claude-code',
+        sessionId: 'session-other',
+        cwd: '/work/demo',
+        project: '/work/demo',
+      });
+      const first = await bridge.createJob(claude.name, { to: 'claude:new', body: 'One' });
+      expect(first.job.to).toBe('claude-3@demo');
+
+      const second = await bridge.createJob(claude.name, { to: 'auto', body: 'Two' });
+      expect(second.job.to).toBe(helper.name);
+      expect(second.routed).toMatch(/so qwen took it$/);
+    } finally {
+      release({ sessionId: 'claude-late' });
+      await bridge.idle();
+    }
+  });
+
   it('has a review done by another agent than the one that did the work, when there is one', async () => {
     const { bridge, claude } = await open();
     const work = await done('claude:new', { type: 'code' });

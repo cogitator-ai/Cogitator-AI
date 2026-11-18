@@ -277,9 +277,14 @@ describe('the jobs of an agent whose harness ran into its limit', () => {
       adapters: [starts('claude-code'), starts('codex'), starts('qwen')],
       routing: { fallback: ['qwen'] },
     });
-    expect((await bridge.suggest()).candidates.map((candidate) => candidate.harness)).toEqual([
-      'claude-code',
-      'codex',
+    const usual = await bridge.suggest();
+    expect(usual.best).toBe('claude-code');
+    expect(
+      usual.candidates.map((candidate) => [candidate.harness, candidate.lastResort === true])
+    ).toEqual([
+      ['claude-code', false],
+      ['codex', false],
+      ['qwen', true],
     ]);
 
     const { job } = await bridge.createJob(claude.name, { to: codex.name, body: 'Fix it' });
@@ -311,6 +316,46 @@ describe('the jobs of an agent whose harness ran into its limit', () => {
     await expect(
       bridge.createJob(claude.name, { to: 'auto', body: 'Anybody' })
     ).rejects.toMatchObject(code('no_session'));
+  });
+
+  it('start their new sessions one after another, no more at once than the bridge starts', async () => {
+    const releases: ((session: CreatedSession) => void)[] = [];
+    const slow = new FakeAdapter({
+      harness: 'claude-code',
+      createSession: () =>
+        new Promise<CreatedSession>((resolve) => {
+          releases.push(resolve);
+        }),
+    });
+    const { bridge, claude, codex } = await open({
+      adapters: [slow, starts('codex')],
+      limits: { maxStartingSessions: 1 },
+    });
+    const jobs: number[] = [];
+    for (const body of ['One', 'Two', 'Three']) {
+      const { job } = await bridge.createJob(claude.name, { to: codex.name, body });
+      jobs.push(job.number);
+    }
+    await bridge.inbox(codex.name);
+
+    const { redirected } = await bridge.limited(codex.name);
+    expect(redirected.map((moved) => moved.job)).toEqual(jobs);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(slow.sessions).toHaveLength(1);
+      expect(await bridge.agents({ statuses: ['starting'] })).toHaveLength(3);
+
+      await bridge.cancel(claude.name, jobs[1]);
+      releases[0]({ sessionId: 'claude-a' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(slow.sessions.map((session) => session.job.number)).toEqual([jobs[0], jobs[2]]);
+    } finally {
+      for (const release of releases) release({ sessionId: `claude-${releases.indexOf(release)}` });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      for (const release of releases) release({ sessionId: `claude-${releases.indexOf(release)}` });
+      await bridge.idle();
+    }
+    expect((await bridge.agents({ statuses: ['starting'] })).length).toBe(0);
   });
 
   it('go back to a harness whose own limit is over, before any job fails', async () => {
