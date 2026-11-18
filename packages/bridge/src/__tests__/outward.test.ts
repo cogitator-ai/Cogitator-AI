@@ -454,4 +454,44 @@ describe('the agents of a bridge, offered to the outside', () => {
     expect(await second).toMatchObject({ status: 'completed', output: 'Shipped to staging' });
     expect(adapter.sessions).toHaveLength(1);
   });
+
+  it('takes back the job a thread waits on when a tool call of another agent uses the thread', async () => {
+    const { agents, toolHost } = await start({
+      agents: ['codex', { to: 'codex', name: 'reviewer' }],
+    });
+    const first = toolHost.run(agents.codex, { input: 'Ship the fix', threadId: 'thread-a' });
+    const codex = await worker(1);
+    await codex.inbox();
+    await codex.send({ job: 1, kind: 'question', body: 'To staging or to production?' });
+    await first;
+
+    const second = toolHost.run(agents.reviewer, {
+      input: 'Review the diff',
+      threadId: 'thread-a',
+    });
+    await vi.waitFor(async () =>
+      expect(await codex.job(1)).toMatchObject({
+        state: 'canceled',
+        reason: expect.stringContaining('the caller moved on to another agent on this thread'),
+      })
+    );
+    await vi.waitFor(async () => expect((await codex.job(2)).state).toBe('working'));
+    await codex.send({ job: 2, kind: 'report', body: 'Looks right' });
+    expect((await second).output).toBe('Looks right');
+  });
+
+  it('takes back a job that was still being handed over when the door closed', async () => {
+    const { agents, runtime, close } = await start();
+    const running = runtime.run(agents.codex, { input: 'Too late' });
+    const rejected = expect(running).rejects.toThrow('The door to the bridge was closed');
+    await close();
+    await rejected;
+
+    const watcher = await BridgeClient.connect({ socketPath: bridgePaths({ home }).socket });
+    clients.push(watcher);
+    await vi.waitFor(async () => {
+      const jobs = await watcher.jobs({});
+      expect(jobs.map((job) => job.state)).toEqual(['canceled']);
+    });
+  });
 });
