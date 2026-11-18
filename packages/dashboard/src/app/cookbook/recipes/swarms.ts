@@ -402,5 +402,129 @@ await cog.close();`,
         },
       ],
     },
+    {
+      id: 'agent-bridge',
+      title: 'Claude Code, Codex & Your Agents on One Bridge',
+      difficulty: 'medium',
+      time: '15 min',
+      problem:
+        'Your coding agents live in different apps and on different models. One should hand a job to another, get its report back, and have the work checked by an agent of another vendor.',
+      points: [
+        'Run one dispatcher per machine with `hostBridge()` or `cogitator bridge serve`',
+        'Host an agent on any model with `hostedAdapter()`: the first letter of a job is its turn, its answer the report',
+        'Hand a job over with `createJob()`, the `delegate` tool or `cogitator bridge delegate`, and read the report as a letter',
+      ],
+      file: 'agent-bridge.ts',
+      code: `import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  BridgeClient,
+  callerFromEnv,
+  cogitatorSessions,
+  hostBridge,
+  hostedAdapter,
+} from '@cogitator-ai/bridge';
+import { Agent, Cogitator } from '@cogitator-ai/core';
+
+const apiKey = process.env.GOOGLE_API_KEY;
+if (!apiKey) throw new Error('Set GOOGLE_API_KEY');
+
+const cog = new Cogitator({
+  llm: { providers: { google: { apiKey } } },
+  memory: { adapter: 'memory' },
+});
+const reviewer = new Agent({
+  name: 'reviewer',
+  model: 'google/gemini-3.5-flash-lite',
+  instructions:
+    'You review short pieces of code. Answer in two sentences: what is wrong, and how to fix it.',
+});
+
+// A dispatcher on a throwaway folder. The one of your machine is \`cogitator bridge serve\`.
+const home = mkdtempSync(join('/tmp', 'bridge-'));
+const host = await hostBridge({
+  home,
+  adapters: [
+    hostedAdapter({
+      harness: 'reviewer',
+      open: cogitatorSessions({ runtime: cog, agent: reviewer }),
+    }),
+  ],
+});
+
+// Plain code that says it is a Claude Code session. In real use it is a window of Claude Code
+// or Codex that calls the \`delegate\` tool, or \`cogitator bridge delegate reviewer "..."\`.
+const caller = callerFromEnv({ CLAUDE_CODE_SESSION_ID: 'cookbook-session' }, process.cwd());
+if (!caller) throw new Error('The environment named no session');
+const session = await BridgeClient.connect({ socketPath: host.paths.socket, caller });
+
+const { job } = await session.createJob({
+  to: 'reviewer',
+  title: 'Review the retry loop',
+  body: [
+    'Review this function:',
+    '',
+    'async function retry(fn) {',
+    '  for (let i = 0; i < 3; i++) {',
+    '    try { return await fn(); } catch {}',
+    '  }',
+    '}',
+  ].join('\\n'),
+});
+console.log(\`job #\${job.number} went to \${job.to}\`);
+
+// Nobody waits for the job: its report arrives as a letter.
+const mail = await session.wait({ timeoutMs: 120_000 });
+for (const letter of mail.letters) {
+  console.log(\`\${letter.kind} from \${letter.from}:\\n\${letter.body}\`);
+}
+console.log(\`job #\${job.number} is \${(await session.job(job.number)).state}\`);
+
+await session.close();
+await host.close();
+await cog.close();
+rmSync(home, { recursive: true, force: true });`,
+      install: 'pnpm add @cogitator-ai/core @cogitator-ai/bridge',
+      env: ['GOOGLE_API_KEY'],
+      run: 'GOOGLE_API_KEY=your-key npx tsx agent-bridge.ts',
+      repoRun: 'npx tsx examples/bridge/02-hosted-agent.ts',
+      example: 'bridge/02-hosted-agent.ts',
+      extra: [
+        {
+          title: 'The dispatcher of your machine, with Claude Code and Codex',
+          language: 'bash',
+          code: `# once per project: the tools, the hooks and the notes for both harnesses
+cogitator bridge install
+
+# the dispatcher, with an agent on a model of your choice next to them
+cogitator bridge serve --agent reviewer=google/gemini-3.5-flash-lite
+
+# from a Claude Code or Codex session, or from its delegate tool
+cogitator bridge delegate codex "Add wordCount() to src/text.ts with tests"
+
+# done in a worktree, checked, reviewed by another agent and fixed, in one go
+cogitator bridge build codex "Add wordCount() to src/text.ts with tests" --check "npm test"
+
+# how the jobs of each agent went, and who the next one would go to
+cogitator bridge suggest`,
+        },
+      ],
+      notes: [
+        {
+          type: 'info',
+          text: 'The bridge is experimental. It drives the `claude` and `codex` commands of your machine the way you signed them in, and is a tool of one person on their own machine.',
+        },
+        {
+          type: 'tip',
+          text: 'Hand a job to `auto` and the bridge picks the agent whose jobs of that type held best, with the interval it is sure of.',
+        },
+      ],
+      docs: [
+        {
+          href: '/docs/bridge',
+          label: 'Agent Bridge',
+        },
+      ],
+    },
   ],
 };

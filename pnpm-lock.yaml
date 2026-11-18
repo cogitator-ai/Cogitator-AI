@@ -1238,6 +1238,9 @@ importers:
       '@cogitator-ai/app-server':
         specifier: workspace:*
         version: link:../app-server
+      '@cogitator-ai/bridge':
+        specifier: workspace:*
+        version: link:../bridge
       '@cogitator-ai/browser':
         specifier: workspace:*
         version: link:../browser
