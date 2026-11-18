@@ -255,6 +255,98 @@ describe.skipIf(!posix)('a recipe of the bridge, on the real command line', () =
     expect(served.output()).not.toContain('!');
   });
 
+  it('sends the author of a fix back once, and holds nothing up for what the review noticed beside the job', async () => {
+    const served = await serve();
+
+    const started = orchestrator([
+      'build',
+      'codex',
+      '--type',
+      'fix',
+      '--title',
+      'Fix the notes',
+      '--check',
+      'test -f notes.txt',
+      'Fix the notes\nrun: echo edited > notes.txt\nsay: Written',
+    ]);
+    expect(started.status, started.stderr).toBe(0);
+
+    const review = await until(
+      () => status()?.jobList.find((job) => job.number === 3),
+      'the review to be handed over',
+      served.output
+    );
+    const reviewer = await agentOf(review.to);
+    const asked = await fakes.waitForTurn('claude', reviewer.sessionId, () => true);
+    expect(asked.input).toContain('Judge the work against the job.');
+    expect(asked.input).toContain('mark it as beside the job');
+    const found = as(reviewer)([
+      'send',
+      '--job',
+      '3',
+      '--kind',
+      'report',
+      [
+        'Read it.',
+        '[major] notes.txt:1 - The notes say nothing',
+        '[beside major] README.md:1 - The readme never said what the project is',
+      ].join('\n'),
+    ]);
+    expect(found.status, found.stderr).toBe(0);
+
+    const again = await until(
+      () => status()?.jobList.find((job) => job.number === 5),
+      'the second review to be handed over',
+      () => `${served.output()}\n${run(['log']).stdout.split('\n').slice(-22).join('\n')}`
+    );
+    const second = await agentOf(again.to);
+    const looked = await fakes.waitForTurn('claude', second.sessionId, (turn) =>
+      turn.input.includes('This is round 2.')
+    );
+    const [task] = looked.input.split('--- Context of this job');
+    expect(task).toContain('[major] notes.txt:1 - The notes say nothing');
+    expect(task).not.toContain('The readme never said');
+    const fixing = (status()?.agentList ?? [])
+      .filter((agent) => agent.harness === 'codex' && agent.sessionId !== 'thread-orchestrator')
+      .flatMap((agent) => fakes.transcript('codex', agent.sessionId))
+      .find((turn) => turn.input.includes('Fix what the review of your work on job #2 found'));
+    if (!fixing) throw new Error('The fixes reached no Codex session');
+    const [fixes] = fixing.input.split('--- Context of this job');
+    expect(fixes).toContain('To fix:\n[major] notes.txt:1 - The notes say nothing');
+    expect(fixes).toContain('The review noticed 1 more beside the job.');
+    expect(fixes).not.toContain('The readme never said');
+    const still = as(second)([
+      'send',
+      '--job',
+      '5',
+      '--kind',
+      'report',
+      '[major] notes.txt:1 - The notes still say nothing',
+    ]);
+    expect(still.status, still.stderr).toBe(0);
+
+    const mail = await until(
+      () => {
+        const read = orchestrator(['inbox']);
+        return read.stdout.includes('is not clean') ? read.stdout : undefined;
+      },
+      'the report of the recipe',
+      served.output
+    );
+    expect(mail).toContain(
+      'The review of job #2 is not clean after 1 round of fixes: 1 major at or above major is still open.'
+    );
+    expect(mail).toContain(
+      'Beside the job the review noticed 1 major. It is no part of this work and was not sent back: decide on it apart from it.'
+    );
+    expect(mail).toContain(
+      '[beside major] README.md:1 - The readme never said what the project is'
+    );
+    expect(mail).toContain('1 major, 1 beside the job, fixes in job #4.');
+    expect(mail).not.toContain('Round 3');
+    expect(served.output()).not.toContain('!');
+  });
+
   it('races two agents in worktrees of their own, and the work of one is taken', async () => {
     const served = await serve();
     const started = orchestrator([

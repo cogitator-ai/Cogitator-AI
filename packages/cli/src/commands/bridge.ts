@@ -729,7 +729,7 @@ const reviewOptions = (command: Command): Command =>
     )
     .option(
       '--rounds <number>',
-      'how many times the author is sent back to fix what was found, 0 to only review (default: 2)',
+      'how many times the author is sent back to fix what was found at most, 0 to only review (default: 2, and 1 for work of the type fix)',
       wholeNumber
     )
     .option(

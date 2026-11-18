@@ -345,6 +345,201 @@ describe('the conductor of the bridge', () => {
     expect(await kit.bridge.jobs({ parent: 1 })).toHaveLength(4);
   });
 
+  it('keeps what the review noticed beside the job out of the fixes and of the count against the author', async () => {
+    const { kit, claude, codex } = await rig();
+    await kit.bridge.createJob(kit.claude.name, {
+      to: 'recipe',
+      body: 'Add a rate limiter',
+      recipe: { name: 'build', input: BUILD },
+    });
+    await taskOf(codex, 2);
+    await kit.bridge.send(kit.codex.name, { job: 2, kind: 'report', body: 'Done' });
+
+    const old = {
+      severity: 'blocker' as const,
+      file: 'src/cache.ts',
+      line: 9,
+      summary: 'The cache was never bounded',
+      beside: true,
+    };
+    const review = await taskOf(claude, 3);
+    expect(review.text).toContain('Judge the work against the job.');
+    expect(review.text).toContain('[beside severity]');
+    await kit.bridge.send(review.agent, {
+      job: 3,
+      kind: 'report',
+      body: 'One thing in the work, one that was there before',
+      findings: [
+        { severity: 'major', file: 'src/limiter.ts', line: 12, summary: 'The window never resets' },
+        old,
+      ],
+    });
+
+    const fix = await taskOf(codex, 4);
+    expect(fix.text).toContain('To fix:\n[major] src/limiter.ts:12 - The window never resets');
+    expect(fix.text).toContain(
+      'The review noticed 1 more beside the job. It is no part of this job and not yours to fix here.'
+    );
+    expect(fix.text).not.toContain('The cache was never bounded');
+    await kit.bridge.send(kit.codex.name, { job: 4, kind: 'report', body: 'It resets now' });
+
+    const again = await taskOf(claude, 5);
+    expect(again.text).not.toContain('The cache was never bounded');
+    await kit.bridge.send(review.agent, {
+      job: 5,
+      kind: 'report',
+      body: 'The window resets.\n[beside minor] src/cache.ts:30 - A stale comment',
+    });
+
+    const done = await finished(kit, 1);
+    expect(done.state).toBe('completed');
+    const stale = { severity: 'minor', file: 'src/cache.ts', line: 30, summary: 'A stale comment' };
+    expect(done.findings).toEqual([{ ...stale, beside: true }, old]);
+    const text = (await kit.bridge.letters({ job: 1, kinds: ['report'] }))[0]?.body;
+    expect(text).toContain(
+      `passed the review of ${review.agent} after 1 round of fixes: nothing at or above major is open.`
+    );
+    expect(text).toContain(
+      [
+        'Beside the job the review noticed 1 blocker, 1 minor. They are no part of this work and were not sent back: decide on them apart from it.',
+        '[beside blocker] src/cache.ts:9 - The cache was never bounded',
+        '[beside minor] src/cache.ts:30 - A stale comment',
+      ].join('\n')
+    );
+    expect(text).toContain('1 major, 1 beside the job, fixes in job #4.');
+    expect(text).toContain(`Round 2: review in job #5 by ${review.agent}, 1 beside the job.`);
+
+    const [work, fixes] = await Promise.all([kit.bridge.job(2), kit.bridge.job(4)]);
+    expect(work.reviews).toEqual([expect.objectContaining({ job: 3, blocker: 0, major: 1 })]);
+    expect(fixes.reviews).toEqual([
+      expect.objectContaining({ job: 5, blocker: 0, major: 0, minor: 0, nit: 0 }),
+    ]);
+    const results = new Map(
+      (await kit.bridge.results()).map((result) => [result.job, result.outcome])
+    );
+    expect(results.get(4)).toBe('good');
+    expect(kit.errors).toEqual([]);
+  });
+
+  it('passes work whose review found something only beside the job, and sends nobody back', async () => {
+    const { kit, claude, codex } = await rig();
+    await kit.bridge.createJob(kit.claude.name, {
+      to: 'recipe',
+      body: 'Add a rate limiter',
+      recipe: { name: 'build', input: BUILD },
+    });
+    await taskOf(codex, 2);
+    await kit.bridge.send(kit.codex.name, { job: 2, kind: 'report', body: 'Done' });
+    const review = await taskOf(claude, 3);
+    await kit.bridge.send(review.agent, {
+      job: 3,
+      kind: 'report',
+      body: '[beside major] src/cache.ts:9 - The cache was never bounded',
+    });
+
+    const done = await finished(kit, 1);
+    const text = (await kit.bridge.letters({ job: 1, kinds: ['report'] }))[0]?.body;
+    expect(text).toContain(
+      `passed the review of ${review.agent}: nothing at or above major is open.`
+    );
+    expect(text).toContain(
+      'Beside the job the review noticed 1 major. It is no part of this work and was not sent back: decide on it apart from it.'
+    );
+    expect(done.findings).toEqual([
+      {
+        severity: 'major',
+        file: 'src/cache.ts',
+        line: 9,
+        summary: 'The cache was never bounded',
+        beside: true,
+      },
+    ]);
+    expect(await kit.bridge.jobs({ parent: 1 })).toHaveLength(2);
+    expect((await kit.bridge.results()).find((result) => result.job === 2)?.outcome).toBe('good');
+  });
+
+  it('stops when a round of fixes left no fewer findings open, and goes on while each leaves fewer', async () => {
+    const { kit, claude, codex } = await rig();
+    const major = (summary: string) => ({ severity: 'major' as const, summary });
+    const build = async (recipe: number, findings: ReturnType<typeof major>[][]) => {
+      await kit.bridge.createJob(kit.claude.name, {
+        to: 'recipe',
+        body: 'Add a rate limiter',
+        recipe: { name: 'build', input: BUILD },
+      });
+      await taskOf(codex, recipe + 1);
+      await kit.bridge.send(kit.codex.name, { job: recipe + 1, kind: 'report', body: 'Done' });
+      let job = recipe + 2;
+      for (const [at, found] of findings.entries()) {
+        const review = await taskOf(claude, job);
+        await kit.bridge.send(review.agent, { job, kind: 'report', body: 'Read', findings: found });
+        if (at === findings.length - 1) break;
+        await taskOf(codex, job + 1);
+        await kit.bridge.send(kit.codex.name, { job: job + 1, kind: 'report', body: 'Fixed' });
+        job += 2;
+      }
+      await finished(kit, recipe);
+      return (await kit.bridge.letters({ job: recipe, kinds: ['report'] }))[0]?.body;
+    };
+
+    const stalled = await build(1, [
+      [major('The window never resets')],
+      [major('It resets twice')],
+    ]);
+    expect(stalled).toContain(
+      'The review of job #2 is not clean after 1 round of fixes, and the last round brought it no closer: 1 major at or above major was open before it, 1 major after. The bridge stopped here with 1 round left: one more of the same would not end it.'
+    );
+    expect(await kit.bridge.jobs({ parent: 1 })).toHaveLength(4);
+    expect((await kit.bridge.job(1)).findings).toEqual([major('It resets twice')]);
+
+    const closer = await build(6, [
+      [major('The window never resets'), major('No test')],
+      [major('The test asserts nothing')],
+      [],
+    ]);
+    expect(closer).toContain('after 2 rounds of fixes: nothing at or above major is open.');
+    expect(await kit.bridge.jobs({ parent: 6 })).toHaveLength(6);
+    expect(kit.errors).toEqual([]);
+  });
+
+  it('sends the author of a fix back once at most, unless the input says otherwise', async () => {
+    const { kit, claude, codex } = await rig();
+    const major = { severity: 'major' as const, summary: 'The window never resets' };
+    const run = async (recipe: number, input: Record<string, unknown>, reviews: number) => {
+      await kit.bridge.createJob(kit.claude.name, {
+        to: 'recipe',
+        body: 'The limiter lets a burst through',
+        type: 'fix',
+        recipe: { name: 'build', input },
+      });
+      await taskOf(codex, recipe + 1);
+      expect((await kit.bridge.job(recipe + 1)).type).toBe('fix');
+      await kit.bridge.send(kit.codex.name, { job: recipe + 1, kind: 'report', body: 'Done' });
+      for (let at = 0; at < reviews; at += 1) {
+        const job = recipe + 2 + at * 2;
+        const review = await taskOf(claude, job);
+        const found = at === 0 ? [major, { ...major, summary: 'No test' }] : [major];
+        await kit.bridge.send(review.agent, { job, kind: 'report', body: 'Read', findings: found });
+        if (at === reviews - 1) break;
+        await taskOf(codex, job + 1);
+        await kit.bridge.send(kit.codex.name, { job: job + 1, kind: 'report', body: 'Fixed' });
+      }
+      await finished(kit, recipe);
+      return (await kit.bridge.letters({ job: recipe, kinds: ['report'] }))[0]?.body;
+    };
+
+    expect(await run(1, BUILD, 2)).toContain(
+      'The review of job #2 is not clean after 1 round of fixes: 1 major at or above major is still open.'
+    );
+    expect(await kit.bridge.jobs({ parent: 1 })).toHaveLength(4);
+
+    expect(await run(6, { ...BUILD, rounds: 2 }, 3)).toContain(
+      'The review of job #7 is not clean after 2 rounds of fixes: 1 major at or above major is still open.'
+    );
+    expect(await kit.bridge.jobs({ parent: 6 })).toHaveLength(6);
+    expect(kit.errors).toEqual([]);
+  });
+
   it('fails the recipe when the work was not done', async () => {
     const { kit, codex } = await rig();
     await kit.bridge.createJob(kit.claude.name, {
@@ -798,6 +993,47 @@ describe('the conductor of the bridge', () => {
       'The review of job #1 is not clean: 1 major at or above major is still open.'
     );
     expect(tasksOf(codex)).toHaveLength(1);
+  });
+
+  it('reviews the work of a fix for one round of fixes by default', async () => {
+    const { kit, claude, codex } = await rig();
+    const major = { severity: 'major' as const, summary: 'An empty input still throws' };
+    await kit.bridge.createJob(kit.claude.name, {
+      to: kit.codex.name,
+      body: 'The parser throws on an empty input',
+      type: 'fix',
+    });
+    await taskOf(codex, 1);
+    await kit.bridge.send(kit.codex.name, { job: 1, kind: 'report', body: 'Fixed' });
+
+    await kit.bridge.createJob(kit.claude.name, {
+      to: 'recipe',
+      body: 'Review the fix',
+      recipe: { name: 'review', input: { job: 1 } },
+    });
+    const review = await taskOf(claude, 3);
+    await kit.bridge.send(review.agent, {
+      job: 3,
+      kind: 'report',
+      body: 'Read',
+      findings: [major],
+    });
+    await taskOf(codex, 4);
+    await kit.bridge.send(kit.codex.name, { job: 4, kind: 'report', body: 'Fixed again' });
+    await taskOf(claude, 5);
+    await kit.bridge.send(review.agent, {
+      job: 5,
+      kind: 'report',
+      body: 'Read',
+      findings: [major],
+    });
+
+    await finished(kit, 2);
+    const text = (await kit.bridge.letters({ job: 2, kinds: ['report'] }))[0]?.body;
+    expect(text).toContain(
+      'The review of job #1 is not clean after 1 round of fixes: 1 major at or above major is still open.'
+    );
+    expect(await kit.bridge.jobs({ parent: 2 })).toHaveLength(3);
   });
 
   it('reviews no job of others, and none that is still in progress', async () => {
