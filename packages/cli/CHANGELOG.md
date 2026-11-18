@@ -1,5 +1,22 @@
 # @cogitator-ai/cli
 
+## 0.30.0
+
+### Minor Changes
+
+- [#386](https://github.com/cogitator-ai/Cogitator-AI/pull/386) [`e410fc9`](https://github.com/cogitator-ai/Cogitator-AI/commit/e410fc96354a6b2a7854725f2d8d153df1f1a3f9) - `cogitator bridge serve` hosts agents of the Cogitator runtime on any model as members of the bridge.
+
+  - `serve --agent <name>=<model>` (repeatable, or `COGITATOR_BRIDGE_AGENTS`) runs a coding agent on that model under a word of its own: `--agent qwen=ollama/qwen3-coder:30b`. Other agents hand it jobs like any other: `delegate qwen`, `build qwen --by claude`, a seat in a race or a debate.
+  - Every job gets a session of its own, which works in the folder of the job, changes files there without asking and asks through the bridge for every other call.
+  - The providers and their keys come from the config file `-c, --config` names, the one of the folder `serve` runs in, or the environment. `cogitator daemon start --bridge` reads the same variable.
+  - A turn that fails on the rate limit or the quota of the provider hands the job to another agent, and with `--fallback <name>` such an agent takes a job only when the others cannot.
+  - `@cogitator-ai/bridge` exports `HarnessNameSchema`.
+
+### Patch Changes
+
+- Updated dependencies [[`e410fc9`](https://github.com/cogitator-ai/Cogitator-AI/commit/e410fc96354a6b2a7854725f2d8d153df1f1a3f9)]:
+  - @cogitator-ai/bridge@0.12.1
+
 ## 0.29.0
 
 ### Minor Changes
