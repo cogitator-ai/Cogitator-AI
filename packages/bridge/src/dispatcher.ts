@@ -3114,8 +3114,9 @@ export class BridgeDispatcher
    * is still in progress with nothing owed to it, its answer was most likely said only in its
    * own window, where whoever waits for the job does not read. The reminder is a letter, so it
    * wakes the session. One that does not react to it within the reply timeout of the job fails
-   * the job, rather than leaving it open until its deadline. A session that reacts with anything
-   * but a report is reminded again no sooner than that timeout.
+   * the job, rather than leaving it open until its deadline, whether or not it waits for mail by
+   * then: the hook of a session waits a shorter while than that. A session that reacts with
+   * anything but a report is reminded again no sooner than that timeout.
    *
    * A session is left alone while its harness lists it in the middle of a turn, while it waits
    * for jobs it handed over from inside the job or for the person, and while mail for it is on
@@ -3123,41 +3124,34 @@ export class BridgeDispatcher
    */
   private async remindOfReports(tx: Transaction, now: number): Promise<number[]> {
     const failed: number[] = [];
+    const reminded = this.store
+      .jobTasks({ states: ['working'] })
+      .flatMap((task) => jobOf(task) ?? [])
+      .filter((job) => job.reportAskedAt !== undefined);
+    for (const job of reminded) {
+      const asked = Date.parse(job.reportAskedAt ?? '');
+      const patience = job.budget.replyTimeoutMs;
+      if (now - asked < patience || this.wroteSince(job, asked) || !this.owesReport(job)) continue;
+      if (this.inTurn(this.store.getAgent(job.to))) continue;
+      await this.failJob(
+        tx,
+        job.number,
+        `${job.to} ended its turn without a report and did not react to the reminder in ${formatDuration(patience)}`
+      );
+      failed.push(job.number);
+    }
+
     for (const [name, waiter] of this.waiters) {
       if (now - waiter.armedAt < this.limits.reportReminderMs) continue;
       const agent = this.store.getAgent(name);
-      if (agent?.status !== 'active' || this.conducts(agent)) continue;
-      if (this.presence.get(agent.harness)?.busy.has(agent.sessionId)) continue;
-      if (this.store.countLetters({ to: name, states: ['queued'] }) > 0) continue;
+      if (agent?.status !== 'active' || this.conducts(agent) || this.inTurn(agent)) continue;
       const carried = this.store
         .jobTasks({ to: name, states: ['working'] })
         .flatMap((task) => jobOf(task) ?? []);
       for (const job of carried) {
-        if (job.checking || this.waitsForPerson(job.number)) continue;
-        const waitsForJobs =
-          this.store.jobTasks({ parent: job.number, states: ACTIVE_JOB_STATES, limit: 1 }).length >
-          0;
-        if (waitsForJobs) continue;
-        const patience = job.budget.replyTimeoutMs;
-        if (job.reportAskedAt) {
-          const asked = Date.parse(job.reportAskedAt);
-          const [last] = this.store.listLetters({
-            job: job.number,
-            from: name,
-            newestFirst: true,
-            limit: 1,
-          });
-          const reacted = last !== undefined && Date.parse(last.createdAt) >= asked;
-          if (now - asked < patience) continue;
-          if (!reacted) {
-            await this.failJob(
-              tx,
-              job.number,
-              `${name} ended its turn without a report and did not react to the reminder in ${formatDuration(patience)}`
-            );
-            failed.push(job.number);
-            continue;
-          }
+        if (!this.owesReport(job)) continue;
+        if (job.reportAskedAt && now - Date.parse(job.reportAskedAt) < job.budget.replyTimeoutMs) {
+          continue;
         }
         this.systemNote(
           tx,
@@ -3169,6 +3163,40 @@ export class BridgeDispatcher
       }
     }
     return failed;
+  }
+
+  /**
+   * Whether a job waits for nothing but the word of the agent that carries it out: its checks
+   * do not run, it waits for no job handed over from inside it and for no answer of the person,
+   * and no letter for the agent is on its way.
+   */
+  private owesReport(job: BridgeJob): boolean {
+    if (job.checking || this.waitsForPerson(job.number)) return false;
+    const parts = this.store.jobTasks({
+      parent: job.number,
+      states: ACTIVE_JOB_STATES,
+      limit: 1,
+    });
+    if (parts.length > 0) return false;
+    return this.store.countLetters({ to: job.to, states: ['queued'] }) === 0;
+  }
+
+  /** Whether the agent that carries a job out wrote a letter on it at or after a time. */
+  private wroteSince(job: BridgeJob, since: number): boolean {
+    const [last] = this.store.listLetters({
+      job: job.number,
+      from: job.to,
+      newestFirst: true,
+      limit: 1,
+    });
+    return last !== undefined && Date.parse(last.createdAt) >= since;
+  }
+
+  /** Whether the harness of a session listed it in the middle of a turn the last time. */
+  private inTurn(agent: AgentRecord | undefined): boolean {
+    return (
+      agent !== undefined && this.presence.get(agent.harness)?.busy.has(agent.sessionId) === true
+    );
   }
 
   /**
