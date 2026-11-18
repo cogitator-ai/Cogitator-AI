@@ -1,5 +1,11 @@
 # @cogitator-ai/bridge
 
+## 0.13.1
+
+### Patch Changes
+
+- [#391](https://github.com/cogitator-ai/Cogitator-AI/pull/391) [`7794385`](https://github.com/cogitator-ai/Cogitator-AI/commit/7794385947fcf6dad72c03d4c97b3dcf43e225a0) - The README says what the bridge does with your subscriptions and what it does not: it drives the `claude` and `codex` commands you signed in, keeps no login and no token, and is no way around a limit. It names what the terms of Anthropic and OpenAI forbid (letting others work on your plan, sharing a login, running it as a service) and what they leave open, and the section on offering agents to the outside says the same of that door.
+
 ## 0.13.0
 
 ### Minor Changes

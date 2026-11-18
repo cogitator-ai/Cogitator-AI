@@ -1,5 +1,12 @@
 # @cogitator-ai/cli
 
+## 0.31.1
+
+### Patch Changes
+
+- Updated dependencies [[`7794385`](https://github.com/cogitator-ai/Cogitator-AI/commit/7794385947fcf6dad72c03d4c97b3dcf43e225a0)]:
+  - @cogitator-ai/bridge@0.13.1
+
 ## 0.31.0
 
 ### Minor Changes
