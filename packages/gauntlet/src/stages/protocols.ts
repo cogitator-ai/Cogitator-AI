@@ -2,6 +2,7 @@ import type { StageDefinition } from '../runner/types.js';
 import { a2aStage } from './protocols/a2a.js';
 import { acpStage } from './protocols/acp.js';
 import { appServerStage } from './protocols/app-server.js';
+import { bridgeStage } from './protocols/bridge.js';
 import { mcpAgentsStage, mcpToolsStage } from './protocols/mcp.js';
 import { sandboxDockerStage, sandboxWasmStage } from './protocols/sandbox.js';
 import {
@@ -12,7 +13,7 @@ import {
 import { wasmToolsStage } from './protocols/wasm-tools.js';
 
 /**
- * Tools, protocols and sandboxes: MCP, A2A, the app-server, ACP, WASM tools, Docker and WASM
+ * Tools, protocols and sandboxes: MCP, A2A, the app-server, ACP, the agent bridge, WASM tools, Docker and WASM
  * sandboxes, self-modification.
  */
 export const protocolStages: StageDefinition[] = [
@@ -21,6 +22,7 @@ export const protocolStages: StageDefinition[] = [
   a2aStage,
   appServerStage,
   acpStage,
+  bridgeStage,
   wasmToolsStage,
   sandboxWasmStage,
   sandboxDockerStage,

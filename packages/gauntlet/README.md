@@ -59,6 +59,10 @@ Two stages drive the session protocols the way an editor or a desktop app does, 
 - **app-server** spawns `fixtures/protocols/app-server.ts`, a `SessionHost` served by `serveStdio`, and drives it with the generated client: a request before `initialize` is refused, a turn answers before its `turn/started`, a tool that needs approval pauses the turn and `resume.decisions` finishes it, `_cogitator/trace/get` returns its model spans, `turn/interrupt` stops a long tool call, and a second process on the same SQLite file resumes the thread.
 - **acp** launches `fixtures/protocols/acp-agent.ts`, an agent of `createAcpAgent` served by `serveAcpStdio`, through `AcpAgentProvider` as an external agent of another host, and drives that host through the app-server: the agent's stream arrives as turn events, the permission rules allow one command and refuse another, its reads and commands go through the provider's workspace and never leave its root, and after both sides restart its session loads with what it read before.
 
+## Agent bridge
+
+The **bridge** stage hosts a dispatcher of `@cogitator-ai/bridge` with two kinds of agents: a stand-in of Codex from `@cogitator-ai/bridge/testing`, an executable that behaves like the real command line and costs nothing, and an agent of the runtime on the gauntlet model. A session hands each a job and reads its report, the scoreboard counts both, and the agent of the runtime is then reached from outside: by an A2A client over HTTP and by an MCP client that calls it as a tool. Claude Code and Codex themselves are never started, so the stage spends no subscription.
+
 ## What a stage is
 
 A stage proves one thing a user would do, through public package APIs only. It lists the packages it exercises, the stages it needs, and what the machine must have (a service, Docker, BuildKit for an image build, Bun, Deno, Playwright, an API key). A missing requirement makes the stage an honest skip with the reason, never a failure.
