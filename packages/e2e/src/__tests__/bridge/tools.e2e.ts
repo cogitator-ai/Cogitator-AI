@@ -192,6 +192,8 @@ describe.skipIf(!posix)('bridge mcp', () => {
       'delegate',
       'build',
       'review',
+      'race',
+      'debate',
       'ask',
       'answer',
       'report',

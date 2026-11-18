@@ -255,12 +255,90 @@ describe.skipIf(!posix)('a recipe of the bridge, on the real command line', () =
     expect(served.output()).not.toContain('!');
   });
 
+  it('races two agents in worktrees of their own, and the work of one is taken', async () => {
+    const served = await serve();
+    const started = orchestrator([
+      'race',
+      '--to',
+      'codex',
+      '--to',
+      'codex',
+      '--title',
+      'Write the notes',
+      '--check',
+      'test -f notes.txt',
+      'Write the notes\nrun: echo raced > notes.txt\nsay: Written',
+    ]);
+    expect(started.status, started.stderr).toBe(0);
+    expect(started.stdout).toContain(
+      'Job #1 is the race (submitted): codex, codex do the job side by side.'
+    );
+
+    const mail = await until(
+      () => {
+        const read = orchestrator(['inbox']);
+        return read.stdout.includes('asked to do the job') ? read.stdout : undefined;
+      },
+      'the report of the race',
+      () => `${served.output()}\n${run(['log']).stdout.split('\n').slice(-20).join('\n')}`
+    );
+    expect(mail).toContain('2 agents were asked to do the job, 2 finished it.');
+    expect(mail).toMatch(/- job #2 by codex\S+: completed, checks passed, 1 file \+1 -0/);
+    expect(mail).toMatch(/- job #3 by codex\S+: completed, checks passed, 1 file \+1 -0/);
+    expect(mail).toContain('take one with accept, and drop the others with reject');
+    expect(existsSync(join(project, 'notes.txt'))).toBe(false);
+
+    expect(orchestrator(['accept', '3']).status).toBe(0);
+    expect(orchestrator(['reject', '2']).status).toBe(0);
+    expect(readFileSync(join(project, 'notes.txt'), 'utf8')).toBe('raced\n');
+    expect(
+      readdirSync(join(project, '.cogitator', 'worktrees')).filter((name) =>
+        name.startsWith('job-')
+      )
+    ).toEqual([]);
+  });
+
+  it('lets two agents debate a question, and reports where they ended', async () => {
+    const served = await serve();
+    const started = orchestrator([
+      'debate',
+      '--with',
+      'codex=advocate',
+      '--with',
+      'codex=critic',
+      '--rounds',
+      '2',
+      'Should the notes live in the repository?',
+    ]);
+    expect(started.status, started.stderr).toBe(0);
+    expect(started.stdout).toContain(
+      'Job #1 is the debate (submitted): codex, codex answer each other.'
+    );
+
+    const mail = await until(
+      () => {
+        const read = orchestrator(['inbox']);
+        return read.stdout.includes('The debate of') ? read.stdout : undefined;
+      },
+      'the report of the debate',
+      () => `${served.output()}\n${run(['log']).stdout.split('\n').slice(-20).join('\n')}`
+    );
+    expect(mail).toContain(
+      'The debate of 2 agents ended after 2 rounds: the rounds ran out, and 0 of 2 said they agree at the end.'
+    );
+    expect(mail).toMatch(/codex\S* \(advocate\), round 2:/);
+    expect(mail).toMatch(
+      /Every turn is a job of its own, with all that was said: #2, #3, #[45], #[45]\./
+    );
+    expect(run(['log', '--job', '4']).stdout).toContain('(debate, round 2)');
+  });
+
   it('refuses a recipe the dispatcher does not know, with those it does', async () => {
     await serve();
     const refused = orchestrator(['recipe', 'waltz', 'Dance']);
     expect(refused.status).not.toBe(0);
     expect(refused.stderr).toContain(
-      'There is no recipe "waltz". The recipes of this bridge: review, build'
+      'There is no recipe "waltz". The recipes of this bridge: review, build, race, debate'
     );
   });
 });
