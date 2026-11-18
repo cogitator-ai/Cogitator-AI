@@ -27,6 +27,11 @@ export interface WaitForMailResult {
    * reads them: until then they stay queued, and the next waiter gets them again
    */
   confirm(): Promise<void>;
+  /**
+   * Gives the letters up instead: ends the wait without telling the bridge they arrived, so the
+   * next waiter gets them again
+   */
+  release(): Promise<void>;
 }
 
 const DEFAULT_RETRY_MS = 2_000;
@@ -59,8 +64,8 @@ export async function waitForMail(options: WaitForMailOptions): Promise<WaitForM
 
   for (;;) {
     const left = deadline - Date.now();
-    if (signal?.aborted) return { reason: 'closed', letters: [], confirm: none };
-    if (left <= 0) return { reason: 'timeout', letters: [], confirm: none };
+    if (signal?.aborted) return { reason: 'closed', letters: [], confirm: none, release: none };
+    if (left <= 0) return { reason: 'timeout', letters: [], confirm: none, release: none };
 
     let client: BridgeClient;
     try {
@@ -76,7 +81,7 @@ export async function waitForMail(options: WaitForMailOptions): Promise<WaitForM
 
     if (signal?.aborted) {
       await client.close();
-      return { reason: 'closed', letters: [], confirm: none };
+      return { reason: 'closed', letters: [], confirm: none, release: none };
     }
     const onAbort = () => void client.close();
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -95,10 +100,13 @@ export async function waitForMail(options: WaitForMailOptions): Promise<WaitForM
               await connection.close();
             }
           },
+          release: () => connection.close(),
         };
       }
       await client.close();
-      if (waited.reason !== 'closed') return { reason: waited.reason, letters: [], confirm: none };
+      if (waited.reason !== 'closed') {
+        return { reason: waited.reason, letters: [], confirm: none, release: none };
+      }
     } catch (error) {
       await client.close().catch(() => undefined);
       if (!isBridgeError(error) || error.code !== 'not_running') throw error;

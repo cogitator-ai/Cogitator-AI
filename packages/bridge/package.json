@@ -47,6 +47,11 @@
       "types": "./dist/recipes/index.d.ts",
       "import": "./dist/recipes/index.js",
       "default": "./dist/recipes/index.js"
+    },
+    "./outward": {
+      "types": "./dist/outward/index.d.ts",
+      "import": "./dist/outward/index.js",
+      "default": "./dist/outward/index.js"
     }
   },
   "sideEffects": false,

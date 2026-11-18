@@ -19,6 +19,12 @@ import { CommandError, EXIT, reportFailure } from '../utils/cli.js';
 /** The name the server gives itself. A harness knows it by the name it was registered under. */
 export const BRIDGE_SERVER_NAME = 'cogitator-bridge';
 
+/** The name `bridge offer` tells an MCP client: the agents of the bridge, not the tools to reach it. */
+export const BRIDGE_AGENTS_SERVER_NAME = 'cogitator-bridge-agents';
+
+const BRIDGE_AGENTS_INSTRUCTIONS =
+  'Each tool is a coding agent on the machine this server runs on. A call hands it a job and returns its report, which can take minutes. When an agent asks a question before it goes on, its answer says so and names a threadId: call the tool again with that threadId and your answer as the task.';
+
 function cliVersion(): string {
   const manifest = JSON.parse(
     readFileSync(new URL('../../package.json', import.meta.url), 'utf-8')
@@ -76,6 +82,68 @@ export async function runBridgeMcp(flags: { home?: string }): Promise<number> {
     process.stdin.once('end', resolve);
     process.stdin.once('close', resolve);
   });
+  await server.stop().catch(() => undefined);
+  return 0;
+}
+
+export interface BridgeOfferFlags {
+  home?: string;
+  /** The project the jobs are handed over in, the current folder by default */
+  project?: string;
+  /** What `status` and the journal call this door */
+  name?: string;
+  worktree?: boolean;
+  type?: string;
+}
+
+/**
+ * cogitator bridge offer [agent...]: serves the agents of the bridge to an MCP client as tools,
+ * one for each agent, on stdin and stdout until the client closes them. A call of a tool hands
+ * a job to its agent and returns the report, and the jobs it still waits for are taken back when
+ * the client goes away. The other way round from `bridge mcp`, which gives a session the tools
+ * to reach the bridge: here a client from outside reaches the agents.
+ */
+export async function runBridgeOffer(agents: string[], flags: BridgeOfferFlags): Promise<number> {
+  let server: MCPServer;
+  let close: (() => Promise<void>) | undefined;
+  try {
+    const { bridgeAgents } = await import('@cogitator-ai/bridge/outward');
+    const { agentTools } = await import('@cogitator-ai/mcp');
+    const outward = await bridgeAgents({
+      socketPath: bridgePaths({ ...(flags.home && { home: flags.home }), env: process.env }).socket,
+      project: flags.project ?? process.cwd(),
+      ...(agents.length > 0 && { agents }),
+      ...(flags.name && { name: flags.name }),
+      ...(flags.worktree && { worktree: true }),
+      ...(flags.type && { type: flags.type }),
+    });
+    close = outward.close;
+    server = new MCPServer({
+      name: BRIDGE_AGENTS_SERVER_NAME,
+      version: cliVersion(),
+      transport: 'stdio',
+      logging: false,
+      instructions: BRIDGE_AGENTS_INSTRUCTIONS,
+    });
+    server.registerTools(
+      Object.values(outward.agents).flatMap((agent) =>
+        agentTools(outward.toolHost, [agent], { [agent.name]: agent.name }).filter(
+          (tool) => tool.name === agent.name
+        )
+      )
+    );
+    await server.start();
+  } catch (error) {
+    await close?.().catch(() => undefined);
+    return reportFailure(error, { json: false });
+  }
+  await new Promise<void>((resolve) => {
+    process.once('SIGINT', resolve);
+    process.once('SIGTERM', resolve);
+    process.stdin.once('end', resolve);
+    process.stdin.once('close', resolve);
+  });
+  await close().catch(() => undefined);
   await server.stop().catch(() => undefined);
   return 0;
 }

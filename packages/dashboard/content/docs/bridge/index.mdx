@@ -666,6 +666,54 @@ for (const step of steps) console.log(step.title, step.lines);
 
 Pass `toolsServer` to `claudeCodeAdapter()` and `codexAdapter()` too, and the sessions they start get the tools: Claude Code with `--mcp-config`, the hook that names the session and the rule for the tools, Codex as overrides of its configuration.
 
+## The agents, offered to the outside
+
+The bridge reaches the agents of one machine. `@cogitator-ai/bridge/outward` puts them behind the two doors other agents already knock on: an [A2A](https://a2a-protocol.org) service and the tools of an MCP server. A message or a tool call from outside becomes a job of the bridge, and the report of the agent is the answer. It needs `@cogitator-ai/core`.
+
+```typescript
+import { A2AServer } from '@cogitator-ai/a2a';
+import { a2aHono } from '@cogitator-ai/a2a/hono';
+import { Hono } from 'hono';
+import { serveAgents } from '@cogitator-ai/mcp';
+import { bridgePaths } from '@cogitator-ai/bridge';
+import { bridgeAgents } from '@cogitator-ai/bridge/outward';
+
+const outward = await bridgeAgents({
+  socketPath: bridgePaths().socket,
+  project: process.cwd(),
+  agents: ['codex', { to: 'claude:new', name: 'reviewer', description: 'Reviews a diff' }],
+});
+
+// an A2A service: each agent has a card and takes messages
+const a2a = new A2AServer({
+  agents: outward.agents,
+  cogitator: outward.runtime,
+  auth: { type: 'bearer', validate: async (token) => token === process.env.BRIDGE_DOOR_TOKEN },
+});
+new Hono().route('/', a2aHono(a2a));
+
+// the tools of an MCP server: one for each agent
+await serveAgents(outward.toolHost, Object.values(outward.agents));
+```
+
+`agents` takes what `delegate` takes: a harness, `claude:new`, `auto`, the name of a session. Without it every harness the bridge can start a session of is offered. The jobs are handed over in `project`, and each door is a session of its own in the book of the bridge (`outside@<project>`, `outside-2@<project>`), so `status`, `log` and the scoreboard show its jobs like any other and two doors never read each other's mail. `worktree: true` gives each job a git worktree of its own, `type` names them for the scoreboard, and `timeoutMs` takes a job back when it lasts longer. So does a caller that gives up: an aborted request, a tool call its client canceled, an A2A task canceled while its job runs. `close()` takes back every job the door still waits for.
+
+A question of the agent pauses the run the way a question of a tool pauses a run of the runtime. Over A2A the task waits in `input-required` with the question, and the next message of the task is the answer. A new task in the same context means the caller moved on, and the job is taken back. A task canceled while it waits for an answer leaves its job waiting until the next message of its context, or until the bridge gives the job up. Over MCP a tool call cannot wait, so the answer of the tool says that the agent asks and names the thread, and a call with that `threadId` is the answer. One question waits at a time, a job that ended while its question waited answers with what it ended with, and when the bridge handed the job on to another agent in the meantime, the answer reaches that agent as a note.
+
+`serveAgents` also registers an `<agent>_resume` tool for each agent, for approvals a run of the runtime pauses on. A job of the bridge never does, so the tool only refuses. `cogitator bridge offer` leaves it out: it registers the first tool `agentTools(outward.toolHost, [agent])` returns for each agent.
+
+Leave for a call is asked through the bridge as for any job: what the rules of the project allow without asking is allowed, the rest goes to the person at this machine (`cogitator bridge asks`), and nobody outside can allow it. A report of failure, a job the bridge failed and a job that was taken back reject the run.
+
+```bash
+cogitator bridge offer                       # every agent the bridge can start, as MCP tools on stdio
+cogitator bridge offer codex claude:new      # these two
+cogitator bridge offer auto --project ~/app --worktree --type fix
+```
+
+`cogitator bridge offer` is the MCP door as a command, for the configuration of any MCP client. A job takes minutes, so give its calls the time: a client that gives up on a call takes the job back with it.
+
+Whoever reaches the server you put in front of this has the agents of this machine work in `project`, with your subscriptions and what the rules of the project allow. Keep it on this machine or behind authentication, `A2AServer` and `serveAgents` both take an `auth`, and read the terms of your subscriptions before you let anyone but yourself through.
+
 ## Adapters
 
 An adapter tells the bridge how to reach the sessions of one harness. `claudeCodeAdapter()`, `codexAdapter()` and `hostedAdapter()` are the ones above. `cogitator bridge serve` runs the first two as they come. To choose the permission mode of Claude Code sessions or the sandbox of Codex threads, or to add hosted agents, host the dispatcher in a process of your own:

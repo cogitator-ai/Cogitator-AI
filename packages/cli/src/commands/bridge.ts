@@ -41,9 +41,11 @@ import {
   runBridgeMcp,
   runBridgePermit,
   runBridgeLimited,
+  runBridgeOffer,
   runBridgeStuck,
   type BridgePermitFlags,
   type BridgeLimitedFlags,
+  type BridgeOfferFlags,
   type BridgeStuckFlags,
 } from './bridge-tools.js';
 import {
@@ -1066,6 +1068,23 @@ bridgeCommand
   .option(...homeOption)
   .action(async (flags: HomeFlags) => {
     process.exitCode = await runBridgeMcp(flags);
+  });
+
+bridgeCommand
+  .command('offer [agent...]')
+  .description(
+    'Serve the agents of the bridge to an MCP client as tools (stdio): a call hands a job to the agent and returns its report'
+  )
+  .option(
+    '--project <dir>',
+    'the project the jobs are handed over in (default: the current folder)'
+  )
+  .option('--name <name>', 'what status and the journal call this server (default: outward)')
+  .option('--worktree', 'give every job a git worktree of its own, off the last commit')
+  .option(...typeOption)
+  .option(...homeOption)
+  .action(async (agents: string[], flags: BridgeOfferFlags) => {
+    process.exitCode = await runBridgeOffer(agents, flags);
   });
 
 bridgeCommand
