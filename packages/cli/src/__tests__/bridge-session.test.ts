@@ -59,6 +59,7 @@ import {
   claudeModeOf,
   codexSandboxOf,
 } from '../utils/bridge-adapters.js';
+import { bridgeAgentOf, bridgeAgentsOf } from '../utils/bridge-agents.js';
 import { bridgeConductor } from '../utils/bridge-person.js';
 import { UsageError, exitCodeFor } from '../utils/cli.js';
 import { createProgram } from '../program.js';
@@ -1256,6 +1257,40 @@ describe('bridge limits', () => {
       'claude-code',
     ]);
     expect(bridgeFallbackOf({ COGITATOR_BRIDGE_FALLBACK: 'qwen' }, ['Codex'])).toEqual(['codex']);
+  });
+});
+
+describe('the agents bridge serve hosts itself', () => {
+  it('reads each as a name and a model, from the flag and then from the environment', () => {
+    expect(bridgeAgentOf(' Qwen = ollama/qwen3-coder:30b ')).toEqual({
+      harness: 'qwen',
+      model: 'ollama/qwen3-coder:30b',
+    });
+    expect(bridgeAgentsOf({}, [])).toEqual([]);
+    expect(
+      bridgeAgentsOf({
+        COGITATOR_BRIDGE_AGENTS: 'qwen=ollama/qwen3-coder:30b, ds=deepseek/deepseek-chat,',
+      })
+    ).toEqual([
+      { harness: 'qwen', model: 'ollama/qwen3-coder:30b' },
+      { harness: 'ds', model: 'deepseek/deepseek-chat' },
+    ]);
+    expect(
+      bridgeAgentsOf({ COGITATOR_BRIDGE_AGENTS: 'qwen=ollama/a' }, ['glm=openrouter/z-ai/glm-4.6'])
+    ).toEqual([{ harness: 'glm', model: 'openrouter/z-ai/glm-4.6' }]);
+  });
+
+  it('refuses what cannot be an agent: no name, a name that is taken, a model of no provider', () => {
+    for (const value of ['ollama/qwen3', '=ollama/qwen3', 'qwen=', 'two words=ollama/qwen3']) {
+      expect(() => bridgeAgentOf(value)).toThrow(/write it as name=model/);
+    }
+    for (const word of ['codex', 'claude', 'Claude-Code', 'recipe', 'auto']) {
+      expect(() => bridgeAgentOf(`${word}=ollama/qwen3`)).toThrow(/cannot be called/);
+    }
+    expect(() => bridgeAgentOf('qwen=qwen3')).toThrow(/names no provider/);
+    expect(() => bridgeAgentsOf({}, ['qwen=ollama/a', 'Qwen=ollama/b'])).toThrow(
+      /Two agents to host are called "qwen"/
+    );
   });
 });
 

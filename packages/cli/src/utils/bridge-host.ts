@@ -39,10 +39,20 @@ export async function hostBridgeInDaemon(
     const board = await bridgeBoard(env, { onError });
     const conductor = adapters ? undefined : bridgeConductor(env, { onError });
     const fallback = bridgeFallbackOf(env);
+    const hosting = await import('./bridge-agents.js');
+    const specs = adapters ? [] : hosting.bridgeAgentsOf(env);
+    const hosted =
+      specs.length > 0
+        ? hosting.hostedAgents(specs, {
+            config: await hosting.hostedAgentsConfig(undefined),
+            onError,
+          })
+        : [];
     const host = await hostBridge({
       env,
       adapters: adapters ?? [
         ...bridgeAdapters(env, { onError }),
+        ...hosted,
         ...(conductor ? [conductor] : []),
       ],
       rights: reach.rights,

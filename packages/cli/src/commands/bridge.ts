@@ -130,6 +130,10 @@ interface HomeFlags {
 interface ServeFlags extends HomeFlags {
   codexSandbox?: string;
   claudeMode?: string;
+  /** Agents of the runtime to host, each as `name=model` */
+  agent?: string[];
+  /** The config file their providers are read from */
+  config?: string;
   /** The agents that take a job only when no other can */
   fallback?: string[];
 }
@@ -448,6 +452,21 @@ export async function runBridgeStatus(
 }
 
 /** cogitator bridge serve: the dispatcher in the foreground, until Ctrl-C. */
+/** The adapters of the agents `serve` hosts itself, none when no flag or variable names any. */
+async function hostedFor(
+  env: NodeJS.ProcessEnv,
+  flags: Pick<ServeFlags, 'agent' | 'config'>,
+  onError: (error: Error) => void
+): Promise<BridgeAdapter[]> {
+  const agents = await import('../utils/bridge-agents.js');
+  const specs = agents.bridgeAgentsOf(env, flags.agent);
+  if (specs.length === 0) return [];
+  return agents.hostedAgents(specs, {
+    config: await agents.hostedAgentsConfig(flags.config),
+    onError,
+  });
+}
+
 export async function runBridgeServe(
   flags: ServeFlags,
   context: BridgeContext = defaultContext()
@@ -472,6 +491,7 @@ export async function runBridgeServe(
       ? undefined
       : wiring.bridgeConductor(context.env, { ...(flags.home && { home: flags.home }), onError });
     const fallback = bridgeFallbackOf(context.env, flags.fallback);
+    const hosted = context.adapters ? [] : await hostedFor(context.env, flags, onError);
     host = await hostBridge({
       ...(flags.home && { home: flags.home }),
       env: context.env,
@@ -482,6 +502,7 @@ export async function runBridgeServe(
           ...(flags.claudeMode && { claudeMode: flags.claudeMode }),
           onError,
         }),
+        ...hosted,
         ...(conductor ? [conductor] : []),
       ],
       rights: reach.rights,
@@ -592,6 +613,13 @@ bridgeCommand
   .command('serve')
   .description('Run the dispatcher in the foreground: one per machine, shared by every project')
   .option(...homeOption)
+  .option(
+    '--agent <name=model>',
+    'host an agent of the Cogitator runtime under a name of its own, such as qwen=ollama/qwen3-coder:30b, repeatable',
+    collect,
+    [] as string[]
+  )
+  .option('-c, --config <path>', 'the config file the providers of those agents are read from')
   .option(
     '--fallback <agent>',
     'an agent that takes a job only when no other can, such as one that costs money by the call, repeatable',
