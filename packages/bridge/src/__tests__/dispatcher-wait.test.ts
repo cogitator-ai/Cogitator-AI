@@ -590,23 +590,36 @@ describe('a session that ended its turn without a report', () => {
     expect((await bridge.job(1)).reportAskedAt).toBeDefined();
   });
 
-  it('is reminded once, and its job fails when it does not react in the time an answer has', async () => {
+  it('is reminded once in the time an answer has, however long it waits for mail', async () => {
     const made = await taken();
-    const { bridge, claude, codex, clock } = made;
+    const { bridge, codex, clock } = made;
     const first = woken(made);
     await bridge.status();
     clock.advance(61_000);
     await bridge.sweep();
     expect((await first)[0]).toContain('You ended your turn');
 
-    const again = bridge.wait(codex.name);
+    void bridge.wait(codex.name);
     await bridge.status();
     clock.advance(10 * MINUTE);
     await bridge.sweep();
     expect(await bridge.letters({ job: 1, kinds: ['note'] })).toHaveLength(1);
     expect((await bridge.job(1)).state).toBe('working');
+  });
 
-    clock.advance(21 * MINUTE);
+  it('fails the job of a session that stays silent after the reminder, though it waits for mail no more', async () => {
+    const made = await taken();
+    const { bridge, claude, codex, clock } = made;
+    const first = woken(made);
+    await bridge.status();
+    clock.advance(61_000);
+    await bridge.sweep();
+    await first;
+    expect((await bridge.status()).waiting).toEqual([]);
+
+    clock.advance(29 * MINUTE);
+    expect((await bridge.sweep()).failed).toEqual([]);
+    clock.advance(2 * MINUTE);
     const swept = await bridge.sweep();
     expect(swept.failed).toEqual([1]);
     const failed = await bridge.job(1);
@@ -614,7 +627,7 @@ describe('a session that ended its turn without a report', () => {
     expect(failed.reason).toBe(
       'codex@demo ended its turn without a report and did not react to the reminder in 30 min'
     );
-    expect((await again).letters[0].body).toContain('Job #1 has failed');
+    expect((await bridge.inbox(codex.name)).at(-1)?.body).toContain('Job #1 has failed');
     expect((await bridge.inbox(claude.name)).at(-1)?.body).toContain('Job #1 has failed');
   });
 
