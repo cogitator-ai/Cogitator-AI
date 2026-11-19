@@ -83,14 +83,8 @@ vi.mock('ioredis', async () => {
       redisState.keys.add(key);
       if (key.includes(':jobs:')) {
         redisState.jobs.push(JSON.parse(value));
-        redisState.queue.push(value);
-        setTimeout(() => {
-          if (!redisState.handler) return;
-          const index = redisState.queue.indexOf(value);
-          if (index === -1) return;
-          redisState.queue.splice(index, 1);
-          redisState.handler(JSON.parse(value));
-        }, 0);
+        if (redisState.handler) redisState.handler(JSON.parse(value));
+        else redisState.queue.push(value);
       }
       return 1;
     }
