@@ -149,6 +149,13 @@ function head(state: PlanState, seat: number): string {
   return `You are planner ${seat + 1} of ${state.planners.length}.`;
 }
 
+/**
+ * Said at every step: a session that leaves its answer in its own window ends its turn with the
+ * job still open, and a recipe waits for a report nobody sends.
+ */
+const VIA_REPORT_TOOL =
+  'Report on this job with the report tool of the bridge: what you write in your own window nobody reads.';
+
 const HEADINGS = [
   '## Goal: what is true when the work is done',
   '## What is there today: what the code holds already, with the paths and the lines you read yourself',
@@ -161,7 +168,7 @@ const HEADINGS = [
 
 function draftText(run: RecipeRun, state: PlanState, seat: number): string {
   return [
-    `${head(state, seat)} Several agents plan the same work apart, each without seeing the plans of the others, and then settle on one plan together. Change no file: read what you need in the repository, and write your plan as the report of this job, whole, in Markdown. The bridge keeps it as a file once every planner reported.`,
+    `${head(state, seat)} Several agents plan the same work apart, each without seeing the plans of the others, and then settle on one plan together. Change no file: read what you need in the repository. ${VIA_REPORT_TOOL} The text of your report is the plan itself, whole, in Markdown, not a word about it. The bridge keeps it as a file once every planner reported.`,
     `The work to plan:\n${quoted(run.task)}`,
     `Write the plan under these headings, in this order:\n${HEADINGS}`,
     'Plan for whoever builds this without having seen any of it: say what you decided, not what could be decided, and name what you read rather than what you suppose.',
@@ -180,7 +187,7 @@ function plansOf(state: PlanState, seats: readonly number[]): string {
 function critiqueText(run: RecipeRun, state: PlanState, seat: number): string {
   const others = drafted(state).filter((other) => other !== seat);
   return [
-    `${head(state, seat)} Every planner wrote a plan of the same work apart. Now read ${others.length === 1 ? 'the plan of the other' : 'the plans of the others'} and check ${others.length === 1 ? 'it' : 'them'} against the code, not against your taste. Change no file: your report is the critique, whole, and the bridge keeps it as a file.`,
+    `${head(state, seat)} Every planner wrote a plan of the same work apart. Now read ${others.length === 1 ? 'the plan of the other' : 'the plans of the others'} and check ${others.length === 1 ? 'it' : 'them'} against the code, not against your taste. Change no file. ${VIA_REPORT_TOOL} The text of your report is the critique itself, whole, and the bridge keeps it as a file.`,
     `The work that is planned:\n${quoted(run.task)}`,
     `${others.length === 1 ? 'The plan to read' : 'The plans to read'}:\n${plansOf(state, others)}`,
     [
@@ -210,7 +217,7 @@ function mergeText(run: RecipeRun, state: PlanState, seat: number, folder: strin
     `The plans:\n${plansOf(state, drafted(state))}`,
     `The critiques:\n${critiquesOf(state)}`,
     `Write the joint plan to ${join(folder, PLAN_FILE)}, under the headings the drafts have. Write to ${join(folder, DECISIONS_FILE)} what you did with every point of every critique: taken, or declined and why. Change no other file.`,
-    'The others then read both files, and sign the plan or object to it. Report in a few lines once both files are written.',
+    `The others then read both files, and sign the plan or object to it. ${VIA_REPORT_TOOL} Report in a few lines once both files are written.`,
   ].join('\n\n');
 }
 
@@ -225,7 +232,7 @@ function verdictLines(state: PlanState, check: readonly Verdict[], signed = true
 }
 
 const HOW_TO_END =
-  'End with one line, exactly in this form: VERDICT: signed when you stand behind the plan as it is, VERDICT: objections otherwise. With objections, give each on a line of its own before it, in this form: OBJECTION: <heading> - <what is wrong and why>.';
+  'End your report with one line, exactly in this form: VERDICT: signed when you stand behind the plan as it is, VERDICT: objections otherwise. With objections, give each on a line of its own before it, in this form: OBJECTION: <heading> - <what is wrong and why>.';
 
 function checkText(
   run: RecipeRun,
@@ -246,7 +253,7 @@ function checkText(
         ]
       : []),
     'Object only to what would make the plan fail, or mislead whoever builds by it. Taste, wording and what lies beside the work are no objections.',
-    HOW_TO_END,
+    `${VIA_REPORT_TOOL} ${HOW_TO_END}`,
   ].join('\n\n');
 }
 
@@ -255,7 +262,7 @@ function reviseText(state: PlanState, at: number, rounds: number, folder: string
   return [
     `The others read the joint plan and did not all sign it. For each objection either change ${state.plan}, or decline it in ${join(folder, DECISIONS_FILE)} with your reason. Change no other file.`,
     `Where the checkers stand:\n${verdictLines(state, last).join('\n')}`,
-    `This is round ${at} of ${rounds} of answers. They read both files again once you report.`,
+    `This is round ${at} of ${rounds} of answers. They read both files again once you report. ${VIA_REPORT_TOOL}`,
   ].join('\n\n');
 }
 
