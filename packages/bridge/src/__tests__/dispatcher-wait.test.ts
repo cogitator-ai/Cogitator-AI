@@ -691,33 +691,37 @@ describe('a session that ended its turn without a report', () => {
 
   describe('that does not wake for a letter', () => {
     /** A job pushed to a Codex session its harness lists, which a letter does not wake. */
-    async function asleep(listed: { current: LiveSession[] }, wakes = false): Promise<Kit> {
+    async function asleep(
+      listed: { current: LiveSession[] },
+      wakes = false,
+      presenceCheckMs = 1_000
+    ): Promise<Kit> {
       const adapter = new FakeAdapter({
         liveSessions: async () => listed.current,
         wakesFor: async () => wakes,
       });
-      kit = await makeKit({ adapters: [adapter], limits: { presenceCheckMs: 1_000 } });
+      kit = await makeKit({ adapters: [adapter], limits: { presenceCheckMs } });
       await kit.bridge.createJob(kit.claude.name, { to: 'codex', body: 'Review the parser' });
       await kit.bridge.idle();
       expect((await kit.bridge.job(1)).state).toBe('working');
       return kit;
     }
 
-    /** Lets the bridge list the sessions and act on what it heard. */
-    async function tick(made: Kit, ms: number): Promise<number[]> {
+    /** Lets the bridge list the sessions and act on what it heard, and says how job #1 is. */
+    async function tick(made: Kit, ms: number): Promise<string> {
       made.clock.advance(ms);
-      const { failed } = await made.bridge.sweep();
+      await made.bridge.sweep();
       await made.bridge.idle();
-      return failed;
+      return (await made.bridge.job(1)).state;
     }
 
     it('fails the job as silent once its harness lists it out of a turn for a while', async () => {
       const made = await asleep({ current: [{ sessionId: 'thread-codex', busy: false }] });
       const { bridge, claude } = made;
 
-      expect(await tick(made, 2_000)).toEqual([]);
-      expect(await tick(made, 30_000)).toEqual([]);
-      expect(await tick(made, 31_000)).toEqual([1]);
+      expect(await tick(made, 2_000)).toBe('working');
+      expect(await tick(made, 30_000)).toBe('working');
+      expect(await tick(made, 31_000)).toBe('failed');
 
       const failed = await bridge.job(1);
       expect(failed.state).toBe('failed');
@@ -735,32 +739,42 @@ describe('a session that ended its turn without a report', () => {
         current: [{ sessionId: 'thread-codex', busy: true }],
       };
       const made = await asleep(listed);
-      expect(await tick(made, 2_000)).toEqual([]);
-      expect(await tick(made, 5 * MINUTE)).toEqual([]);
+      expect(await tick(made, 2_000)).toBe('working');
+      expect(await tick(made, 5 * MINUTE)).toBe('working');
 
       listed.current = [
         { sessionId: 'thread-codex', busy: false, waitingFor: 'permission prompt' },
       ];
-      expect(await tick(made, 2_000)).toEqual([]);
-      expect(await tick(made, 5 * MINUTE)).toEqual([]);
-      expect((await made.bridge.job(1)).state).toBe('working');
+      expect(await tick(made, 2_000)).toBe('working');
+      expect(await tick(made, 5 * MINUTE)).toBe('working');
     });
 
     it('counts the quiet from its last call, not from the first listing', async () => {
       const made = await asleep({ current: [{ sessionId: 'thread-codex', busy: false }] });
       const { bridge, codex } = made;
-      expect(await tick(made, 2_000)).toEqual([]);
-      expect(await tick(made, 50_000)).toEqual([]);
+      expect(await tick(made, 2_000)).toBe('working');
+      expect(await tick(made, 50_000)).toBe('working');
       await bridge.inbox(codex.name);
-      expect(await tick(made, 30_000)).toEqual([]);
-      expect(await tick(made, 31_000)).toEqual([1]);
+      expect(await tick(made, 30_000)).toBe('working');
+      expect(await tick(made, 31_000)).toBe('failed');
     });
 
     it('leaves a session that wakes for a letter to the reminder of its waiter', async () => {
       const made = await asleep({ current: [{ sessionId: 'thread-codex', busy: false }] }, true);
-      expect(await tick(made, 2_000)).toEqual([]);
-      expect(await tick(made, 10 * MINUTE)).toEqual([]);
-      expect((await made.bridge.job(1)).state).toBe('working');
+      expect(await tick(made, 2_000)).toBe('working');
+      expect(await tick(made, 10 * MINUTE)).toBe('working');
+    });
+
+    it('keeps the job of a session found in a turn again before a fresh listing decides', async () => {
+      const listed: { current: LiveSession[] } = {
+        current: [{ sessionId: 'thread-codex', busy: false }],
+      };
+      const made = await asleep(listed, false, 30_000);
+      expect(await tick(made, 30_000)).toBe('working');
+      expect(await tick(made, 30_000)).toBe('working');
+      listed.current = [{ sessionId: 'thread-codex', busy: true }];
+      expect(await tick(made, 30_000)).toBe('working');
+      expect(await tick(made, 30_000)).toBe('working');
     });
   });
 
