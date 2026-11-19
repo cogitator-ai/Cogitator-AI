@@ -98,7 +98,8 @@ export class MockLLMBackend implements LLMBackend {
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
-    this._calls.push(snapshot(request));
+    const sent = snapshot(request);
+    this._calls.push(sent);
 
     const mockResponse = this.responses[this.responseIndex] ?? this.responses[0];
     if (this.responseIndex < this.responses.length - 1) {
@@ -119,7 +120,7 @@ export class MockLLMBackend implements LLMBackend {
     const toolCalls = mockResponse?.toolCalls;
     const finishReason = mockResponse?.finishReason ?? (toolCalls ? 'tool_calls' : 'stop');
 
-    const inputTokens = mockResponse?.usage?.inputTokens ?? this.estimateTokens(request.messages);
+    const inputTokens = mockResponse?.usage?.inputTokens ?? this.estimateTokens(sent.messages);
     const outputTokens = mockResponse?.usage?.outputTokens ?? Math.ceil(content.length / 4);
 
     return {
@@ -137,7 +138,8 @@ export class MockLLMBackend implements LLMBackend {
   }
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
-    this._calls.push(snapshot(request));
+    const sent = snapshot(request);
+    this._calls.push(sent);
 
     const chunks = this.streamChunks[this.streamIndex] ?? this.streamChunks[0] ?? [];
     if (this.streamIndex < this.streamChunks.length - 1) {
@@ -160,7 +162,7 @@ export class MockLLMBackend implements LLMBackend {
       }
 
       const isLast = i === chunks.length - 1;
-      const inputTokens = this.estimateTokens(request.messages);
+      const inputTokens = this.estimateTokens(sent.messages);
       const outputTokens = Math.ceil(totalContent.length / 4);
 
       yield {
