@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { Message } from '@cogitator-ai/types';
+import type { ChatStreamChunk, Message } from '@cogitator-ai/types';
 import { MockLLMBackend, createMockLLMBackend } from '../mocks/mock-llm-backend';
 import { collectStreamContent } from '../helpers/streams';
 
@@ -112,6 +112,17 @@ describe('MockLLMBackend', () => {
       );
     });
 
+    it('counts input tokens of the request as it was sent, not of messages added during the delay', async () => {
+      backend.setResponse({ content: 'ok', delay: 20 });
+      const messages: Message[] = [{ role: 'user', content: 'a'.repeat(40) }];
+
+      const pending = backend.chat({ model: 'test', messages });
+      messages.push({ role: 'user', content: 'b'.repeat(400) });
+      const response = await pending;
+
+      expect(response.usage.inputTokens).toBe(10);
+    });
+
     it('respects configured delay', async () => {
       backend.setResponse({ content: 'Delayed', delay: 50 });
 
@@ -186,6 +197,20 @@ describe('MockLLMBackend', () => {
       const lastChunk = chunks[chunks.length - 1];
       expect(lastChunk.usage).toBeDefined();
       expect(lastChunk.finishReason).toBe('stop');
+    });
+  });
+
+  describe('chatStream() usage', () => {
+    it('counts input tokens of the request as it was sent, not of messages added while streaming', async () => {
+      backend.setStreamChunks([{ content: 'Hello', delay: 20 }]);
+      const messages: Message[] = [{ role: 'user', content: 'a'.repeat(40) }];
+
+      const stream = backend.chatStream({ model: 'test', messages });
+      const first = stream.next();
+      messages.push({ role: 'user', content: 'b'.repeat(400) });
+      const chunk = (await first).value as ChatStreamChunk;
+
+      expect(chunk.usage?.inputTokens).toBe(10);
     });
   });
 
