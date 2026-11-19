@@ -3844,9 +3844,8 @@ export class BridgeDispatcher
    * then: the hook of a session waits a shorter while than that. A session that reacts with
    * anything but a report is reminded again no sooner than that timeout.
    *
-   * A session with no waiter that its harness has listed out of a turn for
-   * `limits.reportReminderMs`, and that a letter does not wake (`wakes`), cannot be reminded:
-   * its job fails as silent then, rather than at its deadline.
+   * A session with no waiter that a letter does not wake cannot be reminded: `failAsleep`
+   * fails its job instead, when a fresh listing of its harness finds it still out of a turn.
    *
    * A session is left alone while its harness lists it in the middle of a turn, while it waits
    * for jobs it handed over from inside the job or for the person, and while mail for it is on
@@ -3893,29 +3892,34 @@ export class BridgeDispatcher
         await this.patchRecord(job.taskId, { reportAskedAt: this.iso(now) });
       }
     }
+    return failed;
+  }
 
-    for (const [harness, presence] of this.presence) {
-      for (const [sessionId, since] of presence.asleep) {
-        const agent = this.store.agentOfSession(harness, sessionId);
-        if (agent?.status !== 'active' || this.waiters.has(agent.name)) continue;
-        const quiet = Math.max(since, Date.parse(agent.lastSeenAt));
-        if (now - quiet < this.limits.reportReminderMs) continue;
-        const carried = this.store
-          .jobTasks({ to: agent.name, states: ['working'] })
-          .flatMap((task) => jobOf(task) ?? []);
-        for (const job of carried) {
-          if (this.waitsForOthers(job)) continue;
-          await this.failJob(
-            tx,
-            job.number,
-            `${agent.name} ended its turn without a report and cannot be reminded: it does not wake for a letter`,
-            'silent'
-          );
-          failed.push(job.number);
-        }
+  /**
+   * Fails the jobs of the sessions a listing just found asleep (see `asleepAmong`) that it and
+   * the listings before it found so for `limits.reportReminderMs`, with no call to the bridge
+   * meanwhile. Only a fresh listing decides it, so a session that began a turn since an older
+   * one keeps its job.
+   */
+  private async failAsleep(tx: Transaction, harness: string, asked: number): Promise<void> {
+    for (const [sessionId, since] of this.presence.get(harness)?.asleep ?? []) {
+      const agent = this.store.agentOfSession(harness, sessionId);
+      if (agent?.status !== 'active' || this.waiters.has(agent.name)) continue;
+      const quiet = Math.max(since, Date.parse(agent.lastSeenAt));
+      if (asked - quiet < this.limits.reportReminderMs) continue;
+      const carried = this.store
+        .jobTasks({ to: agent.name, states: ['working'] })
+        .flatMap((task) => jobOf(task) ?? []);
+      for (const job of carried) {
+        if (this.waitsForOthers(job)) continue;
+        await this.failJob(
+          tx,
+          job.number,
+          `${agent.name} ended its turn without a report and cannot be reminded: it does not wake for a letter`,
+          'silent'
+        );
       }
     }
-    return failed;
   }
 
   /**
@@ -3997,6 +4001,7 @@ export class BridgeDispatcher
                 new Set(sessions.flatMap((session) => (session.busy ? [session.sessionId] : []))),
                 asleep
               );
+              await this.failAsleep(tx, harness, asked);
               for (const session of sessions) {
                 const agent = this.store.agentOfSession(harness, session.sessionId);
                 if (!session.waitingFor) {
