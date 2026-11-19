@@ -114,6 +114,8 @@ async function reportOf(job: number): Promise<string> {
 }
 
 const TASK = 'Add a rate limiter to the gateway';
+const REPORT_TOOL =
+  'Report on this job with the report tool of the bridge: what you write in your own window nobody reads.';
 
 const start = (input: unknown, body = TASK, from = starter) =>
   bridge.createJob(from.name, { to: 'recipe', body, recipe: { name: 'plan', input } });
@@ -228,6 +230,8 @@ describe('the recipe plan', () => {
     expect(one.text).toContain('You are planner 1 of 2.');
     expect(one.text).toContain(`> ${TASK}`);
     expect(one.text).toContain('Change no file');
+    expect(one.text).toContain(REPORT_TOOL);
+    expect(one.text).toContain('The text of your report is the plan itself, whole');
     expect(one.text).toContain('## What is there today');
     expect(one.text).not.toContain('draft-');
 
@@ -250,6 +254,8 @@ describe('the recipe plan', () => {
     expect(critique.text).not.toContain('A sliding window.');
     expect(other.text).toContain(fileOf('draft-1.md'));
     expect(other.text).toContain('take:');
+    expect(other.text).toContain(REPORT_TOOL);
+    expect(other.text).toContain('The text of your report is the critique itself, whole');
     expect(other.text).toContain('beside:');
     await say(4, '1. take: the window is simpler to test');
     await say(5, '1. fault: a bucket per route leaks memory');
@@ -262,6 +268,7 @@ describe('the recipe plan', () => {
     }
     expect(merge.text).toContain(`Write the joint plan to ${fileOf('plan.md')}`);
     expect(merge.text).toContain(fileOf('decisions.md'));
+    expect(merge.text).toContain(REPORT_TOOL);
     writePlan();
     await say(6, 'Both files are written');
 
@@ -269,6 +276,7 @@ describe('the recipe plan', () => {
     expect(check.agent).toBe(two.agent);
     expect(check.text).toContain(fileOf('plan.md'));
     expect(check.text).toContain('VERDICT: signed');
+    expect(check.text).toContain(`${REPORT_TOOL} End your report with one line`);
     expect(check.text).toContain('OBJECTION: <heading> - <what is wrong and why>');
     await say(7, 'It holds.\nVERDICT: signed');
 
@@ -309,6 +317,7 @@ describe('the recipe plan', () => {
     expect(revise.text).toContain('Steps - the limiter is used before it is made');
     expect(revise.text).toContain('Checks - nothing runs the tests');
     expect(revise.text).toContain(fileOf('decisions.md'));
+    expect(revise.text).toContain(REPORT_TOOL);
     writePlan('# Joint plan, revised\n');
     await say(8, 'Both taken');
 
