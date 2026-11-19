@@ -63,6 +63,7 @@ What names a path of this machine goes where only you have it, never into a file
 | `review`   | Has the work of a finished job reviewed by another agent, and its author fix what was found                              |
 | `race`     | Hands the same job to several agents at once, each in a worktree of its own, and lays the results side by side           |
 | `debate`   | Puts a question to several agents, who answer each other round by round until they agree                                 |
+| `plan`     | Has several agents plan the same work apart, read the plans of each other, and settle on one plan they sign or object to |
 | `ask`      | Asks the other agent of a job a question. The answer wakes the session                                                   |
 | `answer`   | Answers a question another agent asked, or decides its permission request: allow, deny, or leave it to the user          |
 | `report`   | Reports the result of a job handed to this session, which ends the job, with its lessons and, of a review, its findings  |
@@ -260,7 +261,7 @@ await bridge.send({
 
 ## Recipes: do, check, review, fix
 
-A recipe is a job the bridge itself carries out by fixed steps: it hands jobs of its own to the agents, waits for their reports and reports once at the end. No model decides what comes next. Four come with the bridge: `build` and `review` for work that is checked by another agent, `race` for the same job done several times side by side, `debate` for a question worth more than one opinion.
+A recipe is a job the bridge itself carries out by fixed steps: it hands jobs of its own to the agents, waits for their reports and reports once at the end. No model decides what comes next. Five come with the bridge: `build` and `review` for work that is checked by another agent, `race` for the same job done several times side by side, `debate` for a question worth more than one opinion, `plan` for a plan several agents write together.
 
 ```typescript
 import { hostBridge } from '@cogitator-ai/bridge';
@@ -291,6 +292,8 @@ await bridge.createJob({
 
 **`debate`: a question, round by round.** The rules are those of the `debate` strategy of [`@cogitator-ai/swarms`](/docs/swarms), with sessions of any harness as the debaters. In the first round each debater answers the question alone. From the second on each sees what the others said in the rounds before, answers them, and ends its turn with `STANCE: agree` or `STANCE: disagree`. The debate ends when every debater that took part agrees in the same round, or after `rounds` rounds: one that argued before and gives no answer now has not agreed. An `advocate` argues for, a `critic` against, any other `role` is told to the agent as it is. With a `moderator`, another agent sums the debate up: the positions, what is agreed and what is not, the strongest arguments and a recommendation. Without one the report carries the positions of the last round. No file is changed. Every debater reads the question whole in every round, so it takes 20000 characters at most, and debaters times rounds is 40 at most. A turn the bridge refuses to hand over, and a moderator it cannot reach, are said in the report, which still carries what the others said. The recipe fails when fewer than two debaters answered.
 
+**`plan`: one plan of several minds.** The agents of `planners`, two to four, plan the same work. In the first step each writes a plan apart, as the report of its job: the bridge keeps the drafts as files only once all of them are in, so no planner starts from the plan of another. Each then reads the plans of the others, checks them against the code and reports a critique: what the other plan does better, what in it is wrong or missing, what lies beside the work. The first planner merges all of it into one plan, `plan.md`, and writes to `decisions.md` what it did with every point of the critiques. The others read both and end with `VERDICT: signed` or `VERDICT: objections`, each objection on a line `OBJECTION: <heading> - <what is wrong>`, and the merger answers the objections in the plan or declines them with its reason, `rounds` times at most. The recipe ends when every checker signs at the same check, when the rounds run out, when a round of answers leaves no fewer objections open than the one before, or when the merger gives no answer. What is still open then is in the report and under a heading of its own at the end of the plan, for whoever started the recipe to decide on. The files of a run lie in `.cogitator/plans/job-<number>` under the folder the recipe was started in, which git ignores, and `out` names where a copy of the plan goes: a path inside the repository at which nothing is yet, checked before any agent is asked. No planner is to change another file, and the report names what changed in the repository while the plan was written. A planner that wrote no draft takes no further part, and when the first planner leaves no plan the next one is asked to merge. The recipe fails when fewer than two planners wrote a draft, when nobody merged the drafts, or when nobody checked the merged plan: the plan of one agent is no joint plan. To have the plan built, hand it to `build` or `delegate` with the commands of its Checks section as the checks.
+
 | Input               | Recipe   | What it says                                                                                                                       |
 | ------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `to`                | `build`  | Who does the work: a harness word such as `claude`, for a session started for the job                                              |
@@ -308,6 +311,10 @@ await bridge.createJob({
 | `debaters`          | `debate` | Who debates, two to six: each a harness word or an agent, or `{ to, role }`                                                        |
 | `rounds`            | `debate` | How many rounds at most, 3 by default                                                                                              |
 | `moderator`         | `debate` | Who sums the debate up, nobody by default                                                                                          |
+| `planners`          | `plan`   | Who plans, two to four harness words or agents. The first merges                                                                   |
+| `rounds`            | `plan`   | How many times the merger answers objections at most: 2 by default, from 0 to 5                                                    |
+| `out`               | `plan`   | Where a copy of the plan goes: a path inside the repository at which nothing is yet                                                |
+| `context`           | `plan`   | As for `build`, for every planner                                                                                                  |
 
 **Findings.** A reviewer names what it found in the `findings` of its report, each with a severity (`blocker`, `major`, `minor`, `nit`), a line of what is wrong and, where it has one, the file and the line. An agent without the tools writes one line for each, `[major] src/limiter.ts:12 - The window never resets`, or the single line `[none]`: `parseFindings` reads them. An empty list says the review found nothing. A finding with `beside` set, `[beside major] src/cache.ts:9 - The cache was never bounded` in a line, is what the reviewer noticed beside the work under review: a fault that was there before the job in code it had no need to change, or a case the job does not ask for. It is not sent back to the author, does not hold the work up whatever it weighs, and does not count against the author: the report of the recipe lists such findings apart, for whoever started it to decide on. A report that names no findings in either form is not a clean review: the recipe then sends nothing back and hands the report on as it is. The findings of a report are kept on its job (`job.findings`) and shown under the report.
 
@@ -355,7 +362,7 @@ recipeAdapter({ recipes: [secondOpinion] });
 
 The bridge keeps what became of every job that ended, and says from it who a job should go to.
 
-A job has a type, one word such as `code`, `fix`, `review`, `docs` or `research`, and `general` when it names none. The steps of the recipes name theirs: `build` and `race` hand the work over as `code` unless the job of the recipe says otherwise, fixes as `fix`, reviews as `review`, the judge of a race as `judge`, the turns of a debate as `debate`.
+A job has a type, one word such as `code`, `fix`, `review`, `docs` or `research`, and `general` when it names none. The steps of the recipes name theirs: `build` and `race` hand the work over as `code` unless the job of the recipe says otherwise, fixes as `fix`, reviews as `review`, the judge of a race as `judge`, the turns of a debate as `debate`, the steps of a plan as `plan`.
 
 ```typescript
 await bridge.createJob({ to: 'codex', body: 'Fix the burst limit', type: 'fix' });

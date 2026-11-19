@@ -24,6 +24,7 @@ Every example but the second needs no model and no API key: they show the protoc
 | 08  | `08-debate.ts`       | A debate: two agents answer each other until they agree, and a third sums it up                                      |
 | 09  | `09-scoreboard.ts`   | The scoreboard: what became of each job, how each agent did with its interval, and a job handed to `auto`            |
 | 10  | `10-outward.ts`      | The agents of the bridge offered to the outside: as an A2A service and as the tools of an MCP server                 |
+| 11  | `11-plan.ts`         | A plan: two agents plan apart, read the plan of each other, and settle on one plan the second signs                  |
 
 ## Running
 
@@ -38,6 +39,7 @@ npx tsx examples/bridge/07-recipes.ts
 npx tsx examples/bridge/08-debate.ts
 npx tsx examples/bridge/09-scoreboard.ts
 npx tsx examples/bridge/10-outward.ts
+npx tsx examples/bridge/11-plan.ts
 ```
 
 The examples run their own dispatcher on a throwaway folder. For the dispatcher of your machine, which reaches Claude Code and Codex sessions in their own windows:

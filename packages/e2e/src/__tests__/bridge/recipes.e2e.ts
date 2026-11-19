@@ -425,12 +425,120 @@ describe.skipIf(!posix)('a recipe of the bridge, on the real command line', () =
     expect(run(['log', '--job', '4']).stdout).toContain('(debate, round 2)');
   });
 
+  it('has two agents plan apart, object once, and settle on one plan with a copy where it was asked for', async () => {
+    const served = await serve();
+    const started = orchestrator([
+      'plan',
+      '--with',
+      'claude',
+      '--with',
+      'claude',
+      '--out',
+      'docs/notes-plan.md',
+      '--constraint',
+      'No new dependency',
+      'Plan where the notes of the project live',
+    ]);
+    expect(started.status, started.stderr).toBe(0);
+    expect(started.stdout).toContain(
+      'Job #1 is the plan (submitted): claude, claude plan apart, then settle on one plan.'
+    );
+
+    const folder = join(project, '.cogitator', 'plans', 'job-1');
+    const detail = (): string =>
+      `${served.output()}\n${run(['log']).stdout.split('\n').slice(-24).join('\n')}`;
+    const turnOf = async (job: number, has: string) => {
+      const found = await until(
+        () => status()?.jobList.find((listed) => listed.number === job),
+        `job #${job} to be handed over`,
+        detail
+      );
+      const agent = await agentOf(found.to);
+      const turn = await fakes.waitForTurn('claude', agent.sessionId, (asked) =>
+        asked.input.includes(has)
+      );
+      return { agent, input: turn.input };
+    };
+    const report = (agent: AgentRecord, job: number, body: string): void => {
+      const sent = as(agent)(['send', '--job', String(job), '--kind', 'report', body]);
+      expect(sent.status, sent.stderr).toBe(0);
+    };
+
+    const one = await turnOf(2, 'You are planner 1 of 2.');
+    const two = await turnOf(3, 'You are planner 2 of 2.');
+    expect(one.agent.name).not.toBe(two.agent.name);
+    expect(one.input).toContain('> Plan where the notes of the project live');
+    expect(one.input).toContain('No new dependency');
+    report(one.agent, 2, '# Plan one\nThe notes live in docs/notes.');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(existsSync(join(folder, 'draft-1.md'))).toBe(false);
+    report(two.agent, 3, '# Plan two\nThe notes live next to the code.');
+
+    const first = await turnOf(4, 'check it against the code');
+    const second = await turnOf(5, 'check it against the code');
+    expect(first.agent.name).toBe(one.agent.name);
+    expect(first.input).toContain(join(folder, 'draft-2.md'));
+    expect(second.input).toContain(join(folder, 'draft-1.md'));
+    expect(readFileSync(join(folder, 'draft-1.md'), 'utf-8')).toContain(
+      'The notes live in docs/notes.'
+    );
+    report(first.agent, 4, '1. take: notes next to the code are found by whoever reads the code');
+    report(second.agent, 5, '1. gap: nothing says who keeps docs/notes current');
+
+    const merge = await turnOf(6, 'Write the joint plan to');
+    expect(merge.agent.name).toBe(one.agent.name);
+    expect(merge.input).toContain(join(folder, 'critique-2.md'));
+    writeFileSync(join(folder, 'plan.md'), '# Joint plan\nThe notes live next to the code.\n');
+    writeFileSync(join(folder, 'decisions.md'), '1. taken\n2. taken\n');
+    report(merge.agent, 6, 'Both files are written');
+
+    const check = await turnOf(7, 'say whether you stand behind it');
+    expect(check.agent.name).toBe(two.agent.name);
+    report(
+      check.agent,
+      7,
+      'OBJECTION: Steps - nothing moves the notes that exist already\nVERDICT: objections'
+    );
+
+    const revise = await turnOf(8, 'did not all sign it');
+    expect(revise.agent.name).toBe(one.agent.name);
+    expect(revise.input).toContain('Steps - nothing moves the notes that exist already');
+    writeFileSync(
+      join(folder, 'plan.md'),
+      '# Joint plan\nThe notes live next to the code, the old ones are moved first.\n'
+    );
+    report(revise.agent, 8, 'Taken: a step moves them');
+
+    const again = await turnOf(9, 'This is check 2.');
+    report(again.agent, 9, 'It holds now.\nVERDICT: signed');
+
+    const mail = await until(
+      () => {
+        const read = orchestrator(['inbox']);
+        return read.stdout.includes('The joint plan of') ? read.stdout : undefined;
+      },
+      'the report of the plan',
+      detail
+    );
+    expect(mail).toContain(`The joint plan of 2 agents is in ${join(folder, 'plan.md')}`);
+    expect(mail).toContain('signed it at check 2.');
+    expect(mail).toContain(`A copy is in ${join(project, 'docs', 'notes-plan.md')}.`);
+    expect(mail).toContain('Every step is a job of its own: #2, #3, #4, #5, #6, #7, #8, #9.');
+    expect(mail).not.toContain('Changed in the repository');
+    expect(readFileSync(join(project, 'docs', 'notes-plan.md'), 'utf-8')).toBe(
+      '# Joint plan\nThe notes live next to the code, the old ones are moved first.\n'
+    );
+    expect(run(['log', '--job', '6']).stdout).toContain('(plan, merge)');
+    expect(readFileSync(join(folder, 'plan.md'), 'utf-8')).not.toContain('Not agreed');
+    expect(git('status', '--porcelain')).toBe('?? docs/');
+  });
+
   it('refuses a recipe the dispatcher does not know, with those it does', async () => {
     await serve();
     const refused = orchestrator(['recipe', 'waltz', 'Dance']);
     expect(refused.status).not.toBe(0);
     expect(refused.stderr).toContain(
-      'There is no recipe "waltz". The recipes of this bridge: review, build, race, debate'
+      'There is no recipe "waltz". The recipes of this bridge: review, build, race, debate, plan'
     );
   });
 });
