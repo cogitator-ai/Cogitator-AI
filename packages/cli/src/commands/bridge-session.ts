@@ -507,6 +507,63 @@ export async function runBridgeDebate(
   }
 }
 
+export interface BridgePlanFlags
+  extends
+    HomeFlags,
+    Pick<BridgeDelegateFlags, 'title' | 'cwd' | 'done' | 'constraint' | 'decision' | 'file'> {
+  /** Who plans, two to four: the first merges */
+  with?: string[];
+  rounds?: number;
+  /** Where the plan is copied to once it is written */
+  out?: string;
+  json?: boolean;
+}
+
+/**
+ * cogitator bridge plan --with <agent> --with <agent> <text>: the agents plan the work apart,
+ * read the plans of each other, and settle on one plan they sign or object to.
+ */
+export async function runBridgePlan(
+  words: readonly string[],
+  flags: BridgePlanFlags,
+  context: BridgeSessionContext = defaultContext()
+): Promise<number> {
+  try {
+    const planners = (flags.with ?? []).map((planner) => planner.trim());
+    if (planners.length < 2) {
+      throw new CommandError('A plan takes two agents or more: name each with --with', {
+        hints: ['Such as: cogitator bridge plan --with claude --with codex "Add a rate limiter"'],
+      });
+    }
+    const body = await bodyOf(words, context);
+    const named = contextOf(flags);
+    const input = {
+      planners,
+      ...(flags.rounds !== undefined && { rounds: flags.rounds }),
+      ...(flags.out && { out: flags.out }),
+      ...(named && { context: named }),
+    };
+    const { job } = await asSession(flags, context, (client) =>
+      client.createJob({
+        to: RECIPE_HARNESS,
+        body,
+        ...(flags.title && { title: flags.title }),
+        ...(flags.cwd && { cwd: flags.cwd }),
+        recipe: { name: 'plan', input },
+      })
+    );
+    if (flags.json) printJson(job);
+    else {
+      context.print(
+        `Job #${job.number} is the plan (${job.state}): ${planners.join(', ')} plan apart, then settle on one plan. ${AFTER_RECIPE}`
+      );
+    }
+    return 0;
+  } catch (error) {
+    return reportFailure(error, { json: flags.json ?? false });
+  }
+}
+
 export interface BridgeRecipeFlags extends HomeFlags {
   /** What the recipe is started with, as JSON */
   input?: string;

@@ -80,6 +80,7 @@ describe('bridge mcp', () => {
       'review',
       'race',
       'debate',
+      'plan',
       'ask',
       'answer',
       'report',

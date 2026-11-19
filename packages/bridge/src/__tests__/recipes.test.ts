@@ -958,7 +958,7 @@ describe('the conductor of the bridge', () => {
     const unknown = await create({ to: 'recipe', body: 'Go', recipe: { name: 'waltz' } });
     expect(unknown?.code).toBe('invalid_input');
     expect(unknown?.message).toContain(
-      'There is no recipe "waltz". The recipes of this bridge: review, build, race, debate'
+      'There is no recipe "waltz". The recipes of this bridge: review, build, race, debate, plan'
     );
 
     const input = await create({ to: 'recipe', body: 'Go', recipe: { name: 'build', input: {} } });
