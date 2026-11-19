@@ -1,5 +1,14 @@
 # @cogitator-ai/channels
 
+## 0.22.2
+
+### Patch Changes
+
+- [#398](https://github.com/cogitator-ai/Cogitator-AI/pull/398) [`7827e57`](https://github.com/cogitator-ai/Cogitator-AI/commit/7827e574266b30e6a9ab0752e284620b336b8074) - `HeartbeatScheduler` now removes old fired and cancelled tasks from every timer store. It passed a cutoff time to `cleanup()`, which only `SimpleTimerStore` reads that way, so the stores that take an age in ms (the in-memory and file stores of core, the Redis and Postgres stores of workflows) never removed anything.
+- Updated dependencies []:
+  - @cogitator-ai/core@0.79.1
+  - @cogitator-ai/memory@0.29.8
+
 ## 0.22.1
 
 ### Patch Changes

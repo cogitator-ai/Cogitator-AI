@@ -1,5 +1,18 @@
 # @cogitator-ai/workflows
 
+## 0.15.10
+
+### Patch Changes
+
+- [#398](https://github.com/cogitator-ai/Cogitator-AI/pull/398) [`3367d12`](https://github.com/cogitator-ai/Cogitator-AI/commit/3367d12a5956cdb0675a5eed7a5d4e5bd48db01f) - Cron triggers keep their timers straight in five more cases. A trigger whose timer wakes before the due time (the clock moved back) now waits for the due time instead of firing early and then firing the same occurrence again. A trigger that waits longer than one timer can (more than about 24.8 days) keeps its timer under its own id, so `disable()`, `unregister()` and `dispose()` stop it, before a disabled trigger still fired. An expression with a seconds field such as `* * * * * *` is checked every second, before it fired once a minute. Registering or enabling a trigger from inside `onFire` no longer leaves a second check interval behind after `dispose()`. A `condition` or `input` function that throws is counted as a failed fire (`errorCount`, `lastError`) and the trigger stays scheduled, before it was an unhandled rejection and the trigger never fired again.
+
+- [#398](https://github.com/cogitator-ai/Cogitator-AI/pull/398) [`3367d12`](https://github.com/cogitator-ai/Cogitator-AI/commit/3367d12a5956cdb0675a5eed7a5d4e5bd48db01f) - `WorkflowManager.cancel()` now sticks when the node in flight ignores the abort signal and finishes: the run stays `cancelled` with its reason and `execute()` returns the cancel error, before the run was flipped to `completed` after `cancel()` had resolved.
+
+  A human request that timed out and was escalated is closed once the escalation has an answer, so it no longer stays in `getPendingForAssignee()` of its first assignee. It is closed with `respondedBy: ESCALATED` (new exports `ESCALATED` and `escalatedResponse`), the decision stays on the escalation, and a node that runs again after a restart still gets that decision.
+
+- Updated dependencies []:
+  - @cogitator-ai/core@0.79.1
+
 ## 0.15.9
 
 ### Patch Changes

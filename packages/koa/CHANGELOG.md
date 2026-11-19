@@ -1,5 +1,13 @@
 # @cogitator-ai/koa
 
+## 0.15.5
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @cogitator-ai/core@0.79.1
+  - @cogitator-ai/memory@0.29.8
+
 ## 0.15.4
 
 No changes in this release.

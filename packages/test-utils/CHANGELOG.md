@@ -1,5 +1,11 @@
 # @cogitator-ai/test-utils
 
+## 0.15.2
+
+### Patch Changes
+
+- [#398](https://github.com/cogitator-ai/Cogitator-AI/pull/398) [`cbe00d6`](https://github.com/cogitator-ai/Cogitator-AI/commit/cbe00d640727c069c1e67125a54123ee56c36e19) - `MockLLMBackend` estimates `usage.inputTokens` from the request as it was sent. With a delay configured, `chat()` and `chatStream()` counted the messages array after the delay, so messages the caller appended meanwhile were counted too.
+
 ## 0.15.1
 
 ### Patch Changes
