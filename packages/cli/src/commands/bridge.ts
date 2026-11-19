@@ -64,6 +64,7 @@ import {
   runBridgeRace,
   limitLine,
   runBridgeLimits,
+  runBridgePlan,
   runBridgeRecall,
   runBridgeResults,
   runBridgeSuggest,
@@ -85,6 +86,7 @@ import {
   type BridgeForgetFlags,
   type BridgeRaceFlags,
   type BridgeLimitsFlags,
+  type BridgePlanFlags,
   type BridgeRecallFlags,
   type BridgeResultsFlags,
   type BridgeSuggestFlags,
@@ -836,6 +838,41 @@ bridgeCommand
   .showHelpAfterError(DASH_HINT)
   .action(async (text: string[], flags: BridgeDebateFlags) => {
     process.exitCode = await runBridgeDebate(text, flags);
+  });
+
+bridgeCommand
+  .command('plan [text...]')
+  .description(
+    'From a session: have several agents plan the same work apart, read the plans of each other, and settle on one plan'
+  )
+  .option(
+    '--with <agent>',
+    'who plans, two to four, the first merges: claude, codex',
+    collect,
+    [] as string[]
+  )
+  .option(
+    '--rounds <number>',
+    'how many times the merger answers objections at most (default: 2)',
+    wholeNumber
+  )
+  .option('--out <path>', 'where to copy the plan to, a path nothing is at yet')
+  .option('--title <title>', 'a short name of the plan (default: the first line of the text)')
+  .option('--cwd <dir>', 'the folder the plan is about (default: the current one)')
+  .option('--done <text>', 'what done looks like, repeatable', collect, [] as string[])
+  .option('--constraint <text>', 'what must hold or stay untouched, repeatable', collect, [])
+  .option('--decision <text>', 'what was decided already, repeatable', collect, [] as string[])
+  .option(
+    '--file <path[:lines][=why]>',
+    'a file to start from, such as src/a.ts:120-180=the retry loop, repeatable',
+    collect,
+    [] as string[]
+  )
+  .option(...homeOption)
+  .option('--json', 'print the job as JSON')
+  .showHelpAfterError(DASH_HINT)
+  .action(async (text: string[], flags: BridgePlanFlags) => {
+    process.exitCode = await runBridgePlan(text, flags);
   });
 
 bridgeCommand

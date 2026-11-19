@@ -106,6 +106,7 @@ describe('bridgeTools', () => {
       'review',
       'race',
       'debate',
+      'plan',
       'ask',
       'answer',
       'report',
@@ -464,6 +465,43 @@ describe('bridgeTools', () => {
       '2 agents were asked to do the job, 0 finished it'
     );
     await expect(orchestrator.call('race', { to: ['codex'], task: 'x' })).rejects.toThrow();
+  });
+
+  it('start a plan of several agents, with where it goes and what the caller knows', async () => {
+    let started = 0;
+    const adapter = new FakeAdapter({
+      harness: 'codex',
+      createSession: async () => ({
+        sessionId: `thread-${(started += 1)}`,
+        deliveredFirstLetter: true,
+      }),
+    });
+    await startHost({ adapters: [adapter, recipeAdapter({ pollMs: 20 })] });
+    const orchestrator = claude();
+
+    const planned = await orchestrator.call('plan', {
+      task: 'Add a rate limiter to the gateway',
+      planners: ['codex', 'codex'],
+      rounds: 0,
+      out: ' docs/limiter.md ',
+      context: { constraints: ['No new dependency'] },
+    });
+    expect(planned).toContain(
+      'Job #1 is the plan (submitted): codex, codex plan apart, then settle on one plan.'
+    );
+    expect(await orchestrator.call('job', { job: 1 })).toContain('#1');
+    await vi.waitFor(() => expect(adapter.sessions).toHaveLength(2));
+    expect(adapter.sessions[0].firstLetter.text).toContain('You are planner 1 of 2.');
+    expect(adapter.sessions[1].firstLetter.text).toContain('No new dependency');
+    await codex('thread-1').call('report', { job: 2, result: '# Plan one' });
+    await codex('thread-2').call('report', { job: 3, result: 'I could not', failed: true });
+    await vi.waitFor(async () =>
+      expect(await orchestrator.call('job', { job: 1 })).toContain('#1 failed')
+    );
+    expect(await orchestrator.call('inbox')).toContain(
+      'No joint plan was written: 1 of 2 agents wrote a draft'
+    );
+    await expect(orchestrator.call('plan', { task: 'x', planners: ['codex'] })).rejects.toThrow();
   });
 
   it('name the type of a job, leave the choice of the agent to the bridge and show how jobs went', async () => {

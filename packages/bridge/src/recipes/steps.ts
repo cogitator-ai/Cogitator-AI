@@ -16,13 +16,14 @@ export const Address = z.string().trim().min(1).max(512).regex(ONE_LINE, 'An add
 
 /**
  * The types the steps of the built-in recipes hand their jobs over as, so the scoreboard keeps
- * writing code, fixing it after a review, reviewing, judging and debating apart.
+ * writing code, fixing it after a review, reviewing, judging, debating and planning apart.
  */
 export const WORK_TYPE = 'code';
 export const FIX_TYPE = 'fix';
 export const REVIEW_TYPE = 'review';
 export const JUDGE_TYPE = 'judge';
 export const DEBATE_TYPE = 'debate';
+export const PLAN_TYPE = 'plan';
 
 /** How much of the text of a job a letter of a recipe repeats to another agent. */
 export const TASK_LENGTH = 20_000;

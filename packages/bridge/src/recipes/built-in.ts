@@ -18,6 +18,7 @@ import { JobContextSchema } from '../handover.js';
 import { oneLine, quoted } from '../letters.js';
 import { JobCheckSchema, type BridgeJob, type JobCheck } from '../types.js';
 import { debateRecipe } from './debate.js';
+import { planRecipe } from './plan.js';
 import { raceRecipe } from './race.js';
 import {
   defineRecipe,
@@ -621,4 +622,5 @@ export const BUILT_IN_RECIPES: readonly Recipe[] = [
   buildRecipe,
   raceRecipe,
   debateRecipe,
+  planRecipe,
 ];

@@ -634,6 +634,71 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
       }),
   });
 
+  const plan = tool({
+    name: 'plan',
+    title: 'Have agents plan a piece of work together',
+    description:
+      'Have two to four agents plan the same work: each writes a plan apart without seeing the others, each reads the plans of the others and says what is better, wrong or missing, the first of them merges it all into one plan, and the others sign that plan or object to it. For a design or a plan worth more than one mind before anybody builds by it. The planners change no file of the project: the plan is written to .cogitator/plans in the folder of the job. Returns a job number at once, and one report comes back at the end: where the plan is, whether all signed it, and what is still not agreed.',
+    parameters: z.looseObject({
+      task: z
+        .string()
+        .min(1)
+        .describe(
+          'The work to plan: what is wanted and why. The planners see nothing of this conversation, so name the files, the constraints and the decisions already made'
+        ),
+      planners: z
+        .array(z.string().min(1))
+        .min(2)
+        .max(4)
+        .describe(
+          'Who plans, two to four, the first of whom merges: such as ["claude", "codex"] for a fresh session of each, or agent names'
+        ),
+      rounds: z
+        .number()
+        .int()
+        .min(0)
+        .max(5)
+        .optional()
+        .describe(
+          'How many times the merger answers the objections of the others at most, 2 by default'
+        ),
+      out: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'Where to copy the plan to once it is written, a path inside this repository at which nothing is yet, such as docs/plans/limiter.md. Nowhere by default'
+        ),
+      title: z.string().optional().describe('A short name of the plan, its first line by default'),
+      cwd: z
+        .string()
+        .optional()
+        .describe("The folder the plan is about, inside this project. This session's by default"),
+      context: ContextParam,
+    }),
+    annotations: WRITES,
+    sideEffects: ['filesystem', 'process'],
+    execute: async (args, context) =>
+      asCaller(args, context, async (bridge) => {
+        const { job, duplicate } = await bridge.createJob({
+          to: RECIPE_HARNESS,
+          body: args.task,
+          ...(args.title !== undefined && { title: args.title }),
+          ...(args.cwd !== undefined && { cwd: args.cwd }),
+          recipe: {
+            name: 'plan',
+            input: {
+              planners: args.planners,
+              ...(args.rounds !== undefined && { rounds: args.rounds }),
+              ...(args.out?.trim() && { out: args.out.trim() }),
+              ...(args.context !== undefined && { context: contextOf(args.context) }),
+            },
+          },
+        });
+        return `Job #${job.number} is the plan (${job.state})${duplicate ? ', started before: nothing was sent twice' : ''}: ${args.planners.join(', ')} plan apart, then settle on one plan. ${AFTER_RECIPE}`;
+      }),
+  });
+
   const ask = tool({
     name: 'ask',
     title: 'Ask about a job',
@@ -1142,6 +1207,7 @@ export function bridgeTools(options: BridgeToolsOptions): Tool[] {
     review,
     race,
     debate,
+    plan,
     ask,
     answer,
     report,

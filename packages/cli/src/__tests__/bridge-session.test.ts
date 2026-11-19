@@ -33,6 +33,7 @@ import {
   debaterOf,
   runBridgeBuild,
   runBridgeDebate,
+  runBridgePlan,
   runBridgeDelegate,
   runBridgeDiff,
   runBridgeForget,
@@ -1137,6 +1138,47 @@ describe('bridge build, review and recipe', () => {
     });
   });
 
+  it('start a plan of several agents, with the place of its copy and what the caller knows', async () => {
+    mkdirSync(join(project, '.git'));
+    const { adapter, started } = starting();
+    hosts.push(
+      await hostBridge({ home, tickMs: 25, adapters: [adapter, recipeAdapter({ pollMs: 20 })] })
+    );
+
+    expect(await runBridgePlan(['Add a limiter'], { with: ['codex'] }, claude())).not.toBe(0);
+    expect(failed()).toContain('A plan takes two agents or more: name each with --with');
+    failures = [];
+
+    expect(
+      await runBridgePlan(
+        ['Add a limiter'],
+        {
+          with: [' codex ', 'codex'],
+          rounds: 0,
+          out: 'docs/limiter.md',
+          constraint: ['No new dependency'],
+        },
+        claude()
+      )
+    ).toBe(0);
+    expect(output()).toContain(
+      'Job #1 is the plan (submitted): codex, codex plan apart, then settle on one plan.'
+    );
+    const watch = await watcher();
+    expect((await watch.job(1)).recipe).toEqual({
+      name: 'plan',
+      input: {
+        planners: ['codex', 'codex'],
+        rounds: 0,
+        out: 'docs/limiter.md',
+        context: { constraints: ['No new dependency'] },
+      },
+    });
+    await until(() => started.length === 2, 'the sessions of the planners');
+    expect(started[0]).toContain('You are planner 1 of 2.');
+    expect(started[1]).toContain('No new dependency');
+  });
+
   it('say why a recipe cannot start', async () => {
     mkdirSync(join(project, '.git'));
     const { adapter } = starting();
@@ -1146,7 +1188,7 @@ describe('bridge build, review and recipe', () => {
 
     expect(await runBridgeRecipe('waltz', ['Go'], {}, claude())).not.toBe(0);
     expect(failed()).toContain(
-      'There is no recipe "waltz". The recipes of this bridge: review, build, race, debate'
+      'There is no recipe "waltz". The recipes of this bridge: review, build, race, debate, plan'
     );
 
     failures = [];

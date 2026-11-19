@@ -518,6 +518,7 @@ describe('the command line', () => {
       'mcp',
       'offer',
       'permit',
+      'plan',
       'race',
       'recall',
       'recipe',

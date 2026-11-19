@@ -9,6 +9,7 @@ export {
   reviewRecipe,
 } from './built-in.js';
 export { DEFAULT_DEBATE_ROUNDS, debateRecipe } from './debate.js';
+export { DEFAULT_PLAN_ROUNDS, planRecipe, verdictOf } from './plan.js';
 export { raceRecipe } from './race.js';
 export {
   defineRecipe,
