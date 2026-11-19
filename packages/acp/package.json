@@ -38,7 +38,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^2.0.2",
+    "@agentclientprotocol/sdk": "^2.7.0",
     "@cogitator-ai/app-server": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/mcp": "workspace:*",
