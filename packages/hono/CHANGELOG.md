@@ -1,5 +1,9 @@
 # @cogitator-ai/hono
 
+## 0.15.4
+
+No changes in this release.
+
 ## 0.15.3
 
 ### Patch Changes
