@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import { InMemoryTimerStore } from '@cogitator-ai/core';
 import { HeartbeatScheduler } from '../heartbeat';
+import { SimpleTimerStore } from '../simple-timer-store';
 import type { ChannelMessage, TimerStore } from '@cogitator-ai/types';
 
 /** The members every TimerStore has; claims (claimTtl, renew, release) are optional. */
@@ -780,5 +782,39 @@ describe('HeartbeatScheduler with a claiming TimerStore', () => {
     scheduler.stop();
 
     expect(store.release).not.toHaveBeenCalled();
+  });
+});
+
+describe('HeartbeatScheduler cleanup of finished tasks', () => {
+  async function removesFinishedTask(store: TimerStore): Promise<void> {
+    const id = await store.schedule({
+      workflowId: 'heartbeat',
+      runId: 'scheduler',
+      nodeId: 'task',
+      firesAt: Date.now() - 1000,
+      type: 'fixed',
+    });
+    await store.markFired(id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const scheduler = new HeartbeatScheduler(store, {
+      onFire: vi.fn(),
+      pollInterval: 10,
+      retentionMs: 5,
+    });
+    scheduler.start();
+    try {
+      await vi.waitFor(async () => expect(await store.get(id)).toBeNull());
+    } finally {
+      scheduler.stop();
+    }
+  }
+
+  it('removes them from a store that reads cleanup as an age', async () => {
+    await removesFinishedTask(new InMemoryTimerStore());
+  });
+
+  it('removes them from a SimpleTimerStore, which reads cleanup as a cutoff time', async () => {
+    await removesFinishedTask(new SimpleTimerStore());
   });
 });

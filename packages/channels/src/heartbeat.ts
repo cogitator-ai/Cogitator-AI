@@ -5,6 +5,7 @@ import {
   experimental_Scheduler,
 } from '@cogitator-ai/core';
 import { channelsCron, getNextCronMs } from './cron';
+import { SimpleTimerStore } from './simple-timer-store';
 
 export interface HeartbeatConfig {
   onFire: (msg: ChannelMessage) => Promise<void> | void;
@@ -59,7 +60,7 @@ export class HeartbeatScheduler {
       maxRetries: config.maxRetries ?? 5,
       reschedule: 'append',
       nextFire: (entry, now) => this.computeNextFire(entry, now),
-      cleanup: 'cutoff',
+      cleanup: store instanceof SimpleTimerStore ? 'cutoff' : 'age',
       ...(config.retentionMs !== undefined && { retentionMs: config.retentionMs }),
       ...(config.onRunComplete && { onRunComplete: config.onRunComplete }),
       ...(config.onError && { onError: config.onError }),
