@@ -1,5 +1,13 @@
 # @cogitator-ai/bridge
 
+## 0.15.1
+
+### Patch Changes
+
+- [#401](https://github.com/cogitator-ai/Cogitator-AI/pull/401) [`fcf12bd`](https://github.com/cogitator-ai/Cogitator-AI/commit/fcf12bd2c4f30a3c9dbe69a96d8e7701346d0464) - Every step of the `plan` recipe now tells the agent to report with the report tool of the bridge. A draft was asked for "as the report of this job", and a Claude Code session read that as its final answer: it wrote the plan in its own window and ended its turn, and the recipe waited for a report nobody sent.
+
+- [#402](https://github.com/cogitator-ai/Cogitator-AI/pull/402) [`07f59c2`](https://github.com/cogitator-ai/Cogitator-AI/commit/07f59c24308a49f09b734e0fe51aac2a7ba681f2) - A job no longer stays `working` until its deadline when the session that carries it out ends its turn without a report and cannot be woken, such as a Claude Code session started in a project where `cogitator bridge install` was never run. Once its harness has listed it out of a turn for `limits.reportReminderMs`, with no waiter and no call to the bridge meanwhile, the job fails as silent, saying the session ended its turn without a report and cannot be reminded. Sessions with a waiter are reminded as before.
+
 ## 0.15.0
 
 ### Minor Changes
