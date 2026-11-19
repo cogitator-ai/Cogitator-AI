@@ -1791,8 +1791,8 @@ importers:
         specifier: ^22.20.4
         version: 22.20.4
       '@vercel/sandbox':
-        specifier: ^3.9.0
-        version: 3.9.0
+        specifier: ^4.0.0
+        version: 4.0.0
       e2b:
         specifier: ^2.59.0
         version: 2.59.0
@@ -5027,8 +5027,9 @@ packages:
     resolution: {integrity: sha512-ko6ATeRUlHZMB5hLFdC7+/Q1dI2f3NX3gZHxtpALdkxurwjD5HFHGWYF+4o+4SF0E47jg6KzcHknmRpHcKgJ5A==}
     engines: {node: '>= 20'}
 
-  '@vercel/sandbox@3.9.0':
-    resolution: {integrity: sha512-l02jAULYqPdfKCnGr6Eyd58OfTXNmL1ffvNOwwsAtgiN+PuI6zhySpvtm0hnMoWQ3fIbhnSG7SRqoUuwx6XvDg==}
+  '@vercel/sandbox@4.0.0':
+    resolution: {integrity: sha512-wFYlkheUEofX47e5MWKQ80MumZ+tYmqLc+Ni3DT4mMRXiQdbyg1caH7hSr24CgnGVWmRO0QV8oQwi6Pgyt9CRQ==}
+    engines: {node: '>=22.19.0'}
 
   '@vitest/coverage-v8@5.0.3':
     resolution: {integrity: sha512-+klsyz7BvT1vCU28Zkfzms1Ia78XD0V41U3FUtRaa3S+vOr/EXvK1O6BvVD7l1RzEjm6SONR2aybOvDDf9u0mQ==}
@@ -8539,6 +8540,10 @@ packages:
     resolution: {integrity: sha512-+fdndUTwBP86cVjihTp21hZHo7d6oj1c/47XPA3lL8mM0XHs+C4EkcjmgRsFnFk2f/UONGDy9ItBItmXsLOQHw==}
     engines: {node: '>=22.19.0'}
 
+  undici@8.12.4:
+    resolution: {integrity: sha512-8Mx+uNKKER2bA4AdtedkqRbwUCIJFr2nJckXRe5yrDqzePqwLP7VNcctN8/XdmDSbF7mS+jJKIszlL+vbam1VA==}
+    engines: {node: '>=22.19.0'}
+
   unicode-emoji-modifier-base@1.0.0:
     resolution: {integrity: sha512-yLSH4py7oFH3oG/9K+XWrz1pSi3dfUrWEnInbxMfArOfc1+33BlGPQtLsOYwvdMy11AwUBetYuaRxSPqgkq+8g==}
     engines: {node: '>=4'}
@@ -11922,7 +11927,7 @@ snapshots:
       '@vercel/cli-exec': 1.0.1
       jose: 5.10.0
 
-  '@vercel/sandbox@3.9.0':
+  '@vercel/sandbox@4.0.0':
     dependencies:
       '@vercel/detect-agent': 1.2.5
       '@vercel/oidc': 4.0.0
@@ -11934,7 +11939,7 @@ snapshots:
       ms: 2.1.3
       picocolors: 1.1.1
       tar-stream: 3.1.7
-      undici: 7.30.0
+      undici: 8.12.4
       xdg-app-paths: 5.1.0
       zod: 4.6.7
     transitivePeerDependencies:
@@ -16066,6 +16071,8 @@ snapshots:
   undici@7.30.0: {}
 
   undici@8.12.3: {}
+
+  undici@8.12.4: {}
 
   unicode-emoji-modifier-base@1.0.0: {}
 
