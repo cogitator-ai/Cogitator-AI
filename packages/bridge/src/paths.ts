@@ -150,6 +150,12 @@ export function findCheckoutRoot(cwd: string): string {
  */
 export const JOB_WORKTREES_DIR = join('.cogitator', 'worktrees');
 
+/**
+ * Where a recipe keeps the files of its runs, under the folder a run works in: next to the
+ * worktrees, and ignored by git the same way.
+ */
+export const PLANS_DIR = join('.cogitator', 'plans');
+
 /** Whether `cwd` is inside a git checkout, the main one of a repository or a linked worktree. */
 export function inCheckout(cwd: string): boolean {
   return gitEntry(findCheckoutRoot(cwd)) !== undefined;

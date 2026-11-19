@@ -43,7 +43,12 @@ interface GitOptions {
   input?: string;
 }
 
-async function git(
+/**
+ * Runs git in a folder and resolves with what it printed, as it printed it.
+ *
+ * @throws GitError when git ends with a code that is no answer
+ */
+export async function git(
   cwd: string,
   args: readonly string[],
   options: GitOptions = {}
