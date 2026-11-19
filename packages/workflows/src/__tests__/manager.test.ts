@@ -807,6 +807,34 @@ describe('Workflow Manager run lifecycle', () => {
     expect(run?.error).toEqual({ name: 'CancelError', message: 'not needed' });
   });
 
+  it('keeps a run cancelled when its last node still finishes', async () => {
+    manager = createWorkflowManager({ cogitator: mockCogitator });
+    let finish: (() => void) | undefined;
+    const workflow = new WorkflowBuilder<TestState>('finishes-after-cancel')
+      .initialState({ value: 0, steps: [] })
+      .addNode(
+        'last',
+        () => new Promise((resolve) => (finish = () => resolve({ state: { value: 1 } })))
+      )
+      .build();
+    const statuses: string[] = [];
+    manager.onRunStateChange((run) => statuses.push(run.status));
+
+    const resultPromise = manager.execute(workflow);
+    const runId = await waitForRun(manager, 'finishes-after-cancel', 'running');
+    await vi.waitFor(() => expect(finish).toBeDefined());
+
+    await manager.cancel(runId, 'not needed');
+    finish?.();
+    const result = await resultPromise;
+
+    expect(result.error?.message).toBe(`Workflow run '${runId}' was cancelled`);
+    const run = await manager.getStatus(runId);
+    expect(run?.status).toBe('cancelled');
+    expect(run?.error).toEqual({ name: 'CancelError', message: 'not needed' });
+    expect(statuses).not.toContain('completed');
+  });
+
   it('gives scheduled runs the checkpoint store, metrics and their timeout', async () => {
     const metrics = createMetricsCollector();
     manager = createWorkflowManager({

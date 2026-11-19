@@ -16,6 +16,8 @@ export { InMemoryApprovalStore, FileApprovalStore, withDelegation } from './appr
 export {
   ApprovalAlreadyAnsweredError,
   WITHDRAWN,
+  ESCALATED,
+  escalatedResponse,
   isUnanswered,
   submitOrExisting,
   withdrawnResponse,

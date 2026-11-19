@@ -23,7 +23,13 @@ import type {
   ApprovalChoice,
   ApprovalChainStep,
 } from '@cogitator-ai/types';
-import { isUnanswered, submitOrExisting, WITHDRAWN } from './approval-outcomes';
+import {
+  ESCALATED,
+  escalatedResponse,
+  isUnanswered,
+  submitOrExisting,
+  WITHDRAWN,
+} from './approval-outcomes';
 import { AbortError } from '../timers/timer-node';
 
 /**
@@ -240,6 +246,9 @@ async function openAndAwait(
     const id = approvalRequestId(context.runId, fresh, epoch);
     const [existing, answer] = await Promise.all([store.getRequest(id), store.getResponse(id)]);
     if (answer?.respondedBy === WITHDRAWN) continue;
+    if (answer?.respondedBy === ESCALATED && fresh.escalateTo) {
+      return escalate(existing ?? { ...fresh, id }, fresh.escalateTo, context);
+    }
     if (answer) return { response: answer, escalated: false };
     if (existing) return waitForResponse(existing, context);
 
@@ -417,7 +426,7 @@ async function escalate(
     const id = epoch === 0 ? `${request.id}_esc` : `${request.id}_esc_${epoch}`;
     const [existing, answer] = await Promise.all([store.getRequest(id), store.getResponse(id)]);
     if (answer?.respondedBy === WITHDRAWN) continue;
-    if (answer) return { response: answer, escalated: true };
+    if (answer) return closeEscalated(request, escalateTo, answer, store);
 
     let escalated = existing;
     if (!escalated) {
@@ -443,11 +452,27 @@ async function escalate(
     }
 
     const remaining = Math.max(0, (escalated.deadline ?? Date.now() + waitMs) - Date.now());
-    return { response: await waitForEscalation(escalated, remaining, context), escalated: true };
+    const response = await waitForEscalation(escalated, remaining, context);
+    return closeEscalated(request, escalateTo, response, store);
   }
   throw new Error(
     `Request '${request.id}' was withdrawn ${MAX_REQUEST_EPOCHS} times while escalated`
   );
+}
+
+/**
+ * Closes the original request once its escalation has an answer, so its first assignee no longer
+ * has it pending. Failures are tolerated: the decision stands, and an answer the first assignee
+ * gave meanwhile is kept.
+ */
+async function closeEscalated(
+  request: ApprovalRequest,
+  escalateTo: string,
+  response: ApprovalResponse,
+  store: ApprovalStore
+): Promise<AwaitedResponse> {
+  await store.submitResponse(escalatedResponse(request.id, escalateTo)).catch(() => undefined);
+  return { response, escalated: true };
 }
 
 /** Waits for the escalation's answer, failing it when its time runs out. */

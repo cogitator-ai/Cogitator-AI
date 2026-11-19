@@ -236,6 +236,8 @@ export {
   withDelegation,
   ApprovalAlreadyAnsweredError,
   WITHDRAWN,
+  ESCALATED,
+  escalatedResponse,
   isUnanswered,
   submitOrExisting,
   withdrawnResponse,
