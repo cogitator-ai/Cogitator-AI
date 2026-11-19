@@ -174,7 +174,24 @@ describe('what a checker of a plan said', () => {
     expect(verdictOf('VERDICT: signed\nOn a second look:\nVERDICT: objections').signed).toBe(false);
     expect(verdictOf('VERDICT: objections\nNo, it holds.\nverdict: SIGNED').signed).toBe(true);
     expect(verdictOf('Looks good to me')).toEqual({ signed: false, objections: [] });
+    expect(verdictOf('- VERDICT: signed.')).toEqual({ signed: true, objections: [] });
+    expect(verdictOf('> **Verdict: signed**')).toEqual({ signed: true, objections: [] });
     expect(verdictOf(undefined)).toEqual({ signed: false, objections: [] });
+  });
+
+  it('does not take a mention of the verdict inside a sentence for one', () => {
+    expect(
+      verdictOf(
+        'OBJECTION: Steps - rollback is missing.\nI cannot give VERDICT: signed until that is fixed.'
+      )
+    ).toEqual({ signed: false, objections: ['Steps - rollback is missing.'] });
+    expect(
+      verdictOf('End with VERDICT: signed or VERDICT: objections, they said. I object.')
+    ).toEqual({
+      signed: false,
+      objections: [],
+    });
+    expect(verdictOf('VERDICT: signed, once step 3 is fixed').signed).toBe(false);
   });
 
   it('carries the objections as they were put', () => {

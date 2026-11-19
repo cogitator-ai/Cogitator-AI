@@ -102,13 +102,17 @@ interface PlanState extends RecipeState {
 }
 
 /**
- * What a checker said of a plan: it signed only when the last line of the form `VERDICT: ...`
- * says so. No such line is no signature, and neither is a verdict of objections. The
+ * What a checker said of a plan: it signed only when the last line that is a verdict and
+ * nothing else, `VERDICT: signed`, says so: the words inside a sentence are no verdict. No such line is no signature, and neither is a verdict of objections. The
  * objections are the lines `OBJECTION: ...` of an answer that did not sign.
  */
 export function verdictOf(said: string | undefined): { signed: boolean; objections: string[] } {
   const text = said ?? '';
-  const last = [...text.matchAll(/\bVERDICT:\*{0,2}[ \t]*(signed|objections)\b/gi)].at(-1);
+  const last = [
+    ...text.matchAll(
+      /^[ \t]*(?:[-*>][ \t]+)*\*{0,2}VERDICT:\*{0,2}[ \t]*(signed|objections)[ \t]*[.!]?\*{0,2}[ \t]*$/gim
+    ),
+  ].at(-1);
   if (last?.[1]?.toLowerCase() === 'signed') return { signed: true, objections: [] };
   const objections = [...text.matchAll(/^[ \t]*(?:[-*][ \t]+)?\*{0,2}OBJECTION:\*{0,2}(.*)$/gim)]
     .map((found) => oneLine(found[1] ?? ''))
