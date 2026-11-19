@@ -162,7 +162,7 @@ import {
   type RenderedLetter,
   type Rights,
 } from './types.js';
-import type { BridgeAdapter, BridgeCalls, CreatedSession } from './adapter.js';
+import type { BridgeAdapter, BridgeCalls, CreatedSession, LiveSession } from './adapter.js';
 import type {
   PersonCalls,
   PersonLetter,
@@ -409,6 +409,11 @@ interface Presence {
   missed: Set<string>;
   /** The sessions it listed as in the middle of a turn the last time */
   busy: Set<string>;
+  /**
+   * The sessions it listed out of a turn and waiting for nobody, check after check, that carry
+   * a job out and do not wake for a letter, with the time of the first such check
+   */
+  asleep: Map<string, number>;
 }
 
 /** A process of a session waiting for its mail, see `BridgeDispatcher.wait`. */
@@ -3839,9 +3844,13 @@ export class BridgeDispatcher
    * then: the hook of a session waits a shorter while than that. A session that reacts with
    * anything but a report is reminded again no sooner than that timeout.
    *
+   * A session with no waiter that its harness has listed out of a turn for
+   * `limits.reportReminderMs`, and that a letter does not wake (`wakes`), cannot be reminded:
+   * its job fails as silent then, rather than at its deadline.
+   *
    * A session is left alone while its harness lists it in the middle of a turn, while it waits
    * for jobs it handed over from inside the job or for the person, and while mail for it is on
-   * its way. Returns the jobs it failed.
+   * its way (mail does not reach one that does not wake). Returns the jobs it failed.
    */
   private async remindOfReports(tx: Transaction, now: number): Promise<number[]> {
     const failed: number[] = [];
@@ -3884,6 +3893,28 @@ export class BridgeDispatcher
         await this.patchRecord(job.taskId, { reportAskedAt: this.iso(now) });
       }
     }
+
+    for (const [harness, presence] of this.presence) {
+      for (const [sessionId, since] of presence.asleep) {
+        const agent = this.store.agentOfSession(harness, sessionId);
+        if (agent?.status !== 'active' || this.waiters.has(agent.name)) continue;
+        const quiet = Math.max(since, Date.parse(agent.lastSeenAt));
+        if (now - quiet < this.limits.reportReminderMs) continue;
+        const carried = this.store
+          .jobTasks({ to: agent.name, states: ['working'] })
+          .flatMap((task) => jobOf(task) ?? []);
+        for (const job of carried) {
+          if (this.waitsForOthers(job)) continue;
+          await this.failJob(
+            tx,
+            job.number,
+            `${agent.name} ended its turn without a report and cannot be reminded: it does not wake for a letter`,
+            'silent'
+          );
+          failed.push(job.number);
+        }
+      }
+    }
     return failed;
   }
 
@@ -3893,14 +3924,22 @@ export class BridgeDispatcher
    * and no letter for the agent is on its way.
    */
   private owesReport(job: BridgeJob): boolean {
-    if (job.checking || this.waitsForPerson(job.number)) return false;
+    if (this.waitsForOthers(job)) return false;
+    return this.store.countLetters({ to: job.to, states: ['queued'] }) === 0;
+  }
+
+  /**
+   * Whether a job waits for more than the agent that carries it out: its checks run, or it
+   * waits for a job handed over from inside it or for an answer of the person.
+   */
+  private waitsForOthers(job: BridgeJob): boolean {
+    if (job.checking || this.waitsForPerson(job.number)) return true;
     const parts = this.store.jobTasks({
       parent: job.number,
       states: ACTIVE_JOB_STATES,
       limit: 1,
     });
-    if (parts.length > 0) return false;
-    return this.store.countLetters({ to: job.to, states: ['queued'] }) === 0;
+    return parts.length > 0;
   }
 
   /** Whether the agent that carries a job out wrote a letter on it at or after a time. */
@@ -3946,15 +3985,17 @@ export class BridgeDispatcher
           this.limits.deliveryTimeoutMs,
           `Listing the ${harness} sessions`
         )
-          .then((sessions) =>
-            this.mutate(async (tx) => {
+          .then(async (sessions) => {
+            const asleep = await this.asleepAmong(harness, sessions);
+            await this.mutate(async (tx) => {
               await this.applyPresence(
                 tx,
                 harness,
                 new Set(sessions.map((session) => session.sessionId)),
                 adapter.ownsSessions === true,
                 asked,
-                new Set(sessions.flatMap((session) => (session.busy ? [session.sessionId] : [])))
+                new Set(sessions.flatMap((session) => (session.busy ? [session.sessionId] : []))),
+                asleep
               );
               for (const session of sessions) {
                 const agent = this.store.agentOfSession(harness, session.sessionId);
@@ -3965,8 +4006,8 @@ export class BridgeDispatcher
                 if (agent?.status !== 'active') continue;
                 await this.noteStuck(tx, agent, `It waits for: ${session.waitingFor}`, 'listing');
               }
-            })
-          )
+            });
+          })
           .finally(() => this.listing.delete(harness))
       );
     }
@@ -3978,13 +4019,15 @@ export class BridgeDispatcher
     live: Set<string>,
     certain: boolean,
     asked: number,
-    busy = new Set<string>()
+    busy = new Set<string>(),
+    asleep = new Set<string>()
   ): Promise<void> {
     const known = this.presence.get(harness) ?? {
       live,
       seen: new Set(),
       missed: new Set(),
       busy: new Set(),
+      asleep: new Map(),
     };
     const missed = new Set<string>();
     for (const sessionId of live) known.seen.add(sessionId);
@@ -4000,7 +4043,34 @@ export class BridgeDispatcher
       known.seen.delete(id);
       await this.agentGone(tx, agent, `the session of ${agent.name} is not running any more`);
     }
-    this.presence.set(harness, { live, seen: known.seen, missed, busy });
+    const quiet = new Map<string, number>();
+    for (const id of asleep) quiet.set(id, known.asleep.get(id) ?? asked);
+    this.presence.set(harness, { live, seen: known.seen, missed, busy, asleep: quiet });
+  }
+
+  /**
+   * The sessions of a listing that ended their turn and cannot be told to report: out of a
+   * turn, waiting for nobody, carrying a job out, and not woken by a letter (`wakes`).
+   */
+  private async asleepAmong(
+    harness: string,
+    sessions: readonly LiveSession[]
+  ): Promise<Set<string>> {
+    const idle = sessions.filter((session) => session.busy === false && !session.waitingFor);
+    if (idle.length === 0) return new Set();
+    const carrying = await this.enqueue(async () =>
+      idle.flatMap(({ sessionId }) => {
+        const agent = this.store.agentOfSession(harness, sessionId);
+        if (agent?.status !== 'active' || this.conducts(agent)) return [];
+        const jobs = this.store.jobTasks({ to: agent.name, states: ['working'], limit: 1 });
+        return jobs.length > 0 ? [{ sessionId, name: agent.name }] : [];
+      })
+    );
+    const asleep = new Set<string>();
+    for (const { sessionId, name } of carrying) {
+      if (!(await this.wakes(name))) asleep.add(sessionId);
+    }
+    return asleep;
   }
 
   /**
