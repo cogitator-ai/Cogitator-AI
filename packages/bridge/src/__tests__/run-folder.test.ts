@@ -111,12 +111,26 @@ describe('where a plan may be copied to', () => {
     expect(await copyOut(plan, cwd, '../../docs/plans/limiter.md')).toBe(copied);
   });
 
+  it('lets only one of two copies to the same place through', async () => {
+    const one = await keep(runFolder(repo, 3), 'plan.md', '# Plan of run 3\n');
+    const two = await keep(runFolder(repo, 4), 'plan.md', '# Plan of run 4\n');
+    const done = await Promise.allSettled([
+      copyOut(one, repo, 'docs/plan.md'),
+      copyOut(two, repo, 'docs/plan.md'),
+    ]);
+    expect(done.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+    const winner = done[0].status === 'fulfilled' ? '# Plan of run 3\n' : '# Plan of run 4\n';
+    expect(readFileSync(join(repo, 'docs', 'plan.md'), 'utf8')).toBe(winner);
+  });
+
   it('does not write over a file that holds something else', async () => {
     const plan = await keep(runFolder(repo, 3), 'plan.md', '# Plan\n');
     writeFileSync(join(repo, 'taken.md'), 'mine\n');
     await expect(copyOut(plan, repo, 'taken.md')).rejects.toThrow('is there already');
     expect(readFileSync(join(repo, 'taken.md'), 'utf8')).toBe('mine\n');
     await expect(copyOut(plan, repo, '../plan.md')).rejects.toThrow('outside');
+    mkdirSync(join(repo, 'folder.md'));
+    await expect(copyOut(plan, repo, 'folder.md')).rejects.toThrow('is there already');
     expect(existsSync(join(scratch, 'plan.md'))).toBe(false);
   });
 });
@@ -153,6 +167,23 @@ describe('what changed in the working tree', () => {
     const after = await treeOf(repo);
     expect(changedSince(before ?? [], after ?? [], [])).toEqual(['?? dirty.ts']);
     expect(changedSince(before ?? [], before ?? [], [])).toEqual([]);
+  });
+
+  it('names what is no longer shown: a new file that is gone, a change that was undone', async () => {
+    writeFileSync(join(repo, 'notes.md'), 'mine\n');
+    writeFileSync(join(repo, 'README.md'), 'my edit\n');
+    writeFileSync(join(repo, 'kept.ts'), 'x\n');
+    const before = await treeOf(repo);
+    rmSync(join(repo, 'notes.md'));
+    git(repo, 'checkout', '--', 'README.md');
+    const after = await treeOf(repo);
+    expect(changedSince(before ?? [], after ?? [], [])).toEqual([
+      'M README.md, no longer changed',
+      '?? notes.md, gone',
+    ]);
+    expect(changedSince(before ?? [], after ?? [], ['notes.md'])).toEqual([
+      'M README.md, no longer changed',
+    ]);
   });
 
   it('is unknown outside a repository', async () => {
