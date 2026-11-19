@@ -82,3 +82,15 @@ function parseBody(text: string, contentType: string): Record<string, unknown> |
 
 export const ELICITATION = { elicitation: { form: {} } };
 export const TASKS = { extensions: { 'io.modelcontextprotocol/tasks': {} } };
+
+/**
+ * `state` with one character in the middle of its signature swapped for another. Each such
+ * character carries six bits of the MAC, so the decoded signature always differs, unlike an
+ * edit of the last character, whose low bits the base64url decoder drops.
+ */
+export function tamperState(state: unknown): string {
+  const text = String(state);
+  const at = text.lastIndexOf('.') + 10;
+  if (at <= 10 || at >= text.length - 1) throw new Error(`not a signed requestState: ${text}`);
+  return `${text.slice(0, at)}${text[at] === 'A' ? 'B' : 'A'}${text.slice(at + 1)}`;
+}

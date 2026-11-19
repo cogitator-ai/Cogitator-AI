@@ -5,7 +5,7 @@ import { tool } from '@cogitator-ai/core';
 import type { Tool, ToolInvoker } from '@cogitator-ai/types';
 import { MCPServer } from '../server/mcp-server';
 import type { MCPServerConfig, MCPToolContext } from '../types';
-import { ELICITATION, TASKS, rawRequest } from './support/raw-mcp';
+import { ELICITATION, TASKS, rawRequest, tamperState } from './support/raw-mcp';
 
 const servers: MCPServer[] = [];
 
@@ -117,7 +117,7 @@ describe('MCPServer approvals as multi round-trip requests', () => {
       { path: '/a' },
       {
         inputResponses: approve,
-        requestState: `${state.slice(0, -2)}xx`,
+        requestState: tamperState(state),
       },
       { 'x-user': 'alice' }
     );

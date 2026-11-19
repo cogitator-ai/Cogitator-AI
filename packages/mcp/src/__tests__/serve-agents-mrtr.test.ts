@@ -15,7 +15,7 @@ import { serveAgents, type AgentHost } from '../server/serve-agents';
 import type { MCPServer } from '../server/mcp-server';
 import { MCPClient } from '../client/mcp-client';
 import type { MCPElicitRequest, MCPElicitResult, MCPElicitUrlRequest } from '../types';
-import { ELICITATION, rawRequest } from './support/raw-mcp';
+import { ELICITATION, rawRequest, tamperState } from './support/raw-mcp';
 
 function fakeAgent(name: string, config: Partial<AgentConfig> = {}): Agent {
   const full: AgentConfig = { name, instructions: `You are ${name}.`, ...config };
@@ -220,7 +220,7 @@ describe('serveAgents on protocol 2026-07-28', () => {
       params: {
         name: 'support',
         arguments: { task: 'refund' },
-        requestState: `${String(first.result?.requestState).slice(0, -3)}abc`,
+        requestState: tamperState(first.result?.requestState),
         inputResponses: { 'approval:c1': { action: 'accept', content: { approve: true } } },
       },
     });
