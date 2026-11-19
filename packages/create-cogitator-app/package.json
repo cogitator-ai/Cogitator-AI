@@ -39,18 +39,18 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
-    "@clack/prompts": "^1.8.1",
+    "@clack/prompts": "^1.9.0",
     "@cogitator-ai/config": "workspace:^",
     "@cogitator-ai/deploy": "workspace:^",
     "@cogitator-ai/models": "workspace:^",
     "picocolors": "^1.1.0",
-    "tar": "^7.5.22",
+    "tar": "^7.5.23",
     "yaml": "^2.9.1",
     "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",
-    "isbot": "^5.2.2",
+    "isbot": "^5.2.3",
     "tsup": "^8.4.0",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"
