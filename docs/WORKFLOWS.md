@@ -536,7 +536,7 @@ await approvalStore.submitResponse({
 const { state } = await run;
 ```
 
-The node's output is `{ approved, decision, timedOut, escalated, withdrawn }`; `escalated` is `true` when the `escalateTo` assignee answered after a timeout. `ratingNode`, `chainNode` and `managementChain` (sequential approvers) work the same way, and `approvalNotifier` (`ConsoleNotifier`, `WebhookNotifier`, `slackNotifier`, ...) is told about new requests. The first answer wins: a second `submitResponse` for the same request throws `ApprovalAlreadyAnsweredError` (`submitOrExisting` returns the answer that stands instead). Deleting a pending request releases its waiters with a withdrawn answer (`respondedBy: WITHDRAWN`), which counts as not approved.
+The node's output is `{ approved, decision, timedOut, escalated, withdrawn }`; `escalated` is `true` when the `escalateTo` assignee answered after a timeout, and the original request is then closed with `respondedBy: ESCALATED`, so its first assignee no longer has it pending. `ratingNode`, `chainNode` and `managementChain` (sequential approvers) work the same way, and `approvalNotifier` (`ConsoleNotifier`, `WebhookNotifier`, `slackNotifier`, ...) is told about new requests. The first answer wins: a second `submitResponse` for the same request throws `ApprovalAlreadyAnsweredError` (`submitOrExisting` returns the answer that stands instead). Deleting a pending request releases its waiters with a withdrawn answer (`respondedBy: WITHDRAWN`), which counts as not approved.
 
 ---
 

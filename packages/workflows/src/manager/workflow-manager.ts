@@ -733,7 +733,8 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       await this.settleNodeUpdates(runId);
       await active.stopWrite;
 
-      const stopped = executed.error ? active.stopReason : undefined;
+      const stopped =
+        executed.error || active.stopReason === 'cancelled' ? active.stopReason : undefined;
       const error = stopped
         ? new Error(`Workflow run '${runId}' was ${stopped}`)
         : timedOut

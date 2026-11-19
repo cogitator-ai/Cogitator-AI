@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   InMemoryApprovalStore,
+  ESCALATED,
   withDelegation,
   ConsoleNotifier,
   WebhookNotifier,
@@ -560,6 +561,76 @@ describe('Human-in-the-Loop', () => {
       expect(result.timedOut).toBe(false);
 
       store.dispose();
+    });
+
+    describe('an escalation that was decided', () => {
+      const config: HumanNodeConfig<TestState> = {
+        name: 'escalating',
+        approval: {
+          type: 'approve-reject',
+          title: 'Refund',
+          assignee: 'agent',
+          timeout: 20,
+          timeoutAction: 'escalate',
+          escalateTo: 'supervisor',
+        },
+      };
+
+      async function decideEscalation(store: InMemoryApprovalStore, requested: ApprovalRequest[]) {
+        const resultPromise = executeHumanNode({ value: 1 }, config, {
+          workflowId: 'wf-1',
+          runId: 'run-1',
+          nodeId: 'node-1',
+          approvalStore: store,
+          onApprovalRequired: (request) => requested.push(request),
+        });
+
+        while (requested.length < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        await store.submitResponse({
+          requestId: requested[1].id,
+          decision: true,
+          respondedBy: 'supervisor',
+          respondedAt: Date.now(),
+        });
+        return resultPromise;
+      }
+
+      it('takes the original request off the list of its first assignee', async () => {
+        const store = new InMemoryApprovalStore();
+        const requested: ApprovalRequest[] = [];
+
+        await decideEscalation(store, requested);
+
+        expect(await store.getPendingForAssignee('agent')).toEqual([]);
+        expect(await store.getPendingRequests()).toEqual([]);
+        expect(await store.getResponse(requested[0].id)).toMatchObject({
+          respondedBy: ESCALATED,
+        });
+
+        store.dispose();
+      });
+
+      it('gives a node that runs again the decision of the escalation', async () => {
+        const store = new InMemoryApprovalStore();
+        const requested: ApprovalRequest[] = [];
+        await decideEscalation(store, requested);
+
+        const again = await executeHumanNode({ value: 1 }, config, {
+          workflowId: 'wf-1',
+          runId: 'run-1',
+          nodeId: 'node-1',
+          approvalStore: store,
+          onApprovalRequired: (request) => requested.push(request),
+        });
+
+        expect(again).toMatchObject({ approved: true, escalated: true, timedOut: false });
+        expect(again.response.respondedBy).toBe('supervisor');
+        expect(requested).toHaveLength(2);
+
+        store.dispose();
+      });
     });
 
     it('does not mark a directly answered request as escalated', async () => {
